@@ -32,7 +32,19 @@ class OptionLeg:
 
 @dataclass(frozen=True)
 class StrategyDefinition:
-    strategy_type: Literal["long_call", "long_put", "call_vertical", "put_vertical"]
+    strategy_type: Literal[
+        "long_call",
+        "long_put",
+        "call_vertical",
+        "put_vertical",
+        "iron_condor",
+        "iron_butterfly",
+        "long_straddle",
+        "long_strangle",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    ]
     legs: tuple[OptionLeg, ...]
 
 
@@ -264,19 +276,59 @@ def _payoff_bounds(
         long_leg = next(leg for leg in legs if leg.position > 0)
         short_leg = next(leg for leg in legs if leg.position < 0)
         width = abs(long_leg.strike - short_leg.strike) * scale
-        if execution.fee_per_contract == 0 and execution.slippage_bps == 0:
-            max_loss = max(0.0, entry_cost)
+        is_debit_vertical = (
+            strategy.strategy_type == "call_vertical" and long_leg.strike < short_leg.strike
+        ) or (
+            strategy.strategy_type == "put_vertical" and long_leg.strike > short_leg.strike
+        )
+        if is_debit_vertical:
+            if execution.fee_per_contract == 0 and execution.slippage_bps == 0:
+                max_loss = max(0.0, entry_cost)
+            else:
+                # Conservative operational bound: a long leg may be paid in full
+                # while the short-leg credit is unavailable during a stressed exit.
+                max_loss = long_leg.ask * scale + entry_fees + entry_slippage
+            max_profit = max(0.0, width - net_debit)
         else:
-            # Conservative operational bound: a long leg may be paid in full
-            # while the short-leg credit is unavailable during a stressed exit.
-            max_loss = long_leg.ask * scale + entry_fees + entry_slippage
-        max_profit = max(0.0, width - net_debit)
-        debit_per_unit = net_debit / scale
+            # Reverse-orientation verticals are credit spreads. Their loss is the
+            # strike width less the opening credit, while the credit is the
+            # maximum profit after opening costs.
+            max_loss = max(0.0, width + net_debit)
+            max_profit = max(0.0, -net_debit)
+
         if strategy.strategy_type == "call_vertical":
-            breakevens = (long_leg.strike + debit_per_unit,)
+            if long_leg.strike < short_leg.strike:
+                breakeven = long_leg.strike + net_debit / scale
+            else:
+                breakeven = short_leg.strike - net_debit / scale
         else:
-            breakevens = (long_leg.strike - debit_per_unit,)
+            if long_leg.strike > short_leg.strike:
+                breakeven = long_leg.strike - net_debit / scale
+            else:
+                breakeven = short_leg.strike + net_debit / scale
+        breakevens = (breakeven,)
         return max_loss, max_profit, breakevens
+
+    if strategy.strategy_type in {"long_straddle", "long_strangle"}:
+        premium = net_debit / scale
+        put_leg = next(leg for leg in legs if leg.option_type.lower() in {"put", "p"})
+        call_leg = next(leg for leg in legs if leg.option_type.lower() in {"call", "c"})
+        return (
+            max(0.0, net_debit),
+            math.inf,
+            (put_leg.strike - premium, call_leg.strike + premium),
+        )
+
+    if strategy.strategy_type == "calendar_spread":
+        return max(0.0, net_debit), math.inf, ()
+
+    if strategy.strategy_type in {
+        "iron_condor",
+        "iron_butterfly",
+        "butterfly",
+        "broken_wing_butterfly",
+    }:
+        return _multi_leg_payoff_bounds(strategy, execution)
 
     leg = legs[0]
     max_loss = max(0.0, net_debit)
@@ -302,7 +354,19 @@ def _validate_strategy(strategy: StrategyDefinition) -> None:
         if strategy.legs[0].option_type.lower() not in {expected, expected[0]}:
             raise ScenarioValidationError("strategy option type does not match its name")
         return
+    if strategy.strategy_type in {"long_straddle", "long_strangle"}:
+        _validate_long_volatility_strategy(strategy)
+        return
+    if strategy.strategy_type == "calendar_spread":
+        _validate_calendar_spread(strategy)
+        return
+    if strategy.strategy_type in {"butterfly", "broken_wing_butterfly"}:
+        _validate_butterfly(strategy)
+        return
     if strategy.strategy_type not in {"call_vertical", "put_vertical"} or len(strategy.legs) != 2:
+        if strategy.strategy_type in {"iron_condor", "iron_butterfly"}:
+            _validate_iron_strategy(strategy)
+            return
         raise ScenarioValidationError("only long single legs and defined-risk verticals are supported")
     long_leg = tuple(leg for leg in strategy.legs if leg.position > 0)
     short_leg = tuple(leg for leg in strategy.legs if leg.position < 0)
@@ -314,10 +378,159 @@ def _validate_strategy(strategy: StrategyDefinition) -> None:
         raise ScenarioValidationError("vertical option type does not match its name")
     if long_leg.expiry != short_leg.expiry:
         raise ScenarioValidationError("vertical legs must share an expiry")
-    if strategy.strategy_type == "call_vertical" and not long_leg.strike < short_leg.strike:
-        raise ScenarioValidationError("call vertical needs long lower strike and short higher strike")
-    if strategy.strategy_type == "put_vertical" and not long_leg.strike > short_leg.strike:
-        raise ScenarioValidationError("put vertical needs long higher strike and short lower strike")
+    if long_leg.strike == short_leg.strike:
+        raise ScenarioValidationError("vertical legs must use distinct strikes")
+
+
+def _validate_long_volatility_strategy(strategy: StrategyDefinition) -> None:
+    if len(strategy.legs) != 2 or any(leg.position != 1 for leg in strategy.legs):
+        raise ScenarioValidationError("long volatility strategy must contain two long legs")
+    puts = tuple(leg for leg in strategy.legs if leg.option_type.lower() in {"put", "p"})
+    calls = tuple(leg for leg in strategy.legs if leg.option_type.lower() in {"call", "c"})
+    if len(puts) != 1 or len(calls) != 1:
+        raise ScenarioValidationError("long volatility strategy must contain one put and one call")
+    put_leg, call_leg = puts[0], calls[0]
+    if put_leg.expiry != call_leg.expiry:
+        raise ScenarioValidationError("long volatility legs must share an expiry")
+    if strategy.strategy_type == "long_straddle" and put_leg.strike != call_leg.strike:
+        raise ScenarioValidationError("straddle legs must share a strike")
+    if strategy.strategy_type == "long_strangle" and put_leg.strike >= call_leg.strike:
+        raise ScenarioValidationError("strangle put strike must be below call strike")
+
+
+def _validate_calendar_spread(strategy: StrategyDefinition) -> None:
+    if len(strategy.legs) != 2:
+        raise ScenarioValidationError("calendar spread must contain two legs")
+    long_legs = tuple(leg for leg in strategy.legs if leg.position == 1)
+    short_legs = tuple(leg for leg in strategy.legs if leg.position == -1)
+    if len(long_legs) != 1 or len(short_legs) != 1:
+        raise ScenarioValidationError("calendar spread must contain one long and one short leg")
+    long_leg, short_leg = long_legs[0], short_legs[0]
+    if long_leg.option_type.lower() != short_leg.option_type.lower():
+        raise ScenarioValidationError("calendar spread legs must use the same option type")
+    if long_leg.strike != short_leg.strike:
+        raise ScenarioValidationError("calendar spread legs must use the same strike")
+    if long_leg.expiry <= short_leg.expiry:
+        raise ScenarioValidationError("calendar spread long leg must have the later expiry")
+
+
+def _validate_butterfly(strategy: StrategyDefinition) -> None:
+    if len(strategy.legs) != 4:
+        raise ScenarioValidationError("butterfly must contain four legs")
+    if any(leg.expiry != strategy.legs[0].expiry for leg in strategy.legs):
+        raise ScenarioValidationError("butterfly legs must share an expiry")
+    if len({leg.option_type.lower() for leg in strategy.legs}) != 1:
+        raise ScenarioValidationError("butterfly legs must use the same option type")
+    long_legs = tuple(leg for leg in strategy.legs if leg.position == 1)
+    short_legs = tuple(leg for leg in strategy.legs if leg.position == -1)
+    if len(long_legs) != 2 or len(short_legs) != 2:
+        raise ScenarioValidationError("butterfly must contain two long and two short legs")
+    body_strikes = {leg.strike for leg in short_legs}
+    wing_strikes = sorted(leg.strike for leg in long_legs)
+    if len(body_strikes) != 1 or len(wing_strikes) != 2:
+        raise ScenarioValidationError("butterfly must have two distinct wings and one body")
+    body_strike = next(iter(body_strikes))
+    lower_wing, upper_wing = wing_strikes
+    if not lower_wing < body_strike < upper_wing:
+        raise ScenarioValidationError("butterfly wings must surround the body strike")
+    if strategy.strategy_type == "butterfly" and body_strike - lower_wing != upper_wing - body_strike:
+        raise ScenarioValidationError("butterfly wings must be equally spaced")
+    if strategy.strategy_type == "broken_wing_butterfly" and body_strike - lower_wing == upper_wing - body_strike:
+        raise ScenarioValidationError("broken-wing butterfly wings must be unevenly spaced")
+
+
+def _validate_iron_strategy(strategy: StrategyDefinition) -> None:
+    if len(strategy.legs) != 4:
+        raise ScenarioValidationError("iron strategy must contain four legs")
+    long_legs = tuple(leg for leg in strategy.legs if leg.position > 0)
+    short_legs = tuple(leg for leg in strategy.legs if leg.position < 0)
+    if len(long_legs) != 2 or len(short_legs) != 2:
+        raise ScenarioValidationError("iron strategy must contain two long and two short legs")
+    if any(leg.expiry != strategy.legs[0].expiry for leg in strategy.legs):
+        raise ScenarioValidationError("iron strategy legs must share an expiry")
+    puts = tuple(leg for leg in strategy.legs if leg.option_type.lower() in {"put", "p"})
+    calls = tuple(leg for leg in strategy.legs if leg.option_type.lower() in {"call", "c"})
+    if len(puts) != 2 or len(calls) != 2:
+        raise ScenarioValidationError("iron strategy must contain two puts and two calls")
+    if strategy.strategy_type == "iron_condor":
+        ordered = tuple(sorted(strategy.legs, key=lambda leg: (leg.strike, leg.option_type)))
+        if not (
+            ordered[0].option_type.lower() in {"put", "p"}
+            and ordered[1].option_type.lower() in {"put", "p"}
+            and ordered[2].option_type.lower() in {"call", "c"}
+            and ordered[3].option_type.lower() in {"call", "c"}
+            and ordered[0].position == 1
+            and ordered[1].position == -1
+            and ordered[2].position == -1
+            and ordered[3].position == 1
+            and ordered[0].strike < ordered[1].strike < ordered[2].strike < ordered[3].strike
+        ):
+            raise ScenarioValidationError("iron condor legs must be ordered wing/short put/short call/wing")
+        return
+    body_strikes = {leg.strike for leg in strategy.legs if leg.position < 0}
+    if len(body_strikes) != 1:
+        raise ScenarioValidationError("iron butterfly short bodies must share a strike")
+    body_strike = next(iter(body_strikes))
+    lower_wing = next((leg for leg in long_legs if leg.option_type.lower() in {"put", "p"}), None)
+    upper_wing = next((leg for leg in long_legs if leg.option_type.lower() in {"call", "c"}), None)
+    if (
+        lower_wing is None
+        or upper_wing is None
+        or lower_wing.strike >= body_strike
+        or upper_wing.strike <= body_strike
+    ):
+        raise ScenarioValidationError("iron butterfly needs a lower put wing and upper call wing")
+
+
+def _multi_leg_payoff_bounds(
+    strategy: StrategyDefinition,
+    execution: ExecutionAssumptions,
+) -> tuple[float, float, tuple[float, ...]]:
+    scale = execution.contract_multiplier
+    legs = strategy.legs
+    entry_cost = sum((leg.ask if leg.position > 0 else -leg.bid) * scale for leg in legs)
+    entry_fees = execution.fee_per_contract * len(legs) * scale
+    entry_slippage = sum(
+        abs(leg.ask if leg.position > 0 else leg.bid)
+        * execution.slippage_bps
+        / 10_000.0
+        * scale
+        for leg in legs
+    )
+    net_debit = entry_cost + entry_fees + entry_slippage
+    strikes = sorted({leg.strike for leg in legs})
+    width = max(strikes[-1] - strikes[0], 1.0)
+    points = [0.0, *strikes, strikes[-1] + width * 2.0]
+    values = tuple(
+        _multi_leg_expiry_pnl(price, legs, net_debit, scale)
+        for price in points
+    )
+    breakevens: list[float] = []
+    for left, right, left_value, right_value in zip(points, points[1:], values, values[1:]):
+        if left_value == 0:
+            breakevens.append(left)
+        if left_value * right_value < 0 and right_value != left_value:
+            breakevens.append(left - left_value * (right - left) / (right_value - left_value))
+    unique_breakevens = tuple(
+        sorted({round(value, 12) for value in breakevens})
+    )
+    return max(0.0, -min(values)), max(0.0, max(values)), unique_breakevens
+
+
+def _multi_leg_expiry_pnl(
+    price: float,
+    legs: tuple[OptionLeg, ...],
+    net_debit: float,
+    scale: float,
+) -> float:
+    intrinsic = 0.0
+    for leg in legs:
+        option_type = leg.option_type.lower()
+        if option_type in {"call", "c"}:
+            intrinsic += leg.position * max(price - leg.strike, 0.0)
+        else:
+            intrinsic += leg.position * max(leg.strike - price, 0.0)
+    return intrinsic * scale - net_debit
 
 
 def _validate_execution(execution: ExecutionAssumptions) -> None:

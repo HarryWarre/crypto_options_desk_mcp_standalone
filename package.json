@@ -1,0 +1,30 @@
+{
+  "name": "crypto_options_desk_mcp",
+  "version": "1.0.0",
+  "description": "A **Model Context Protocol (MCP)** server that gives an LLM agent one typed, audited, read-only-by-default tool surface over a quant crypto-options desk's analytics: gamma exposure, vanna, skew, vol surface, options flow, technicals, portfolio greeks, scenario analysis, vol-selling signals, and live positions.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "tests"
+  },
+  "scripts": {
+    "test:e2e": "playwright test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasein108/crypto_options_desk_mcp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dasein108/crypto_options_desk_mcp/issues"
+  },
+  "homepage": "https://github.com/dasein108/crypto_options_desk_mcp#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "playwright": "^1.63.0"
+  }
+}

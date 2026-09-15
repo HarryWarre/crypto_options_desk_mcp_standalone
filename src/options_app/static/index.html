@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
     <link rel="stylesheet" href="/static/styles.css">
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20260916-2" defer></script>
   </head>
   <body>
     <header class="site-header">
@@ -13,89 +13,165 @@
         <p class="eyebrow">Nghiên cứu quyền chọn</p>
         <h1>Crypto Options Scanner</h1>
         <p class="lede">Tìm hợp đồng có chênh lệch giữa giá mô hình và giá có thể mua.</p>
+        <p class="research-note">Tín hiệu nghiên cứu / paper trading; không phải khuyến nghị đầu tư.</p>
       </div>
       <div class="status-pill" id="service-status">Đang tải dữ liệu…</div>
     </header>
 
     <main class="page-shell">
-      <section class="notice" aria-label="Cảnh báo">
-        <strong>Chỉ nghiên cứu / paper trading.</strong>
-        <span>Giá trị hợp lý chưa đồng nghĩa với lợi nhuận. Hệ thống chưa xác nhận EV dương. Không đặt lệnh.</span>
-      </section>
-
       <section class="panel controls-panel">
         <div class="panel-heading">
           <div>
             <p class="eyebrow">Bước 1</p>
-            <h2>Chọn tài sản và điều kiện</h2>
+            <h2>Tìm một ý tưởng giao dịch</h2>
           </div>
           <span class="muted" id="data-status">Chưa có lần quét</span>
         </div>
         <form id="scan-form">
           <fieldset>
-            <legend>Tài sản Bybit</legend>
+            <legend>Tài sản</legend>
             <div class="asset-list" id="asset-list" aria-live="polite"></div>
+            <p class="field-help">Mặc định chỉ chọn một tài sản. Có thể chọn thêm để so sánh.</p>
           </fieldset>
-          <div class="form-grid">
-            <label>Lãi suất năm
-              <input name="risk_free_rate" type="number" value="0" step="0.001" required>
+          <fieldset class="quick-idea-fieldset">
+            <legend>Bạn muốn tìm ý tưởng nào?</legend>
+            <div class="strategy-presets" role="radiogroup" aria-label="Ý tưởng giao dịch">
+              <label class="strategy-preset">
+                <input type="radio" name="quick_strategy" value="long_call" checked>
+                <span><strong>Mua call</strong><small>Kỳ vọng giá tăng</small></span>
+              </label>
+              <label class="strategy-preset">
+                <input type="radio" name="quick_strategy" value="long_put">
+                <span><strong>Mua put</strong><small>Kỳ vọng giá giảm</small></span>
+              </label>
+              <label class="strategy-preset">
+                <input type="radio" name="quick_strategy" value="bull_call_vertical">
+                <span><strong>Call spread</strong><small>Tăng giá, rủi ro giới hạn</small></span>
+              </label>
+              <label class="strategy-preset">
+                <input type="radio" name="quick_strategy" value="bear_put_vertical">
+                <span><strong>Put spread</strong><small>Giảm giá, rủi ro giới hạn</small></span>
+              </label>
+              <label class="strategy-preset">
+                <input type="radio" name="quick_strategy" value="iron_condor">
+                <span><strong>Iron condor</strong><small>Kỳ vọng đi ngang</small></span>
+              </label>
+            </div>
+            <p class="field-help">Khi nào nên chọn: chọn theo hướng bạn nghĩ giá cơ sở sẽ đi, không cần hiểu mã chiến lược phía sau.</p>
+            <input type="checkbox" name="quick_strategy" value="legacy-compatibility" hidden aria-hidden="true">
+          </fieldset>
+
+          <div class="quick-grid">
+            <label>Thời hạn
+              <select name="time_horizon" aria-describedby="time-horizon-help">
+                <option value="0-7">0–7 ngày</option>
+                <option value="7-30" selected>7–30 ngày</option>
+                <option value="30-90">30–90 ngày</option>
+              </select>
+              <small class="field-help" id="time-horizon-help">Khoảng thời gian còn lại đến ngày đáo hạn.</small>
             </label>
-            <label>Ngày tối thiểu
-              <input name="min_dte" type="number" min="0" placeholder="Ví dụ 3">
+            <label>Lỗ tối đa mỗi ý tưởng
+              <input name="quick_max_loss" type="number" min="0" step="0.01" placeholder="Không giới hạn">
+              <small class="field-help">Đơn vị theo đồng tiền báo giá của hợp đồng.</small>
             </label>
-            <label>Ngày tối đa
-              <input name="max_dte" type="number" min="0" placeholder="Ví dụ 45">
-            </label>
-            <label>IV edge tối thiểu
-              <input name="min_iv_edge" type="number" value="0.03" step="0.01" min="0">
-            </label>
-            <label>Delta tối thiểu
-              <input name="min_delta" type="number" min="0" max="1" step="0.05" placeholder="Ví dụ 0.2">
-            </label>
-            <label>Delta tối đa
-              <input name="max_delta" type="number" min="0" max="1" step="0.05" placeholder="Ví dụ 0.8">
-            </label>
-            <label>Độ rộng giá tối đa
-              <input name="max_spread_pct" type="number" min="0" max="1" step="0.01" placeholder="Ví dụ 0.2">
-            </label>
-            <label>OI tối thiểu
-              <input name="min_open_interest" type="number" value="0" min="0" step="1">
-            </label>
-            <label>Khối lượng tối thiểu
-              <input name="min_volume_24h" type="number" value="0" min="0" step="1">
-            </label>
-            <label>Lỗ tối đa
-              <input name="max_loss" type="number" min="0" step="0.01" placeholder="Không giới hạn">
-            </label>
-            <label>Phí mỗi chiều
-              <input name="fee_per_contract" type="number" value="0" min="0" step="0.01">
-            </label>
-            <label>Edge sau phí tối thiểu
-              <input name="min_edge_after_costs" type="number" value="0" min="0" step="0.01">
-            </label>
-            <label>Trượt giá (điểm cơ bản)
-              <input name="slippage_bps" type="number" value="0" min="0" step="1">
-            </label>
-            <label>Số hợp đồng
-              <input name="quantity" type="number" value="1" min="0.01" step="0.01">
-            </label>
-            <label>Hệ số hợp đồng
-              <input name="contract_multiplier" type="number" value="1" min="0.01" step="0.01">
-            </label>
-            <label>Số kết quả tối đa
-              <input name="max_results" type="number" min="1" step="1" placeholder="Không giới hạn">
+            <label>Target edge tối thiểu (%)
+              <input name="quick_target_edge_pct" type="number" value="0" step="0.5" min="0">
+              <small class="field-help">Nhập 3 = chỉ lấy cơ hội có IV edge từ 3%; nhập 0 = không lọc theo edge.</small>
             </label>
           </div>
+
+          <details class="advanced-filters" id="advanced-filters" data-testid="advanced-filters">
+            <summary>Bộ lọc nâng cao <span class="muted">Dành cho người đã quen với options</span></summary>
+            <div class="advanced-content">
+              <label class="advanced-toggle"><input type="checkbox" name="use_advanced_strategies"> Dùng lựa chọn chiến lược nâng cao thay cho preset bên trên</label>
+              <div class="form-grid">
+                <label>Ngày tối thiểu
+                  <input name="min_dte" type="number" min="0" placeholder="Ví dụ 3">
+                </label>
+                <label>Ngày tối đa
+                  <input name="max_dte" type="number" min="0" placeholder="Ví dụ 45">
+                </label>
+                <label>Delta tối thiểu
+                  <input name="min_delta" type="number" min="0" max="1" step="0.05" placeholder="Ví dụ 0.2">
+                </label>
+                <label>Delta tối đa
+                  <input name="max_delta" type="number" min="0" max="1" step="0.05" placeholder="Ví dụ 0.8">
+                </label>
+                <label>IV edge tối thiểu (%)
+                  <input name="min_iv_edge" type="number" value="3" step="0.5" min="0">
+                  <small class="field-help">3 nghĩa là mô hình cao hơn IV thị trường 3 điểm phần trăm.</small>
+                </label>
+                <label>Bid–ask tối đa (%)
+                  <input name="max_spread_pct" type="number" min="0" max="100" step="1" placeholder="Ví dụ 20">
+                </label>
+                <label>OI tối thiểu
+                  <input name="min_open_interest" type="number" value="0" min="0" step="1">
+                </label>
+                <label>Khối lượng tối thiểu
+                  <input name="min_volume_24h" type="number" value="0" min="0" step="1">
+                </label>
+                <label>Lỗ tối đa
+                  <input name="max_loss" type="number" min="0" step="0.01" placeholder="Không giới hạn">
+                </label>
+                <label>Chênh lệch mô hình sau phí tối thiểu
+                  <input name="min_edge_after_costs" type="number" value="0" min="0" step="0.01">
+                  <small class="field-help">Đây là chênh lệch giá mô hình, không phải lợi nhuận đảm bảo.</small>
+                </label>
+                <label>Phí mỗi chiều
+                  <input name="fee_per_contract" type="number" value="0" min="0" step="0.01">
+                </label>
+                <label>Trượt giá (bps)
+                  <input name="slippage_bps" type="number" value="0" min="0" step="1">
+                  <small class="field-help">100 bps = 1%.</small>
+                </label>
+                <label>Số hợp đồng
+                  <input name="quantity" type="number" value="1" min="0.01" step="0.01">
+                </label>
+                <label>Hệ số hợp đồng
+                  <input name="contract_multiplier" type="number" value="1" min="0.01" step="0.01">
+                </label>
+                <label>Số kết quả tối đa
+                  <input name="max_results" type="number" min="1" step="1" placeholder="Không giới hạn">
+                </label>
+              </div>
+              <fieldset class="strategy-options">
+                <legend>Chiến lược giới hạn rủi ro</legend>
+                <label><input type="checkbox" name="strategies" value="long_call" checked> Mua call</label>
+                <label><input type="checkbox" name="strategies" value="long_put" checked> Mua put</label>
+                <label><input type="checkbox" name="strategies" value="bull_call_vertical"> Bull call vertical</label>
+                <label><input type="checkbox" name="strategies" value="bear_call_vertical"> Bear call vertical</label>
+                <label><input type="checkbox" name="strategies" value="bull_put_vertical"> Bull put vertical</label>
+                <label><input type="checkbox" name="strategies" value="bear_put_vertical"> Bear put vertical</label>
+                <label><input type="checkbox" name="strategies" value="iron_condor"> Iron condor</label>
+                <label><input type="checkbox" name="strategies" value="iron_butterfly"> Iron butterfly</label>
+                <label><input type="checkbox" name="strategies" value="long_straddle"> Long straddle</label>
+                <label><input type="checkbox" name="strategies" value="long_strangle"> Long strangle</label>
+                <label><input type="checkbox" name="strategies" value="protective_put"> Protective put</label>
+                <label><input type="checkbox" name="strategies" value="covered_call"> Covered call</label>
+                <label><input type="checkbox" name="strategies" value="calendar_spread"> Calendar spread</label>
+                <label><input type="checkbox" name="strategies" value="butterfly"> Butterfly</label>
+                <label><input type="checkbox" name="strategies" value="broken_wing_butterfly"> Broken-wing butterfly</label>
+              </fieldset>
+            </div>
+          </details>
+
+          <input name="risk_free_rate" type="hidden" value="0.05">
           <div class="form-options">
-            <fieldset class="strategy-options">
-              <legend>Chiến lược giới hạn rủi ro</legend>
-              <label><input type="checkbox" name="strategies" value="long_call" checked> Mua call</label>
-              <label><input type="checkbox" name="strategies" value="long_put" checked> Mua put</label>
-            </fieldset>
-            <label class="toggle"><input name="include_unvalidated" type="checkbox" checked> Hiện tín hiệu chưa kiểm định EV</label>
-            <button type="submit" class="primary-button">Quét cơ hội</button>
+            <p class="scan-note">Bạn có thể mở bộ lọc nâng cao nếu muốn tự đặt thanh khoản, chi phí hoặc ngưỡng mô hình.</p>
+            <button type="submit" class="primary-button">Tìm cơ hội</button>
           </div>
         </form>
+      </section>
+
+      <section class="panel terminal-panel" aria-labelledby="terminal-title">
+        <details class="technical-log">
+          <summary><span class="eyebrow">Theo dõi</span> Chi tiết kỹ thuật của lần quét</summary>
+          <div class="panel-heading">
+            <div><h2 id="terminal-title">Tiến trình</h2></div>
+            <button type="button" class="secondary-button compact-button" id="clear-terminal">Xóa log</button>
+          </div>
+          <div class="scan-terminal" id="scan-terminal" role="log" aria-live="polite" aria-label="Nhật ký quét"></div>
+        </details>
       </section>
 
       <section class="panel results-panel" aria-live="polite">
@@ -104,16 +180,21 @@
             <p class="eyebrow">Bước 2</p>
             <h2>Kết quả</h2>
           </div>
-          <span class="badge badge-warning" id="evidence-status">Chưa kiểm định</span>
         </div>
         <div class="state-message" id="result-state">Chọn điều kiện rồi bấm “Quét cơ hội”.</div>
+        <div class="results-guide" id="results-guide" hidden>
+          <strong>Cách đọc nhanh</strong>
+          <span>Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.</span>
+        </div>
+        <div class="scan-context" id="scan-context" hidden></div>
+        <div class="opportunity-explanations" id="opportunity-explanations"></div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Tài sản / mã</th><th>Hạn</th><th>Chiến lược</th>
-                <th>Giá thị trường</th><th>Giá hợp lý</th><th>IV edge</th>
-                <th>Edge sau phí</th><th>Lỗ tối đa</th><th>Thanh khoản</th><th>Bằng chứng</th><th>Chi tiết</th>
+                <th>Tài sản / mã / strikes</th><th>Hạn</th><th>Chiến lược</th>
+                <th>Giá vào/ra</th><th>Giá mô hình</th><th>IV edge</th>
+                <th>Chênh lệch sau phí</th><th>Lỗ tối đa</th><th>Thanh khoản</th><th>Chi tiết</th>
               </tr>
             </thead>
             <tbody id="results-body"></tbody>
@@ -131,36 +212,37 @@
           </div>
           <button type="button" class="secondary-button" id="close-detail">Đóng</button>
         </div>
-        <form id="scenario-form">
-          <div class="form-grid scenario-controls">
-            <label>Thay đổi giá cơ sở (%)
-              <input name="underlying_move_pct" type="number" value="0" step="1" min="-100" required>
-            </label>
-            <label>Thay đổi IV (điểm phần trăm)
-              <input name="iv_move_points" type="number" value="0" step="0.5" min="-100" required>
-            </label>
-            <label>Số ngày trôi qua
-              <input name="elapsed_days" type="number" value="0" step="1" min="0" required>
-            </label>
-            <div class="scenario-actions">
-              <button type="submit" class="primary-button">Tính P&amp;L</button>
-            </div>
+        <div class="pnl-chart-heading">
+          <div>
+            <h3>P&amp;L theo thời gian</h3>
+            <p class="muted">Biểu đồ tự động mô phỏng giá trị của chiến lược từ hôm nay đến ngày đáo hạn.</p>
           </div>
-        </form>
-        <div class="state-message" id="scenario-state">Điều chỉnh kịch bản rồi bấm “Tính P&amp;L”.</div>
-        <div class="detail-metrics" id="detail-metrics"></div>
-        <div class="table-wrap">
-          <table class="scenario-table">
-            <thead>
-              <tr>
-                <th>Kịch bản</th><th>Giá cơ sở</th><th>IV</th><th>Ngày</th>
-                <th>P&amp;L</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Rho</th>
-              </tr>
-            </thead>
-            <tbody id="scenario-results-body"></tbody>
-          </table>
+          <span class="badge" id="pnl-chart-status">Đang chờ dữ liệu</span>
         </div>
-        <div class="scenario-warnings" id="scenario-warnings" aria-live="polite"></div>
+        <div class="chart-shell" id="pnl-chart-shell">
+          <svg id="pnl-chart" role="img" aria-label="Biểu đồ P&L theo thời gian" viewBox="0 0 960 430" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="chart-tooltip" id="pnl-chart-tooltip" hidden></div>
+        </div>
+        <div class="chart-legend" id="pnl-chart-legend" aria-label="Chú giải biểu đồ"></div>
+        <div class="chart-assumptions" id="pnl-chart-assumptions">
+          Biểu đồ tự động dùng các đường stress giá −10%, −5%, 0%, +5%, +10% so với hiện tại và giữ IV không đổi. Đây là mô phỏng tham khảo, không phải dự đoán đường giá.
+        </div>
+        <div class="state-message" id="scenario-state">Chọn một cơ hội để dựng biểu đồ P&amp;L.</div>
+        <div class="detail-metrics" id="detail-metrics"></div>
+        <details class="scenario-data-details">
+          <summary>Xem dữ liệu P&amp;L chi tiết</summary>
+          <div class="table-wrap">
+            <table class="scenario-table">
+              <thead>
+                <tr>
+                  <th>Kịch bản</th><th>Giá cơ sở</th><th>IV</th><th>Ngày</th>
+                  <th>P&amp;L</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Rho</th>
+                </tr>
+              </thead>
+              <tbody id="scenario-results-body"></tbody>
+            </table>
+          </div>
+        </details>
       </section>
     </main>
   </body>

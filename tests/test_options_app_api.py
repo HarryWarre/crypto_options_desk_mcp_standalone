@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,8 +15,8 @@ from bybit_api.options_market_data import (
     OptionContract,
     OptionDataQualityIssue,
 )
-from options_app.api import create_app
-from options_lib.opportunity_scanner import ScanResult
+from options_app.api import ScenarioRequest, create_app
+from options_lib.opportunity_scanner import Opportunity, ScanResult
 
 VALUATION_TIME = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 DATA_TIME = datetime(2026, 9, 15, 11, 59, 30, tzinfo=UTC)
@@ -31,6 +33,31 @@ SCENARIO_LEG = {
     "bid": 4200,
     "ask": 4300,
     "position": 1,
+}
+SCENARIO_SHORT_CALL_LEG = {
+    **SCENARIO_LEG,
+    "symbol": "BTC-30DEC26-80000-C",
+    "strike": 80000,
+    "bid": 1800,
+    "ask": 1900,
+    "position": -1,
+}
+SCENARIO_LONG_PUT_LEG = {
+    **SCENARIO_LEG,
+    "symbol": "BTC-30DEC26-80000-P",
+    "option_type": "put",
+    "strike": 80000,
+    "bid": 5100,
+    "ask": 5200,
+}
+SCENARIO_SHORT_PUT_LEG = {
+    **SCENARIO_LEG,
+    "symbol": "BTC-30DEC26-78000-P",
+    "option_type": "put",
+    "strike": 78000,
+    "bid": 3500,
+    "ask": 3600,
+    "position": -1,
 }
 
 
@@ -126,6 +153,25 @@ async def test_health_and_root_are_read_only_service_endpoints() -> None:
     assert root.status_code == 200
     assert root.headers["content-type"].startswith("text/html")
     assert "Crypto Options Scanner" in root.text
+
+
+@pytest.mark.asyncio
+async def test_cors_allows_local_frontend_preflight() -> None:
+    response = await request(
+        create_app(),
+        "OPTIONS",
+        "/api/v1/opportunities/scan",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "POST" in response.headers["access-control-allow-methods"]
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
 
 
 @pytest.mark.asyncio
@@ -233,7 +279,7 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
         "POST",
         "/api/v1/opportunities/scan",
         json={
-            "risk_free_rate": 0.05,
+            "risk_free_rate": 0.075,
             "assets": ["btc", "ETH"],
             "min_dte": 2,
             "max_dte": 30,
@@ -266,7 +312,325 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
     assert adapter.load_calls == [(('BTC', 'ETH'), None)]
     assert scan_calls[0][1].assets == ("BTC", "ETH")
     assert scan_calls[0][1].strategies == ("long_put",)
-    assert scan_calls[0][1].risk_free_rate == pytest.approx(0.05)
+    assert scan_calls[0][1].risk_free_rate == pytest.approx(0.075)
+
+
+@pytest.mark.asyncio
+async def test_scan_uses_safe_default_rate_when_request_omits_risk_free_rate() -> None:
+    scan_requests: list[Any] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    assert scan_requests[0].risk_free_rate == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_scan_accepts_simple_market_view_and_horizon_request() -> None:
+    scan_requests: list[Any] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "market_view": "up",
+            "time_horizon": "7_30",
+            "max_loss": 120,
+            "strategy_preference": "long_call",
+        },
+    )
+
+    assert response.status_code == 200
+    assert scan_requests[0].assets == ("BTC",)
+    assert scan_requests[0].strategies == ("long_call",)
+    assert scan_requests[0].min_dte == pytest.approx(7)
+    assert scan_requests[0].max_dte == pytest.approx(30)
+    assert scan_requests[0].max_loss == pytest.approx(120)
+    assert response.json()["scan_context"] == {
+        "market_view": "up",
+        "time_horizon": "7_30",
+        "max_loss": 120.0,
+        "strategies": ["long_call"],
+        "risk_free_rate": 0.05,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market_view", "strategies"),
+    [
+        ("down", ("long_put", "bear_put_vertical")),
+        ("sideways", ("iron_condor", "iron_butterfly")),
+    ],
+)
+async def test_scan_simple_market_views_resolve_bounded_risk_presets(
+    market_view: str,
+    strategies: tuple[str, ...],
+) -> None:
+    scan_requests: list[Any] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "market_view": market_view, "time_horizon": "30_90"},
+    )
+
+    assert response.status_code == 200
+    assert scan_requests[0].strategies == strategies
+    assert scan_requests[0].min_dte == pytest.approx(30)
+    assert scan_requests[0].max_dte == pytest.approx(90)
+
+
+@pytest.mark.asyncio
+async def test_scan_rejects_partial_simple_context() -> None:
+    response = await request(
+        create_app(adapter=FakeAdapter()),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "market_view": "up"},
+    )
+
+    assert response.status_code == 422
+    assert (
+        "market_view and time_horizon must be provided together"
+        in response.json()["error"]["details"][0]["message"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_logs_progress_milestones(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"risk_free_rate": 0.05, "assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("scan started" in message for message in messages)
+    assert any("market data loaded" in message for message in messages)
+    assert any("running opportunity scanner" in message for message in messages)
+    assert any("scan completed" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_scan_stream_emits_progress_and_result_events() -> None:
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan/stream",
+        json={"risk_free_rate": 0.05, "assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.text.splitlines()]
+    messages = [event["message"] for event in events if event["type"] == "log"]
+    assert any("scan started" in message for message in messages)
+    assert any("market data loaded" in message for message in messages)
+    assert events[-1]["type"] == "result"
+    assert events[-1]["payload"]["opportunities"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        "bull_call_vertical",
+        "bear_call_vertical",
+        "bull_put_vertical",
+        "bear_put_vertical",
+        "iron_condor",
+        "iron_butterfly",
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    ],
+)
+async def test_scan_endpoint_accepts_supported_multi_leg_strategy_identifiers(strategy: str) -> None:
+    scan_requests: list[Any] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"risk_free_rate": 0.05, "strategies": [strategy]},
+    )
+
+    assert response.status_code == 200
+    assert scan_requests[0].strategies == (strategy,)
+
+
+@pytest.mark.asyncio
+async def test_scan_rejects_unsupported_strategy_with_structured_422() -> None:
+    app = create_app(adapter=FakeAdapter())
+
+    response = await request(
+        app,
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"risk_free_rate": 0.05, "strategies": ["short_call"]},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["details"][0]["loc"] == ["body", "strategies"]
+    assert "unsupported strategy: short_call" in body["error"]["details"][0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_scan_serializes_multi_leg_opportunities_recursively() -> None:
+    multi_leg = Opportunity(
+        asset="BTC",
+        symbol="BTC-30DEC26-78000-C",
+        strategy="bull_call_vertical",
+        option_type="call",
+        strike=78000,
+        expiry_at=datetime(2026, 12, 30, 12, 0, tzinfo=UTC),
+        dte=106,
+        spot_price=78400,
+        bid_price=4200,
+        ask_price=4300,
+        market_mid=4250,
+        market_iv=0.31,
+        fair_iv=0.28,
+        iv_edge=-0.03,
+        surface_status="observed",
+        fair_price=4000,
+        executable_entry=2500,
+        fee=2,
+        slippage_cost=1,
+        edge_after_costs=1497,
+        edge_pct=0.5988,
+        max_loss=2502,
+        delta=0.5,
+        volume_24h=10,
+        open_interest=10,
+        quote_timestamp=DATA_TIME,
+        evidence_status="insufficient_evidence",
+        max_profit=17498,
+        long_symbol="BTC-30DEC26-78000-C",
+        short_symbol="BTC-30DEC26-80000-C",
+        long_strike=78000,
+        short_strike=80000,
+    )
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(multi_leg,),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"risk_free_rate": 0.05, "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    serialized = response.json()["opportunities"][0]
+    assert serialized["strategy"] == "bull_call_vertical"
+    assert serialized["max_profit"] == 17498
+    assert serialized["long_symbol"] == "BTC-30DEC26-78000-C"
+    assert serialized["short_symbol"] == "BTC-30DEC26-80000-C"
+    assert serialized["long_strike"] == 78000
+    assert serialized["short_strike"] == 80000
+
+
+@pytest.mark.parametrize("strategy_type", ["iron_condor", "iron_butterfly"])
+def test_scenario_request_preserves_iron_strategy_identifier(strategy_type: str) -> None:
+    request_model = ScenarioRequest.model_validate(
+        scenario_payload(strategy_type=strategy_type, legs=[SCENARIO_LEG])
+    )
+
+    strategy, _scenario_set = request_model.to_domain()
+
+    assert strategy.strategy_type == strategy_type
 
 
 @pytest.mark.asyncio
@@ -319,6 +683,33 @@ async def test_scenario_endpoint_returns_serialized_report() -> None:
         "model_only",
         "execution_costs",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("strategy_type", "legs"),
+    [
+        ("call_vertical", [SCENARIO_LEG, SCENARIO_SHORT_CALL_LEG]),
+        ("put_vertical", [SCENARIO_LONG_PUT_LEG, SCENARIO_SHORT_PUT_LEG]),
+        ("bear_call_vertical", [{**SCENARIO_SHORT_CALL_LEG, "position": 1}, {**SCENARIO_LEG, "position": -1}]),
+        ("bull_put_vertical", [{**SCENARIO_SHORT_PUT_LEG, "position": 1}, {**SCENARIO_LONG_PUT_LEG, "position": -1}]),
+    ],
+)
+async def test_scenario_vertical_request_identifiers_remain_stable(
+    strategy_type: str,
+    legs: list[dict[str, Any]],
+) -> None:
+    app = create_app(adapter=FakeAdapter())
+
+    response = await request(
+        app,
+        "POST",
+        "/api/v1/scenarios",
+        json=scenario_payload(strategy_type=strategy_type, legs=legs),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scenarios"][0]["name"] == "flat"
 
 
 @pytest.mark.asyncio

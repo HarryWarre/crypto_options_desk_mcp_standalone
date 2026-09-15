@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import logging
 import math
-from collections.abc import Callable
+import os
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import fields, is_dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -14,7 +18,8 @@ from typing import Any, Literal, Protocol
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -35,6 +40,46 @@ from options_lib.scenario_engine import (
 )
 from options_lib.volatility_surface import VolatilityObservation, build_volatility_surface
 
+logger = logging.getLogger("uvicorn.error")
+
+_VERTICAL_SCAN_STRATEGIES = frozenset(
+    {
+        "bull_call_vertical",
+        "bear_call_vertical",
+        "bull_put_vertical",
+        "bear_put_vertical",
+    }
+)
+_STRUCTURED_SCAN_STRATEGIES = frozenset(
+    {
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    }
+)
+_SUPPORTED_SCAN_STRATEGIES = (
+    frozenset({"long_call", "long_put", "iron_condor", "iron_butterfly"})
+    | _VERTICAL_SCAN_STRATEGIES
+    | _STRUCTURED_SCAN_STRATEGIES
+)
+_SIMPLE_VIEW_STRATEGIES = {
+    "up": ("long_call", "bull_call_vertical"),
+    "down": ("long_put", "bear_put_vertical"),
+    "sideways": ("iron_condor", "iron_butterfly"),
+}
+_SIMPLE_HORIZONS = {
+    "0_7": (0.0, 7.0),
+    "7_30": (7.0, 30.0),
+    "30_90": (30.0, 90.0),
+}
+_LOCAL_FRONTEND_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+_CORS_ORIGINS_ENV = "OPTIONS_APP_CORS_ORIGINS"
+_DEFAULT_SCAN_RISK_FREE_RATE = 0.05
+
 
 class ScannerAdapter(Protocol):
     async def discover_assets(self) -> OptionAssetCatalog: ...
@@ -47,13 +92,26 @@ class ScannerAdapter(Protocol):
     ) -> NormalizedOptionUniverse: ...
 
 
+ProgressCallback = Callable[[str], Awaitable[None]]
+
+
 class ScanFilters(BaseModel):
     """Validated JSON filters accepted by the scan endpoint."""
 
     model_config = ConfigDict(extra="forbid")
 
-    risk_free_rate: float
+    risk_free_rate: float = _DEFAULT_SCAN_RISK_FREE_RATE
     assets: list[str] = Field(default_factory=list)
+    market_view: Literal["up", "down", "sideways"] | None = None
+    time_horizon: Literal["0_7", "7_30", "30_90"] | None = None
+    strategy_preference: Literal[
+        "long_call",
+        "long_put",
+        "bull_call_vertical",
+        "bear_put_vertical",
+        "iron_condor",
+        "iron_butterfly",
+    ] | None = None
     min_dte: float | None = Field(default=None, ge=0)
     max_dte: float | None = Field(default=None, ge=0)
     min_delta: float | None = Field(default=None, ge=0, le=1)
@@ -116,8 +174,7 @@ class ScanFilters(BaseModel):
     @classmethod
     def validate_strategies(cls, values: list[str]) -> list[str]:
         normalized = list(dict.fromkeys(value.strip().lower() for value in values))
-        allowed = {"long_call", "long_put"}
-        unsupported = sorted(set(normalized) - allowed)
+        unsupported = sorted(set(normalized) - _SUPPORTED_SCAN_STRATEGIES)
         if unsupported:
             raise ValueError(f"unsupported strategy: {', '.join(unsupported)}")
         if not normalized:
@@ -126,6 +183,8 @@ class ScanFilters(BaseModel):
 
     @model_validator(mode="after")
     def validate_ranges(self) -> ScanFilters:
+        if (self.market_view is None) != (self.time_horizon is None):
+            raise ValueError("market_view and time_horizon must be provided together")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
         if self.min_delta is not None and self.max_delta is not None and self.min_delta > self.max_delta:
@@ -133,7 +192,20 @@ class ScanFilters(BaseModel):
         return self
 
     def to_scan_request(self) -> ScanRequest:
-        values = self.model_dump()
+        values = self.model_dump(
+            exclude={"market_view", "time_horizon", "strategy_preference"}
+        )
+        if self.market_view is not None:
+            values["strategies"] = (
+                (self.strategy_preference,)
+                if self.strategy_preference is not None
+                else _SIMPLE_VIEW_STRATEGIES[self.market_view]
+            )
+            horizon_min, horizon_max = _SIMPLE_HORIZONS[self.time_horizon or "7_30"]
+            if self.min_dte is None:
+                values["min_dte"] = horizon_min
+            if self.max_dte is None:
+                values["max_dte"] = horizon_max
         values["assets"] = tuple(values["assets"])
         values["strategies"] = tuple(values["strategies"])
         return ScanRequest(**values)
@@ -257,14 +329,37 @@ class ScenarioRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    strategy_type: Literal["long_call", "long_put", "call_vertical", "put_vertical"]
+    strategy_type: Literal[
+        "long_call",
+        "long_put",
+        "call_vertical",
+        "put_vertical",
+        "bull_call_vertical",
+        "bear_call_vertical",
+        "bull_put_vertical",
+        "bear_put_vertical",
+        "iron_condor",
+        "iron_butterfly",
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    ]
     legs: list[ScenarioLegRequest] = Field(min_length=1)
     scenarios: list[MarketScenarioRequest] = Field(min_length=1)
     execution: ExecutionAssumptionsRequest = Field(default_factory=ExecutionAssumptionsRequest)
 
     def to_domain(self) -> tuple[StrategyDefinition, ScenarioSet]:
+        strategy_type = self.strategy_type
+        if strategy_type in {"bull_call_vertical", "bear_call_vertical"}:
+            strategy_type = "call_vertical"
+        elif strategy_type in {"bull_put_vertical", "bear_put_vertical"}:
+            strategy_type = "put_vertical"
         strategy = StrategyDefinition(
-            strategy_type=self.strategy_type,
+            strategy_type=strategy_type,
             legs=tuple(leg.to_domain() for leg in self.legs),
         )
         scenario_set = ScenarioSet(
@@ -282,6 +377,14 @@ def create_app(
 
     market_adapter = adapter or BybitOptionMarketDataAdapter()
     app = FastAPI(title="Crypto Options Scanner API", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins_from_environment(),
+        allow_origin_regex=_LOCAL_FRONTEND_ORIGIN_REGEX,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type"],
+        max_age=600,
+    )
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -318,31 +421,81 @@ def create_app(
         return {"status": "ok", "service": "options-scanner-api"}
 
     @app.get("/", response_class=HTMLResponse)
-    async def root() -> str:
-        return (static_dir / "index.html").read_text(encoding="utf-8")
+    async def root() -> HTMLResponse:
+        return HTMLResponse(
+            content=(static_dir / "index.html").read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/v1/assets")
     async def assets() -> JSONResponse:
+        started_at = time.perf_counter()
+        logger.info("[OPTIONS] asset discovery started")
         try:
             catalog = await _maybe_await(market_adapter.discover_assets())
         except Exception as exc:
+            logger.exception("[OPTIONS] asset discovery failed")
             raise _upstream_error(exc) from exc
+        logger.info(
+            "[OPTIONS] asset discovery completed assets=%d issues=%d elapsed=%.2fs",
+            len(catalog.assets),
+            len(catalog.issues),
+            time.perf_counter() - started_at,
+        )
         return JSONResponse(content=_serialize(catalog))
 
     @app.post("/api/v1/opportunities/scan")
     async def scan(filters: ScanFilters) -> JSONResponse:
         scan_request = filters.to_scan_request()
-        try:
-            universe = await _maybe_await(
-                market_adapter.load_universe(assets=scan_request.assets or None)
+        result = await _execute_scan(scan_request, market_adapter, scanner)
+        return JSONResponse(content=_serialize_scan_result(result, filters, scan_request))
+
+    @app.post("/api/v1/opportunities/scan/stream")
+    async def scan_stream(filters: ScanFilters) -> StreamingResponse:
+        scan_request = filters.to_scan_request()
+
+        async def events() -> Any:
+            queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+            async def on_progress(message: str) -> None:
+                await queue.put({"type": "log", "message": message})
+
+            scan_task = asyncio.create_task(
+                _execute_scan(scan_request, market_adapter, scanner, on_progress=on_progress)
             )
-        except Exception as exc:
-            raise _upstream_error(exc) from exc
-        try:
-            result = await _maybe_await(scanner(universe, scan_request))
-        except Exception as exc:
-            raise ApiError(500, "scanner_failed", "Opportunity scan failed") from exc
-        return JSONResponse(content=_serialize(result))
+            try:
+                while not scan_task.done() or not queue.empty():
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=0.25)
+                    except TimeoutError:
+                        continue
+                    yield _ndjson_line(event)
+                result = await scan_task
+                yield _ndjson_line(
+                    {
+                        "type": "result",
+                        "payload": _serialize_scan_result(result, filters, scan_request),
+                    }
+                )
+            except ApiError as exc:
+                yield _ndjson_line({"type": "error", "code": exc.code, "message": exc.message})
+            except asyncio.CancelledError:
+                scan_task.cancel()
+                raise
+            except Exception:
+                logger.exception("[OPTIONS] scan stream failed")
+                yield _ndjson_line(
+                    {"type": "error", "code": "scan_failed", "message": "Opportunity scan failed"}
+                )
+            finally:
+                if not scan_task.done():
+                    scan_task.cancel()
+
+        return StreamingResponse(
+            events(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/v1/surfaces/{asset}")
     async def surface_summary(asset: str) -> JSONResponse:
@@ -407,6 +560,70 @@ def create_app(
     return app
 
 
+async def _execute_scan(
+    scan_request: ScanRequest,
+    market_adapter: ScannerAdapter,
+    scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult],
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> ScanResult:
+    started_at = time.perf_counter()
+    selected_assets = ",".join(scan_request.assets) if scan_request.assets else "all"
+
+    async def progress(message: str) -> None:
+        logger.info(message)
+        if on_progress is not None:
+            await on_progress(message)
+
+    await progress(
+        f"[OPTIONS] scan started assets={selected_assets} "
+        f"strategies={','.join(scan_request.strategies)}"
+    )
+    await progress("[OPTIONS] loading market data")
+    try:
+        universe = await _maybe_await(
+            market_adapter.load_universe(assets=scan_request.assets or None)
+        )
+    except Exception as exc:
+        logger.exception("[OPTIONS] market data loading failed")
+        await progress(f"[OPTIONS] market data loading failed: {exc}")
+        raise _upstream_error(exc) from exc
+    await progress(
+        "[OPTIONS] market data loaded "
+        f"assets={len(universe.assets)} contracts={len(universe.contracts)} "
+        f"issues={len(universe.issues)} elapsed={time.perf_counter() - started_at:.2f}s"
+    )
+    await progress("[OPTIONS] running opportunity scanner")
+    try:
+        result = await _run_scanner(scanner, universe, scan_request)
+    except Exception as exc:
+        logger.exception("[OPTIONS] opportunity scanner failed")
+        await progress(f"[OPTIONS] opportunity scanner failed: {exc}")
+        raise ApiError(500, "scanner_failed", "Opportunity scan failed") from exc
+    await progress(
+        "[OPTIONS] scan completed "
+        f"opportunities={len(result.opportunities)} rejections={len(result.rejections)} "
+        f"asset_failures={len(result.asset_failures)} "
+        f"elapsed={time.perf_counter() - started_at:.2f}s"
+    )
+    return result
+
+
+async def _run_scanner(
+    scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult],
+    universe: NormalizedOptionUniverse,
+    scan_request: ScanRequest,
+) -> ScanResult:
+    if inspect.iscoroutinefunction(scanner):
+        return await scanner(universe, scan_request)
+    result = await asyncio.to_thread(scanner, universe, scan_request)
+    return await result if inspect.isawaitable(result) else result
+
+
+def _ndjson_line(payload: dict[str, Any]) -> str:
+    return f"{json.dumps(payload, ensure_ascii=False)}\n"
+
+
 async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
@@ -415,6 +632,11 @@ def _upstream_error(exc: Exception) -> ApiError:
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException)):
         return ApiError(504, "upstream_timeout", "Upstream market data request failed")
     return ApiError(502, "upstream_unavailable", "Upstream market data request failed")
+
+
+def _cors_origins_from_environment() -> list[str]:
+    configured = os.getenv(_CORS_ORIGINS_ENV, "")
+    return [origin.strip() for origin in configured.split(",") if origin.strip()]
 
 
 def _serialize(value: Any) -> Any:
@@ -435,6 +657,23 @@ def _serialize(value: Any) -> Any:
         # finite number (for example, a long call's max profit).
         return None
     return value
+
+
+def _serialize_scan_result(
+    result: ScanResult,
+    filters: ScanFilters,
+    scan_request: ScanRequest,
+) -> dict[str, Any]:
+    payload = _serialize(result)
+    if filters.market_view is not None and filters.time_horizon is not None:
+        payload["scan_context"] = {
+            "market_view": filters.market_view,
+            "time_horizon": filters.time_horizon,
+            "max_loss": scan_request.max_loss,
+            "strategies": list(scan_request.strategies),
+            "risk_free_rate": scan_request.risk_free_rate,
+        }
+    return payload
 
 
 __all__ = [

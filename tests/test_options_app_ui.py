@@ -23,14 +23,40 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/app.js" defer></script>' in response.text
+    assert '<script src="/static/app.js?v=20260916-2" defer></script>' in response.text
     assert '<link rel="stylesheet" href="/static/styles.css">' in response.text
-    assert "Không đặt lệnh" in response.text
+    assert 'id="service-status"' in response.text
+    assert 'id="scan-terminal"' in response.text
+    assert 'id="clear-terminal"' in response.text
+    assert "Không đặt lệnh" not in response.text
+    assert "Chưa kiểm định" not in response.text
+    assert "include_unvalidated" not in response.text
     assert 'id="opportunity-detail"' in response.text
-    assert 'id="scenario-form"' in response.text
-    assert 'name="underlying_move_pct"' in response.text
-    assert 'name="iv_move_points"' in response.text
-    assert 'name="elapsed_days"' in response.text
+    assert 'id="pnl-chart"' in response.text
+    assert 'id="pnl-chart-legend"' in response.text
+    assert 'id="pnl-chart-assumptions"' in response.text
+    assert 'id="scenario-results-body"' in response.text
+    for strategy in (
+        "long_call",
+        "long_put",
+        "bull_call_vertical",
+        "bear_call_vertical",
+        "bull_put_vertical",
+        "bear_put_vertical",
+        "iron_condor",
+        "iron_butterfly",
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    ):
+        assert f'name="strategies" value="{strategy}"' in response.text
+    assert 'type="checkbox" name="quick_strategy"' in response.text
+    assert 'name="quick_target_edge_pct"' in response.text
+    assert "Khi nào nên chọn" in response.text
 
 
 @pytest.mark.asyncio
@@ -43,8 +69,8 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert javascript.status_code == 200
     assert javascript.headers["content-type"].startswith("text/javascript")
     assert '"/api/v1/assets"' in javascript.text
-    assert '"/api/v1/opportunities/scan"' in javascript.text
     assert '"/api/v1/scenarios"' in javascript.text
+    assert "/api/v1/opportunities/scan/stream" in javascript.text
     assert "strategy_type" in javascript.text
     assert "legs" in javascript.text
     for field in ("symbol", "option_type", "strike", "expiry", "valuation_time", "spot", "iv", "risk_free_rate", "bid", "ask", "position"):
@@ -61,9 +87,33 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "max_profit" in javascript.text
     assert "greeks" in javascript.text
     assert "greeks.rho" in javascript.text
-    assert "surface_extrapolated" in javascript.text
+    for strategy in (
+        "long_call",
+        "long_put",
+        "bull_call_vertical",
+        "bear_call_vertical",
+        "bull_put_vertical",
+        "bear_put_vertical",
+        "iron_condor",
+        "iron_butterfly",
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    ):
+        assert strategy in javascript.text
+    assert "strategyLabel" in javascript.text
+    assert "scenarioStrategyType" in javascript.text
+    assert "opportunityLegs" in javascript.text
+    assert "leg-summary" in javascript.text
     assert "textContent" in javascript.text
     assert "innerHTML" not in javascript.text
+    assert "warningText" not in javascript.text
+    assert "appendTerminal" in javascript.text
+    assert "streamJson" in javascript.text
 
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
