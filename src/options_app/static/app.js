@@ -777,10 +777,14 @@ function renderScanContext(context) {
   const horizons = { "0_7": "0–7 ngày", "7_30": "7–30 ngày", "30_90": "30–90 ngày" };
   const strategies = (context.strategies || []).map(strategyLabel).join(", ");
   const assumptions = context.assumptions || {};
+  const appliedFilters = context.applied_filters || {};
   const maxLoss = context.max_loss === null || context.max_loss === undefined
     ? "không giới hạn"
     : number(context.max_loss, 2);
-  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
+  const edgeText = Number(appliedFilters.min_iv_edge) > 0
+    ? ` · Edge IV tối thiểu: ${percent(appliedFilters.min_iv_edge)}`
+    : "";
+  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${edgeText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
   scanContext.hidden = false;
 }
 

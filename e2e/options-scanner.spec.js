@@ -210,6 +210,7 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
   await expect(page.locator("#results-body")).toContainText(opportunity.symbol);
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
   await expect(page.locator("#scan-context")).toContainText("Kỳ vọng tăng");
+  await expect(page.locator("#scan-context")).toContainText("Edge IV tối thiểu: 2.00%");
   await expect(page.locator("#result-state")).toContainText("1");
 });
 

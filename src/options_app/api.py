@@ -709,6 +709,11 @@ def _serialize_scan_result(
             "sideways": "đi ngang",
             "custom": "tùy chỉnh nhiều chiến lược",
         }[filters.market_view]
+        horizon_text = {
+            "0_7": "0–7 ngày",
+            "7_30": "7–30 ngày",
+            "30_90": "30–90 ngày",
+        }[filters.time_horizon]
         payload["scan_context"] = {
             "market_view": filters.market_view,
             "time_horizon": filters.time_horizon,
@@ -718,7 +723,7 @@ def _serialize_scan_result(
             "applied_filters": applied_filters,
             "assumptions": assumptions,
             "summary": (
-                f"Kỳ vọng {view_text} · {filters.time_horizon} · "
+                f"Kỳ vọng {view_text} · {horizon_text} · "
                 f"lỗ tối đa {max_loss_text}"
             ),
         }
