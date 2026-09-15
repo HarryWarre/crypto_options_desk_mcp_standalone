@@ -29,6 +29,7 @@ funding, OI) and tells you what *changed* and why it matters, not just where the
 
 ## Contents
 - [Install](#install)
+- [Multi-asset scanner](#multi-asset-scanner)
 - [Use with Claude](#use-with-claude) (Desktop & Code)
 - [Keep the session rolling](#keep-the-session-rolling) ⭐
 - [Example outputs](#example-outputs)
@@ -54,6 +55,22 @@ pip install -e .
 ```
 
 This installs the `trading-mcp` console command (it speaks MCP over stdio).
+
+## Multi-asset scanner
+
+The read-only web scanner is a separate research interface. It discovers
+active Bybit option assets, builds an observed/interpolated volatility surface,
+prices defined-risk long call/put candidates, and shows market-versus-model
+edge after configurable costs.
+
+```bash
+uvicorn options_app.api:create_app --factory --reload
+```
+
+Open `http://127.0.0.1:8000/`. The screen deliberately labels every result as
+unvalidated until a held-out historical test passes; it has no order buttons.
+The evidence helper can be used on timestamped outcomes with
+`options_lib.ev_validation.validate_backtest`.
 
 Smoke-test it:
 

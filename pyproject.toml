@@ -13,6 +13,8 @@ authors = [{ name = "dasein" }]
 keywords = ["mcp", "model-context-protocol", "trading", "options", "crypto", "llm", "agent", "gex"]
 dependencies = [
     "fastmcp>=2.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
     "pydantic>=2.0",
     "httpx>=0.28.0",
     "numpy>=1.24",
@@ -34,6 +36,7 @@ packages = [
     "src/bybit_api",
     "src/indicators_lib",
     "src/options_lib",
+    "src/options_app",
     "src/portfolio_lib",
 ]
 

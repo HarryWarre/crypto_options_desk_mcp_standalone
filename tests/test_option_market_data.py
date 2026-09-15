@@ -183,6 +183,49 @@ async def test_load_universe_normalizes_contracts_and_sorts_real_expiry_dates():
 
 
 @pytest.mark.asyncio
+async def test_live_scan_does_not_reject_ticker_as_future_quote():
+    """Live valuation time must be sampled after the ticker request starts."""
+
+    symbol = "BTC-25SEP26-78000-C"
+    response_time = datetime(2026, 9, 15, 12, 0, 1, tzinfo=UTC)
+    clock_values = iter(
+        [
+            datetime(2026, 9, 15, 12, 0, 0, tzinfo=UTC),
+            datetime(2026, 9, 15, 12, 0, 1, 500000, tzinfo=UTC),
+            datetime(2026, 9, 15, 12, 0, 2, tzinfo=UTC),
+        ]
+    )
+    responses = {
+        "instruments": {
+            "first": {
+                "retCode": 0,
+                "result": {
+                    "list": [_instrument(symbol)],
+                    "nextPageCursor": "",
+                },
+            }
+        },
+        "tickers": {
+            "BTC": {
+                "retCode": 0,
+                "time": datetime_to_ms(response_time),
+                "result": {"list": [_ticker(symbol)]},
+            }
+        },
+    }
+
+    adapter = BybitOptionMarketDataAdapter(
+        request=FixturePublicRequest(responses),
+        now_fn=lambda: next(clock_values),
+    )
+
+    universe = await adapter.load_universe(assets=("BTC",))
+
+    assert [contract.symbol for contract in universe.contracts] == [symbol]
+    assert not any(issue.code == "future_quote" for issue in universe.issues)
+
+
+@pytest.mark.asyncio
 async def test_load_universe_accepts_current_bybit_symbol_with_settlement_suffix():
     symbol = "BTC-25SEP26-78000-C-USDT"
     responses = {

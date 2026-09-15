@@ -168,7 +168,7 @@ class BybitOptionMarketDataAdapter:
         """
 
         catalog, instruments = await self._discover_instruments()
-        as_of = self._resolve_valuation_time(valuation_time)
+        fixed_valuation_time = self._resolve_fixed_valuation_time(valuation_time)
         issues = list(catalog.issues)
 
         requested_assets = (
@@ -194,7 +194,7 @@ class BybitOptionMarketDataAdapter:
             self._load_asset(
                 asset,
                 instruments.get(asset, ()),
-                as_of,
+                fixed_valuation_time,
                 semaphore,
             )
             for asset in selected_assets
@@ -220,6 +220,7 @@ class BybitOptionMarketDataAdapter:
             issues.extend(asset_issues)
 
         contracts.sort(key=lambda contract: (contract.expiry_at, contract.strike, contract.option_type, contract.symbol))
+        as_of = fixed_valuation_time or ensure_utc_datetime(self._now_fn())
         return NormalizedOptionUniverse(
             assets=catalog.assets,
             contracts=tuple(contracts),
@@ -334,7 +335,7 @@ class BybitOptionMarketDataAdapter:
         self,
         asset: str,
         instruments: tuple[_InstrumentRecord, ...],
-        valuation_time: datetime,
+        valuation_time: datetime | None,
         semaphore: asyncio.Semaphore,
     ) -> tuple[list[OptionContract], list[OptionDataQualityIssue]]:
         issues: list[OptionDataQualityIssue] = []
@@ -355,7 +356,15 @@ class BybitOptionMarketDataAdapter:
             )
             return [], issues
 
-        age = valuation_time - quote_timestamp
+        # For live scans, take the comparison time after the ticker response
+        # arrives.  Taking it before the request makes every normal response
+        # look like a future quote and drops the whole asset.  A fixed time is
+        # still used unchanged for historical replay/backtests.
+        comparison_time = valuation_time or max(
+            ensure_utc_datetime(self._now_fn()),
+            quote_timestamp,
+        )
+        age = comparison_time - quote_timestamp
         if age < timedelta(0):
             issues.append(
                 OptionDataQualityIssue(
@@ -707,12 +716,12 @@ class BybitOptionMarketDataAdapter:
             issues,
         )
 
-    def _resolve_valuation_time(self, value: datetime | None) -> datetime:
+    def _resolve_fixed_valuation_time(self, value: datetime | None) -> datetime | None:
         if value is not None:
             return ensure_utc_datetime(value)
         if self._valuation_time is not None:
             return self._valuation_time
-        return ensure_utc_datetime(self._now_fn())
+        return None
 
     @staticmethod
     def _result_or_raise(response: Any) -> dict[str, Any]:
