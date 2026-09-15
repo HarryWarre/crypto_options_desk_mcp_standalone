@@ -74,11 +74,24 @@ async function mockApi(page) {
       evidence_gate_status: "open_unvalidated_signals",
       execution_allowed: false,
       scan_context: {
-        market_view: "up",
-        time_horizon: "7_30",
+        market_view: body.market_view || "up",
+        time_horizon: body.time_horizon || "7_30",
         max_loss: Number(body.max_loss) || null,
-        strategies: ["long_call"],
-        risk_free_rate: 0.05,
+        strategies: body.strategies || ["long_call"],
+        strategy_preference: body.strategy_preference || null,
+        assumptions: {
+          risk_free_rate: Number(body.risk_free_rate) || 0.05,
+          fee_per_contract: 2.5,
+          slippage_bps: 7,
+          quantity: 1,
+          contract_multiplier: 1,
+          include_unvalidated: true,
+        },
+        applied_filters: {
+          min_dte: body.min_dte,
+          max_dte: body.max_dte,
+          min_iv_edge: body.min_iv_edge || 0,
+        },
       },
     };
     const events = [
@@ -123,7 +136,7 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByRole("group", { name: "Tài sản" })).toBeVisible();
   await expect(page.getByLabel("Thời hạn")).toBeVisible();
   await expect(page.getByLabel("Lỗ tối đa mỗi ý tưởng")).toBeVisible();
-  await expect(page.getByLabel("Target edge tối thiểu (%)")).toBeVisible();
+  await expect(page.getByLabel("Edge IV tối thiểu (%)")).toBeVisible();
   await expect(page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ })).toBeVisible();
 
   const advancedFilters = page.getByTestId("advanced-filters");
@@ -136,11 +149,15 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
 test("shows strategy presets and market goal choices", async ({ page }) => {
   const strategyPresets = page.getByRole("radiogroup", { name: "Ý tưởng giao dịch" });
 
-  await expect(strategyPresets.getByRole("radio", { name: /Mua call/ })).toBeVisible();
-  await expect(strategyPresets.getByRole("radio", { name: /Mua put/ })).toBeVisible();
-  await expect(strategyPresets.getByRole("radio", { name: /Call spread/ })).toBeVisible();
-  await expect(strategyPresets.getByRole("radio", { name: /Put spread/ })).toBeVisible();
-  await expect(strategyPresets.getByRole("radio", { name: /Iron condor/ })).toBeVisible();
+  for (const strategy of [
+    "long_call",
+    "long_put",
+    "bull_call_vertical",
+    "bear_put_vertical",
+    "iron_condor",
+  ]) {
+    await expect(strategyPresets.locator(`input[type="radio"][value="${strategy}"]`)).toBeVisible();
+  }
 
   await expect(strategyPresets).toContainText("Kỳ vọng giá tăng");
   await expect(strategyPresets).toContainText("Kỳ vọng giá giảm");
@@ -162,12 +179,13 @@ test("keeps advanced filters collapsed until the user expands them", async ({ pa
   await expect(advancedFilters.getByLabel("Delta tối thiểu")).toBeVisible();
   await expect(advancedFilters.getByLabel("Bid–ask tối đa (%)")).toBeVisible();
   await expect(advancedFilters.getByLabel("Phí mỗi chiều")).toBeVisible();
+  await expect(advancedFilters.getByLabel("Lãi suất mô hình (%/năm)")).toBeVisible();
 });
 
 test("submits a backend-compatible quick-scan payload and renders results", async ({ page }) => {
   await page.getByRole("radiogroup", { name: "Ý tưởng giao dịch" }).getByRole("radio", { name: /Mua call/ }).check();
   await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
-  await page.getByLabel("Target edge tối thiểu (%)").fill("2");
+  await page.getByLabel("Edge IV tối thiểu (%)").fill("2");
 
   const scanRequest = page.waitForRequest((request) => (
     request.url().includes("/api/v1/opportunities/scan/stream")
@@ -193,6 +211,41 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
   await expect(page.locator("#scan-context")).toContainText("Kỳ vọng tăng");
   await expect(page.locator("#result-state")).toContainText("1");
+});
+
+test("submits the selected downward and sideways presets", async ({ page }) => {
+  for (const [label, view, strategy] of [
+    ["Mua put", "down", "long_put"],
+    ["Iron condor", "sideways", "iron_condor"],
+  ]) {
+    await page.getByRole("radio", { name: new RegExp(label) }).check();
+    await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
+    const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
+    await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+    expect((await request).postDataJSON()).toMatchObject({ market_view: view, strategies: [strategy] });
+  }
+});
+
+test("applies explicit Advanced overrides and shows them in the scan context", async ({ page }) => {
+  const advancedFilters = page.getByTestId("advanced-filters");
+  await advancedFilters.locator("summary").click();
+  await advancedFilters.getByLabel("Dùng lựa chọn chiến lược nâng cao thay cho preset bên trên").check();
+  await advancedFilters.locator('input[name="strategies"][value="long_put"]').uncheck();
+  await advancedFilters.getByLabel("Ngày tối thiểu").fill("10");
+  await advancedFilters.getByLabel("Ngày tối đa").fill("20");
+  await advancedFilters.getByLabel("Lãi suất mô hình (%/năm)").fill("7");
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
+
+  const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    strategies: ["long_call"],
+    min_dte: 10,
+    max_dte: 20,
+    risk_free_rate: 0.07,
+  });
+  await expect(page.locator("#scan-context")).toContainText("Lãi suất: 7.00%");
+  await expect(page.locator("#scan-context")).toContainText("Trượt giá: 7 bps");
 });
 
 test("keeps scan controls within the viewport on desktop and mobile", async ({ page }) => {
@@ -230,8 +283,15 @@ test("shows an understandable error when the scan service fails", async ({ page 
 });
 
 test("opens the candidate P&L detail from a quick-scan result", async ({ page }) => {
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
   await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  const scenarioRequest = page.waitForRequest((request) => request.url().includes("/api/v1/scenarios"));
   await page.getByRole("button", { name: "Xem P&L" }).click();
+  expect((await scenarioRequest).postDataJSON().execution).toMatchObject({
+    fee_per_contract: 2.5,
+    slippage_bps: 7,
+    contract_multiplier: 1,
+  });
 
   await expect(page.locator("#opportunity-detail")).toBeVisible();
   await expect(page.locator("#pnl-chart")).toBeVisible();

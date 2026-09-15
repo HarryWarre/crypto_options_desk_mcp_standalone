@@ -24,6 +24,7 @@ const scanTerminal = document.querySelector("#scan-terminal");
 const clearTerminalButton = document.querySelector("#clear-terminal");
 
 let selectedOpportunity = null;
+let activeScanContext = null;
 let scenarioRequestId = 0;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -232,7 +233,11 @@ function scenarioLeg(item, leg, legs) {
     valuation_time: firstDefined(leg?.valuation_time, leg?.quote_timestamp, item?.quote_timestamp),
     spot: firstDefined(leg?.spot, leg?.spot_price, item?.spot_price),
     iv: firstDefined(leg?.iv, leg?.fair_iv, leg?.market_iv, item?.fair_iv),
-    risk_free_rate: firstDefined(leg?.risk_free_rate, Number(form.elements.risk_free_rate?.value || 0)),
+    risk_free_rate: firstDefined(
+      leg?.risk_free_rate,
+      activeScanContext?.assumptions?.risk_free_rate,
+      Number(form.elements.risk_free_rate_pct?.value || 5) / 100,
+    ),
     bid: firstDefined(leg?.bid, leg?.bid_price, item?.bid_price),
     ask: firstDefined(leg?.ask, leg?.ask_price, item?.ask_price),
     position: inferredLegPosition(item?.strategy, leg, legs),
@@ -323,9 +328,18 @@ function strategyTakeaway(item, legs) {
   }
   if (strategy === "long_call") return `Kỳ vọng ${asset} tăng giá; lãi tăng khi giá vượt strike và rủi ro tối đa là premium đã trả.`;
   if (strategy === "long_put") return `Kỳ vọng ${asset} giảm giá; lãi tăng khi giá xuống dưới strike và rủi ro tối đa là premium đã trả.`;
+  if (strategy === "long_straddle") return `Kỳ vọng ${asset} biến động mạnh theo một trong hai hướng; cần vượt qua tổng premium đã trả để có lợi nhuận.`;
+  if (strategy === "long_strangle") return `Kỳ vọng ${asset} biến động rất mạnh; chi phí thường thấp hơn straddle nhưng cần vượt qua hai strike ngoài.`;
+  if (strategy === "protective_put") return `Dùng để bảo hiểm vị thế ${asset} đang nắm giữ trước một nhịp giảm; premium là chi phí bảo hiểm.`;
+  if (strategy === "covered_call") return `Phù hợp khi đang nắm ${asset} và kỳ vọng tăng nhẹ hoặc đi ngang; đổi lại phần tăng giá phía trên strike bị giới hạn.`;
+  if (strategy === "calendar_spread") return `Phù hợp khi kỳ vọng giá quanh strike và muốn khai thác chênh lệch theta hoặc IV giữa kỳ hạn gần và xa.`;
+  if (strategy === "butterfly") return strikes.length >= 3
+    ? `Có lợi nhất khi ${asset} đóng cửa gần K${number(strikes[Math.floor(strikes.length / 2)], 2)}; chi phí và lỗ tối đa được giới hạn.`
+    : `Phù hợp khi kỳ vọng ${asset} hội tụ về một vùng strike trung tâm với rủi ro giới hạn.`;
+  if (strategy === "broken_wing_butterfly") return `Phù hợp khi có thiên kiến nhẹ về một hướng và muốn vùng lợi nhuận lệch theo hướng đó, với rủi ro vẫn được giới hạn theo cấu trúc.`;
   if (strategy.startsWith("bull_")) return `Kỳ vọng ${asset} tăng giá; lãi và lỗ đều được giới hạn bởi hai strike.`;
   if (strategy.startsWith("bear_")) return `Kỳ vọng ${asset} giảm giá; lãi và lỗ đều được giới hạn bởi hai strike.`;
-  return `Đây là chiến lược ${strategyLabel(item?.strategy)} với rủi ro được giới hạn.`;
+  return `Đây là chiến lược ${strategyLabel(item?.strategy)}; hãy kiểm tra payoff và điều kiện vị thế trước khi sử dụng.`;
 }
 
 function explanationFact(label, value, className = "") {
@@ -360,6 +374,12 @@ function renderOpportunityExplanation(item, index) {
   takeaway.className = "explanation-takeaway";
   takeaway.textContent = strategyTakeaway(item, legs);
   card.appendChild(takeaway);
+  if (item?.risk_note) {
+    const riskNote = document.createElement("p");
+    riskNote.className = "explanation-extra muted";
+    riskNote.textContent = `Lưu ý: ${item.risk_note}`;
+    card.appendChild(riskNote);
+  }
 
   const legList = document.createElement("div");
   legList.className = "explanation-legs";
@@ -702,9 +722,9 @@ async function showOpportunityDetail(item) {
         legs: legs.map((leg) => scenarioLeg(item, leg, legs)),
         scenarios: spec.scenarios,
         execution: {
-          fee_per_contract: Number(form.elements.fee_per_contract.value),
-          slippage_bps: Number(form.elements.slippage_bps.value),
-          contract_multiplier: Number(form.elements.contract_multiplier.value),
+          fee_per_contract: Number(activeScanContext?.assumptions?.fee_per_contract ?? form.elements.fee_per_contract.value),
+          slippage_bps: Number(activeScanContext?.assumptions?.slippage_bps ?? form.elements.slippage_bps.value),
+          contract_multiplier: Number(activeScanContext?.assumptions?.contract_multiplier ?? form.elements.contract_multiplier.value),
           exit_price_source: "model",
         },
       }),
@@ -748,10 +768,19 @@ function renderScanContext(context) {
     scanContext.hidden = true;
     return;
   }
-  const views = { up: "Kỳ vọng tăng", down: "Kỳ vọng giảm", sideways: "Kỳ vọng đi ngang" };
+  const views = {
+    up: "Kỳ vọng tăng",
+    down: "Kỳ vọng giảm",
+    sideways: "Kỳ vọng đi ngang",
+    custom: "Nhiều chiến lược",
+  };
   const horizons = { "0_7": "0–7 ngày", "7_30": "7–30 ngày", "30_90": "30–90 ngày" };
   const strategies = (context.strategies || []).map(strategyLabel).join(", ");
-  scanContext.textContent = `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"} · Chiến lược: ${strategies || "mặc định"} · Lãi suất mô hình: ${percent(context.risk_free_rate)}`;
+  const assumptions = context.assumptions || {};
+  const maxLoss = context.max_loss === null || context.max_loss === undefined
+    ? "không giới hạn"
+    : number(context.max_loss, 2);
+  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
   scanContext.hidden = false;
 }
 
@@ -847,6 +876,7 @@ function simpleScanContext(strategy, horizon) {
 }
 
 function renderResults(payload) {
+  activeScanContext = payload.scan_context || null;
   resultsBody.replaceChildren();
   secondaryResults.replaceChildren();
   opportunityExplanations.replaceChildren();
@@ -919,13 +949,16 @@ form.addEventListener("submit", async (event) => {
   const horizon = selectedTimeHorizon(data.get("time_horizon"));
   const simpleContext = simpleScanContext(data.get("quick_strategy"), data.get("time_horizon"));
   const payload = {
-    risk_free_rate: Number(data.get("risk_free_rate") || 0), assets, strategies,
+    risk_free_rate: useAdvancedStrategies
+      ? optionalDecimal(data, "risk_free_rate_pct", 100) ?? 0.05
+      : 0.05,
+    assets, strategies,
     min_dte: useAdvancedStrategies ? optionalNumber(data, "min_dte") : horizon.min_dte,
     max_dte: useAdvancedStrategies ? optionalNumber(data, "max_dte") : horizon.max_dte,
     min_iv_edge: useAdvancedStrategies
       ? optionalDecimal(data, "min_iv_edge", 100) || 0
       : optionalDecimal(data, "quick_target_edge_pct", 100) || 0,
-    max_loss: optionalNumber(data, "max_loss") ?? optionalNumber(data, "quick_max_loss"),
+    max_loss: useAdvancedStrategies ? optionalNumber(data, "max_loss") : optionalNumber(data, "quick_max_loss"),
     include_unvalidated: true,
   };
   if (!useAdvancedStrategies) Object.assign(payload, simpleContext);

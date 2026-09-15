@@ -58,7 +58,6 @@
               </label>
             </div>
             <p class="field-help">Khi nào nên chọn: chọn theo hướng bạn nghĩ giá cơ sở sẽ đi, không cần hiểu mã chiến lược phía sau.</p>
-            <input type="checkbox" name="quick_strategy" value="legacy-compatibility" hidden aria-hidden="true">
           </fieldset>
 
           <div class="quick-grid">
@@ -71,12 +70,12 @@
               <small class="field-help" id="time-horizon-help">Khoảng thời gian còn lại đến ngày đáo hạn.</small>
             </label>
             <label>Lỗ tối đa mỗi ý tưởng
-              <input name="quick_max_loss" type="number" min="0" step="0.01" placeholder="Không giới hạn">
-              <small class="field-help">Đơn vị theo đồng tiền báo giá của hợp đồng.</small>
+              <input name="quick_max_loss" type="number" min="0" step="0.01" required aria-describedby="quick-max-loss-help">
+              <small class="field-help" id="quick-max-loss-help">Nhập số tiền tối đa bạn chấp nhận mất, theo đơn vị báo giá của hợp đồng.</small>
             </label>
-            <label>Target edge tối thiểu (%)
-              <input name="quick_target_edge_pct" type="number" value="0" step="0.5" min="0">
-              <small class="field-help">Nhập 3 = chỉ lấy cơ hội có IV edge từ 3%; nhập 0 = không lọc theo edge.</small>
+            <label>Edge IV tối thiểu (%)
+              <input name="quick_target_edge_pct" type="number" value="0" step="0.5" min="0" aria-describedby="quick-edge-help">
+              <small class="field-help" id="quick-edge-help">Nhập 3 = mô hình phải cao hơn IV thị trường ít nhất 3 điểm %. Đây không phải xác suất có lãi.</small>
             </label>
           </div>
 
@@ -133,29 +132,32 @@
                 <label>Số kết quả tối đa
                   <input name="max_results" type="number" min="1" step="1" placeholder="Không giới hạn">
                 </label>
+                <label>Lãi suất mô hình (%/năm)
+                  <input name="risk_free_rate_pct" type="number" value="5" min="0" step="0.1" aria-describedby="risk-free-rate-help">
+                  <small class="field-help" id="risk-free-rate-help">Giả định lãi suất dùng để định giá; mặc định 5%, không phải lợi nhuận kỳ vọng.</small>
+                </label>
               </div>
               <fieldset class="strategy-options">
                 <legend>Chiến lược giới hạn rủi ro</legend>
-                <label><input type="checkbox" name="strategies" value="long_call" checked> Mua call</label>
-                <label><input type="checkbox" name="strategies" value="long_put" checked> Mua put</label>
-                <label><input type="checkbox" name="strategies" value="bull_call_vertical"> Bull call vertical</label>
-                <label><input type="checkbox" name="strategies" value="bear_call_vertical"> Bear call vertical</label>
-                <label><input type="checkbox" name="strategies" value="bull_put_vertical"> Bull put vertical</label>
-                <label><input type="checkbox" name="strategies" value="bear_put_vertical"> Bear put vertical</label>
-                <label><input type="checkbox" name="strategies" value="iron_condor"> Iron condor</label>
-                <label><input type="checkbox" name="strategies" value="iron_butterfly"> Iron butterfly</label>
-                <label><input type="checkbox" name="strategies" value="long_straddle"> Long straddle</label>
-                <label><input type="checkbox" name="strategies" value="long_strangle"> Long strangle</label>
-                <label><input type="checkbox" name="strategies" value="protective_put"> Protective put</label>
-                <label><input type="checkbox" name="strategies" value="covered_call"> Covered call</label>
-                <label><input type="checkbox" name="strategies" value="calendar_spread"> Calendar spread</label>
-                <label><input type="checkbox" name="strategies" value="butterfly"> Butterfly</label>
-                <label><input type="checkbox" name="strategies" value="broken_wing_butterfly"> Broken-wing butterfly</label>
+                <label><input type="checkbox" name="strategies" value="long_call" checked><span><strong>Mua call</strong><small>Khi kỳ vọng giá tăng.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="long_put" checked><span><strong>Mua put</strong><small>Khi kỳ vọng giá giảm.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="bull_call_vertical"><span><strong>Bull call vertical</strong><small>Tăng giá, giới hạn rủi ro.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="bear_call_vertical"><span><strong>Bear call vertical</strong><small>Giảm hoặc đi ngang, thu credit giới hạn.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="bull_put_vertical"><span><strong>Bull put vertical</strong><small>Tăng hoặc đi ngang, thu credit giới hạn.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="bear_put_vertical"><span><strong>Bear put vertical</strong><small>Giảm giá, giới hạn rủi ro.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="iron_condor"><span><strong>Iron condor</strong><small>Đi ngang trong một vùng giá.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="iron_butterfly"><span><strong>Iron butterfly</strong><small>Đi ngang gần strike trung tâm.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="long_straddle"><span><strong>Long straddle</strong><small>Biến động mạnh, chưa biết hướng.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="long_strangle"><span><strong>Long strangle</strong><small>Biến động rất mạnh, premium thấp hơn straddle.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="protective_put"><span><strong>Protective put</strong><small>Bảo hiểm vị thế spot/perpetual đang nắm giữ.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="covered_call"><span><strong>Covered call</strong><small>Thu premium khi đang nắm tài sản.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="calendar_spread"><span><strong>Calendar spread</strong><small>Khai thác chênh lệch IV hoặc thời gian.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="butterfly"><span><strong>Butterfly</strong><small>Giá hội tụ về strike trung tâm.</small></span></label>
+                <label><input type="checkbox" name="strategies" value="broken_wing_butterfly"><span><strong>Broken-wing butterfly</strong><small>Giá lệch nhẹ một hướng, vùng lợi nhuận bất đối xứng.</small></span></label>
               </fieldset>
             </div>
           </details>
 
-          <input name="risk_free_rate" type="hidden" value="0.05">
           <div class="form-options">
             <p class="scan-note">Bạn có thể mở bộ lọc nâng cao nếu muốn tự đặt thanh khoản, chi phí hoặc ngưỡng mô hình.</p>
             <button type="submit" class="primary-button">Tìm cơ hội</button>

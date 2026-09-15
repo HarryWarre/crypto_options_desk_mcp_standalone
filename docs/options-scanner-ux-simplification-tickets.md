@@ -27,7 +27,7 @@ The agreed public test seams for the whole change are:
 
 **Acceptance criteria:**
 
-- `POST /api/v1/opportunities/scan` accepts a simple payload containing selected assets, `market_view`, `time_horizon`, and `max_loss`, plus an optional human-facing strategy preference if the implementation exposes one.
+- `POST /api/v1/opportunities/scan` accepts a simple payload containing selected assets, `market_view`, `time_horizon`, `max_loss`, and optional `min_iv_edge`, plus an optional human-facing strategy preference if the implementation exposes one.
 - `market_view` accepts exactly the documented `up`, `down`, and `sideways` values; `time_horizon` accepts exactly `0_7`, `7_30`, and `30_90`.
 - The server translates `up`, `down`, and `sideways` into deterministic bounded-risk strategy presets. No simple request can produce a naked short or execution-enabled strategy.
 - Each time-horizon value resolves to documented DTE bounds, and `max_loss` reaches the existing risk filter without unit conversion ambiguity.
@@ -59,7 +59,7 @@ The agreed public test seams for the whole change are:
 
 **Acceptance criteria:**
 
-- The default Scan view presents asset selection, market view, holding horizon, maximum loss, and a simple strategy preference/recommendation without requiring risk-free rate, exact DTE, delta, IV edge, spread, OI, volume, fee, slippage, quantity, multiplier, or result-limit inputs.
+- The default Scan view presents asset selection, market view, holding horizon, maximum loss, an optional IV-edge threshold, and a simple strategy preference/recommendation without requiring risk-free rate, exact DTE, delta, spread, OI, volume, fee, slippage, quantity, multiplier, or result-limit inputs.
 - Primary labels are understandable to a Vietnamese-facing user, including `Kỳ vọng tăng`, `Kỳ vọng giảm`, `Đi ngang`, `Thời hạn`, and `Lỗ tối đa`, with concise help text where a unit or assumption matters.
 - The form submits the simple API payload defined by SCAN-UX-001 and does not send blank or invented advanced values as if the user entered them.
 - `Bộ lọc nâng cao` is collapsed initially and is operable by keyboard and assistive technology. Opening it reveals the existing advanced controls with explicit units and explanations.

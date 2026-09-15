@@ -102,7 +102,7 @@ class ScanFilters(BaseModel):
 
     risk_free_rate: float = _DEFAULT_SCAN_RISK_FREE_RATE
     assets: list[str] = Field(default_factory=list)
-    market_view: Literal["up", "down", "sideways"] | None = None
+    market_view: Literal["up", "down", "sideways", "custom"] | None = None
     time_horizon: Literal["0_7", "7_30", "30_90"] | None = None
     strategy_preference: Literal[
         "long_call",
@@ -111,6 +111,13 @@ class ScanFilters(BaseModel):
         "bear_put_vertical",
         "iron_condor",
         "iron_butterfly",
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
     ] | None = None
     min_dte: float | None = Field(default=None, ge=0)
     max_dte: float | None = Field(default=None, ge=0)
@@ -185,6 +192,11 @@ class ScanFilters(BaseModel):
     def validate_ranges(self) -> ScanFilters:
         if (self.market_view is None) != (self.time_horizon is None):
             raise ValueError("market_view and time_horizon must be provided together")
+        if self.market_view is not None:
+            if not self.assets:
+                raise ValueError("at least one asset is required for a simple scan")
+            if self.max_loss is None:
+                raise ValueError("max_loss is required for a simple scan")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
         if self.min_delta is not None and self.max_delta is not None and self.min_delta > self.max_delta:
@@ -199,6 +211,8 @@ class ScanFilters(BaseModel):
             values["strategies"] = (
                 (self.strategy_preference,)
                 if self.strategy_preference is not None
+                else values["strategies"]
+                if self.market_view == "custom"
                 else _SIMPLE_VIEW_STRATEGIES[self.market_view]
             )
             horizon_min, horizon_max = _SIMPLE_HORIZONS[self.time_horizon or "7_30"]
@@ -666,12 +680,47 @@ def _serialize_scan_result(
 ) -> dict[str, Any]:
     payload = _serialize(result)
     if filters.market_view is not None and filters.time_horizon is not None:
+        applied_filters = {
+            "min_dte": scan_request.min_dte,
+            "max_dte": scan_request.max_dte,
+            "min_delta": scan_request.min_delta,
+            "max_delta": scan_request.max_delta,
+            "min_iv_edge": scan_request.min_iv_edge,
+            "max_spread_pct": scan_request.max_spread_pct,
+            "min_open_interest": scan_request.min_open_interest,
+            "min_volume_24h": scan_request.min_volume_24h,
+            "min_edge_after_costs": scan_request.min_edge_after_costs,
+            "max_results": scan_request.max_results,
+        }
+        assumptions = {
+            "risk_free_rate": scan_request.risk_free_rate,
+            "fee_per_contract": scan_request.fee_per_contract,
+            "slippage_bps": scan_request.slippage_bps,
+            "quantity": scan_request.quantity,
+            "contract_multiplier": scan_request.contract_multiplier,
+            "include_unvalidated": scan_request.include_unvalidated,
+        }
+        max_loss_text = (
+            "không giới hạn" if scan_request.max_loss is None else f"{scan_request.max_loss:g}"
+        )
+        view_text = {
+            "up": "tăng",
+            "down": "giảm",
+            "sideways": "đi ngang",
+            "custom": "tùy chỉnh nhiều chiến lược",
+        }[filters.market_view]
         payload["scan_context"] = {
             "market_view": filters.market_view,
             "time_horizon": filters.time_horizon,
+            "strategy_preference": filters.strategy_preference,
             "max_loss": scan_request.max_loss,
             "strategies": list(scan_request.strategies),
-            "risk_free_rate": scan_request.risk_free_rate,
+            "applied_filters": applied_filters,
+            "assumptions": assumptions,
+            "summary": (
+                f"Kỳ vọng {view_text} · {filters.time_horizon} · "
+                f"lỗ tối đa {max_loss_text}"
+            ),
         }
     return payload
 

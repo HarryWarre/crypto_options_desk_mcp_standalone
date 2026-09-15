@@ -22,11 +22,12 @@ In simple mode, the user chooses:
 - Market view (`Tăng`, `Giảm`, or `Đi ngang`; API values `up`, `down`, and `sideways`).
 - Holding horizon (`0–7 ngày`, `7–30 ngày`, or `30–90 ngày`; API values `0_7`, `7_30`, and `30_90`).
 - Maximum acceptable loss in the account/display currency.
+- Optional minimum IV edge, displayed as percentage points (for example, `3` means 3%).
 - Optional strategy preference, defaulting to a recommendation derived from the market view.
 
 The server translates those choices into the existing typed scan request. It supplies documented defaults for model and execution assumptions, applies a bounded-risk strategy preset, and continues to return the existing timestamped opportunities, rejections, asset failures, data-quality issues, evidence status, and execution status. The response also reports the normalized scan context and applied defaults so the UI can explain what was actually used.
 
-The Advanced filters section is collapsed initially. It can expose exact DTE, delta, IV edge, bid/ask spread, open interest, volume, edge after costs, fee, slippage, quantity, contract multiplier, risk-free rate, strategy selection, and result limit. Every advanced field must include a unit and a short explanation. Advanced values override the corresponding simple-mode defaults only when the user explicitly changes them.
+The Advanced filters section is collapsed initially. It can expose exact DTE, delta, bid/ask spread, open interest, volume, edge after costs, fee, slippage, quantity, contract multiplier, risk-free rate, strategy selection, and result limit. Every advanced field must include a unit and a short explanation. Advanced values override the corresponding simple-mode defaults only when the user explicitly changes them; the simple IV-edge field remains available for users who want a single understandable quality threshold.
 
 Results should lead with a readable thesis and bounded risk. For example: “Mua call BTC — phù hợp khi BTC tăng; lỗ tối đa 120 USDT; điểm có lợi từ khoảng 68,500.” Technical fields such as fair value, IV edge, model status, liquidity, Greeks, rejection reasons, and cost assumptions remain available in a details area and in the existing P&L view.
 
@@ -79,7 +80,7 @@ The primary public seams for this work are:
 ## Implementation Decisions
 
 - Keep the existing normalized Bybit option universe, volatility surface, fair-value pricing, opportunity scanner, rejection model, and scenario evaluator as the domain foundation.
-- Add a user-facing simple scan request model at the HTTP application boundary. It maps `market_view`, `time_horizon`, `max_loss`, selected assets, and an optional strategy preference to the existing internal `ScanRequest` rather than duplicating scan logic.
+- Add a user-facing simple scan request model at the HTTP application boundary. It maps `market_view`, `time_horizon`, `max_loss`, optional `min_iv_edge`, selected assets, and an optional strategy preference to the existing internal `ScanRequest` rather than duplicating scan logic.
 - Use explicit API enums: `market_view` is `up`, `down`, or `sideways`; `time_horizon` is `0_7`, `7_30`, or `30_90`. The browser may display Vietnamese labels while submitting stable English values.
 - Require a simple request to include at least one asset, one market view, one horizon, and a non-negative maximum-loss value. If product copy supports “no limit,” represent that explicitly as null rather than silently sending a very large number.
 - Map default strategy presets as follows: `up` prioritizes long call and bullish defined-risk call structures; `down` prioritizes long put and bearish defined-risk put structures; `sideways` prioritizes defined-risk iron condor and iron butterfly structures. If a selected preset has no valid candidate, the result must explain that outcome instead of silently switching to an unrelated strategy.
@@ -132,7 +133,7 @@ The primary public seams for this work are:
 ## Further Notes
 
 - The current implementation already has useful explanation helpers and a scenario detail view; the simplification should build on those behaviors rather than replace them with raw model output.
-- The current form includes fields whose values are easy to misread: an IV edge of `0.03` represents three percentage points, a spread value of `0.2` represents twenty percent, and edge-after-costs is a currency amount. The new UI must display these units directly.
+- The current form includes fields whose values are easy to misread: an API IV edge of `0.03` represents three percentage points, a spread value of `0.2` represents twenty percent, and edge-after-costs is a currency amount. The simple UI accepts IV edge as `3` and displays the meaning directly; Advanced retains the normalized API units.
 - The current API requires `risk_free_rate` even though most users cannot provide a meaningful value. Simple mode should make this a server-side documented assumption while Advanced mode may expose it for researchers.
 - The canonical POST seam is intentionally separate from the browser's progress transport. This keeps the product contract testable and lets the existing streaming experience remain compatible while the UI becomes simpler.
 - The ticket draft is ordered so API contract/defaults land before the browser form depends on them, followed by result explanations and cross-flow Playwright verification.

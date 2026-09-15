@@ -375,13 +375,22 @@ async def test_scan_accepts_simple_market_view_and_horizon_request() -> None:
     assert scan_requests[0].min_dte == pytest.approx(7)
     assert scan_requests[0].max_dte == pytest.approx(30)
     assert scan_requests[0].max_loss == pytest.approx(120)
-    assert response.json()["scan_context"] == {
-        "market_view": "up",
-        "time_horizon": "7_30",
-        "max_loss": 120.0,
-        "strategies": ["long_call"],
+    context = response.json()["scan_context"]
+    assert context["market_view"] == "up"
+    assert context["time_horizon"] == "7_30"
+    assert context["max_loss"] == 120.0
+    assert context["strategies"] == ["long_call"]
+    assert context["assumptions"] == {
         "risk_free_rate": 0.05,
+        "fee_per_contract": 0.0,
+        "slippage_bps": 0.0,
+        "quantity": 1.0,
+        "contract_multiplier": 1.0,
+        "include_unvalidated": True,
     }
+    assert context["applied_filters"]["min_dte"] == 7.0
+    assert context["applied_filters"]["max_dte"] == 30.0
+    assert "lỗ tối đa 120" in context["summary"]
 
 
 @pytest.mark.asyncio
@@ -413,13 +422,52 @@ async def test_scan_simple_market_views_resolve_bounded_risk_presets(
         create_app(adapter=FakeAdapter(), scanner=fake_scanner),
         "POST",
         "/api/v1/opportunities/scan",
-        json={"assets": ["BTC"], "market_view": market_view, "time_horizon": "30_90"},
+        json={
+            "assets": ["BTC"],
+            "market_view": market_view,
+            "time_horizon": "30_90",
+            "max_loss": 120,
+        },
     )
 
     assert response.status_code == 200
     assert scan_requests[0].strategies == strategies
     assert scan_requests[0].min_dte == pytest.approx(30)
     assert scan_requests[0].max_dte == pytest.approx(90)
+
+
+@pytest.mark.asyncio
+async def test_scan_custom_view_preserves_multiple_selected_strategies() -> None:
+    scan_requests: list[Any] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "market_view": "custom",
+            "time_horizon": "7_30",
+            "max_loss": 100,
+            "strategies": ["long_straddle", "calendar_spread"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert scan_requests[0].strategies == ("long_straddle", "calendar_spread")
+    assert response.json()["scan_context"]["market_view"] == "custom"
+    assert response.json()["scan_context"]["strategies"] == ["long_straddle", "calendar_spread"]
 
 
 @pytest.mark.asyncio
@@ -436,6 +484,19 @@ async def test_scan_rejects_partial_simple_context() -> None:
         "market_view and time_horizon must be provided together"
         in response.json()["error"]["details"][0]["message"]
     )
+
+
+@pytest.mark.asyncio
+async def test_scan_rejects_simple_request_without_max_loss() -> None:
+    response = await request(
+        create_app(adapter=FakeAdapter()),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "market_view": "up", "time_horizon": "7_30"},
+    )
+
+    assert response.status_code == 422
+    assert "max_loss is required for a simple scan" in str(response.json())
 
 
 @pytest.mark.asyncio

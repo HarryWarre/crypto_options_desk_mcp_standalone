@@ -54,8 +54,10 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
         "broken_wing_butterfly",
     ):
         assert f'name="strategies" value="{strategy}"' in response.text
-    assert 'type="checkbox" name="quick_strategy"' in response.text
+    assert 'role="radiogroup" aria-label="Ý tưởng giao dịch"' in response.text
+    assert 'type="radio" name="quick_strategy"' in response.text
     assert 'name="quick_target_edge_pct"' in response.text
+    assert 'name="risk_free_rate_pct"' in response.text
     assert "Khi nào nên chọn" in response.text
 
 
