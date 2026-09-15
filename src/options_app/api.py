@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import fields, is_dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 from fastapi import FastAPI, Request
@@ -24,6 +24,16 @@ from bybit_api.options_market_data import (
     OptionAssetCatalog,
 )
 from options_lib.opportunity_scanner import ScanRequest, ScanResult, scan_opportunities
+from options_lib.scenario_engine import (
+    ExecutionAssumptions,
+    MarketScenario,
+    OptionLeg,
+    ScenarioSet,
+    ScenarioValidationError,
+    StrategyDefinition,
+    evaluate_scenarios,
+)
+from options_lib.volatility_surface import VolatilityObservation, build_volatility_surface
 
 
 class ScannerAdapter(Protocol):
@@ -136,6 +146,134 @@ class ApiError(Exception):
         self.message = message
 
 
+class ScenarioLegRequest(BaseModel):
+    """JSON representation of :class:`options_lib.scenario_engine.OptionLeg`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1)
+    option_type: str = Field(min_length=1)
+    strike: float = Field(gt=0)
+    expiry: datetime
+    valuation_time: datetime
+    spot: float = Field(gt=0)
+    iv: float = Field(gt=0)
+    risk_free_rate: float
+    bid: float = Field(ge=0)
+    ask: float = Field(ge=0)
+    position: int = 1
+    surface: Any | None = None
+
+    @field_validator(
+        "strike",
+        "spot",
+        "iv",
+        "risk_free_rate",
+        "bid",
+        "ask",
+        mode="before",
+    )
+    @classmethod
+    def finite_number(cls, value: Any) -> Any:
+        if value is not None:
+            try:
+                finite = math.isfinite(float(value))
+            except (TypeError, ValueError):
+                finite = False
+            if isinstance(value, bool) or not finite:
+                raise ValueError("must be a finite number")
+        return value
+
+    @field_validator("surface")
+    @classmethod
+    def reject_json_surface(cls, value: Any) -> Any:
+        if value is not None:
+            raise ValueError("surface must be omitted or null in the HTTP request")
+        return value
+
+    def to_domain(self) -> OptionLeg:
+        return OptionLeg(**self.model_dump())
+
+
+class MarketScenarioRequest(BaseModel):
+    """JSON representation of :class:`MarketScenario`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    underlying_move_pct: float = 0.0
+    iv_move: float = 0.0
+    elapsed_days: float = Field(default=0.0, ge=0)
+
+    @field_validator("underlying_move_pct", "iv_move", "elapsed_days", mode="before")
+    @classmethod
+    def finite_number(cls, value: Any) -> Any:
+        if value is not None:
+            try:
+                finite = math.isfinite(float(value))
+            except (TypeError, ValueError):
+                finite = False
+            if isinstance(value, bool) or not finite:
+                raise ValueError("must be a finite number")
+        return value
+
+    def to_domain(self) -> MarketScenario:
+        return MarketScenario(**self.model_dump())
+
+
+class ExecutionAssumptionsRequest(BaseModel):
+    """JSON representation of :class:`ExecutionAssumptions`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fee_per_contract: float = Field(default=0, ge=0)
+    slippage_bps: float = Field(default=0, ge=0)
+    contract_multiplier: float = Field(default=1, gt=0)
+    exit_price_source: Literal["model", "bid_ask"] = "model"
+
+    @field_validator(
+        "fee_per_contract",
+        "slippage_bps",
+        "contract_multiplier",
+        mode="before",
+    )
+    @classmethod
+    def finite_number(cls, value: Any) -> Any:
+        if value is not None:
+            try:
+                finite = math.isfinite(float(value))
+            except (TypeError, ValueError):
+                finite = False
+            if isinstance(value, bool) or not finite:
+                raise ValueError("must be a finite number")
+        return value
+
+    def to_domain(self) -> ExecutionAssumptions:
+        return ExecutionAssumptions(**self.model_dump())
+
+
+class ScenarioRequest(BaseModel):
+    """Validated payload for one strategy scenario report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_type: Literal["long_call", "long_put", "call_vertical", "put_vertical"]
+    legs: list[ScenarioLegRequest] = Field(min_length=1)
+    scenarios: list[MarketScenarioRequest] = Field(min_length=1)
+    execution: ExecutionAssumptionsRequest = Field(default_factory=ExecutionAssumptionsRequest)
+
+    def to_domain(self) -> tuple[StrategyDefinition, ScenarioSet]:
+        strategy = StrategyDefinition(
+            strategy_type=self.strategy_type,
+            legs=tuple(leg.to_domain() for leg in self.legs),
+        )
+        scenario_set = ScenarioSet(
+            scenarios=tuple(scenario.to_domain() for scenario in self.scenarios),
+            execution=self.execution.to_domain(),
+        )
+        return strategy, scenario_set
+
+
 def create_app(
     adapter: ScannerAdapter | None = None,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult] = scan_opportunities,
@@ -206,6 +344,66 @@ def create_app(
             raise ApiError(500, "scanner_failed", "Opportunity scan failed") from exc
         return JSONResponse(content=_serialize(result))
 
+    @app.get("/api/v1/surfaces/{asset}")
+    async def surface_summary(asset: str) -> JSONResponse:
+        normalized_asset = asset.strip().upper()
+        if not normalized_asset:
+            raise ApiError(422, "validation_error", "asset cannot be empty")
+        try:
+            universe = await _maybe_await(
+                market_adapter.load_universe(assets=(normalized_asset,))
+            )
+        except Exception as exc:
+            raise _upstream_error(exc) from exc
+        contracts = universe.contracts_by_asset.get(normalized_asset, ())
+        if not contracts:
+            raise ApiError(404, "asset_not_available", "No option quotes are available for this asset")
+        observations = tuple(
+            VolatilityObservation(
+                asset=contract.asset,
+                expiry=contract.expiry_at,
+                strike=contract.strike,
+                spot=contract.spot_price,
+                iv=contract.mark_iv,
+                bid=contract.bid_price,
+                ask=contract.ask_price,
+                liquidity=max(contract.volume_24h, contract.open_interest),
+            )
+            for contract in contracts
+        )
+        try:
+            surface = build_volatility_surface(
+                observations,
+                valuation_time=universe.valuation_time,
+            ).surface_for(normalized_asset)
+        except (KeyError, ValueError) as exc:
+            raise ApiError(422, "surface_invalid", str(exc)) from exc
+        return JSONResponse(
+            content=_serialize(
+                {
+                    "asset": normalized_asset,
+                    "source": universe.source,
+                    "valuation_time": universe.valuation_time,
+                    "is_valuation_ready": surface.is_valuation_ready,
+                    "front_expiry": surface.front_expiry,
+                    "back_expiry": surface.back_expiry,
+                    "observed_points": len(surface.observed_points),
+                    "expiry_slices": surface.slices,
+                    "warnings": surface.warnings,
+                    "issues": tuple(issue for issue in universe.issues if issue.asset == normalized_asset),
+                }
+            )
+        )
+
+    @app.post("/api/v1/scenarios")
+    async def scenario_report(request: ScenarioRequest) -> JSONResponse:
+        strategy, scenario_set = request.to_domain()
+        try:
+            report = evaluate_scenarios(strategy, scenario_set)
+        except ScenarioValidationError as exc:
+            raise ApiError(422, "scenario_invalid", str(exc)) from exc
+        return JSONResponse(content=_serialize(report))
+
     return app
 
 
@@ -231,7 +429,19 @@ def _serialize(value: Any) -> Any:
         return [_serialize(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _serialize(item) for key, item in value.items()}
+    if isinstance(value, float) and not math.isfinite(value):
+        # JSON has no representation for +/-Infinity or NaN.  ``null`` keeps
+        # the report valid while preserving the fact that the bound is not a
+        # finite number (for example, a long call's max profit).
+        return None
     return value
 
 
-__all__ = ["ScanFilters", "create_app"]
+__all__ = [
+    "ExecutionAssumptionsRequest",
+    "MarketScenarioRequest",
+    "ScanFilters",
+    "ScenarioLegRequest",
+    "ScenarioRequest",
+    "create_app",
+]

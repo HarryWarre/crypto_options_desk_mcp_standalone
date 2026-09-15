@@ -63,6 +63,11 @@ active Bybit option assets, builds an observed/interpolated volatility surface,
 prices defined-risk long call/put candidates, and shows market-versus-model
 edge after configurable costs.
 
+The read-only API also exposes `GET /api/v1/surfaces/{asset}` for a surface
+summary and `POST /api/v1/scenarios` for price/IV/time P&L scenarios. Scenario
+reports label results as model-only or extrapolated when a complete observed
+surface is not available.
+
 ```bash
 uvicorn options_app.api:create_app --factory --reload
 ```

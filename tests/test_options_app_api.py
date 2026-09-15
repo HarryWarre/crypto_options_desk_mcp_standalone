@@ -10,6 +10,7 @@ from bybit_api.options_market_data import (
     NormalizedOptionUniverse,
     OptionAsset,
     OptionAssetCatalog,
+    OptionContract,
     OptionDataQualityIssue,
 )
 from options_app.api import create_app
@@ -18,9 +19,52 @@ from options_lib.opportunity_scanner import ScanResult
 VALUATION_TIME = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 DATA_TIME = datetime(2026, 9, 15, 11, 59, 30, tzinfo=UTC)
 
+SCENARIO_LEG = {
+    "symbol": "BTC-30DEC26-78000-C",
+    "option_type": "call",
+    "strike": 78000,
+    "expiry": "2026-12-30T12:00:00Z",
+    "valuation_time": "2026-09-15T12:00:00Z",
+    "spot": 78400,
+    "iv": 0.31,
+    "risk_free_rate": 0.05,
+    "bid": 4200,
+    "ask": 4300,
+    "position": 1,
+}
+
+
+def scenario_payload(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "strategy_type": "long_call",
+        "legs": [SCENARIO_LEG],
+        "scenarios": [
+            {
+                "name": "flat",
+                "underlying_move_pct": 0,
+                "iv_move": 0,
+                "elapsed_days": 5,
+            }
+        ],
+        "execution": {
+            "fee_per_contract": 1.5,
+            "slippage_bps": 5,
+            "contract_multiplier": 1,
+            "exit_price_source": "model",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
 
 class FakeAdapter:
-    def __init__(self, *, catalog: OptionAssetCatalog | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        catalog: OptionAssetCatalog | None = None,
+        contracts: tuple[OptionContract, ...] = (),
+    ) -> None:
+        self.contracts = contracts
         self.catalog = catalog or OptionAssetCatalog(
             assets=(OptionAsset("BTC", "Trading", 2), OptionAsset("ETH", "Trading", 1)),
             issues=(
@@ -46,7 +90,7 @@ class FakeAdapter:
         self.load_calls.append((assets, valuation_time))
         return NormalizedOptionUniverse(
             assets=self.catalog.assets,
-            contracts=(),
+            contracts=self.contracts,
             issues=self.catalog.issues,
             valuation_time=VALUATION_TIME,
             source="fake-bybit",
@@ -106,6 +150,61 @@ async def test_assets_serializes_dataclasses_issues_and_fetched_timestamp() -> N
             }
         ],
         "fetched_at": "2026-09-15T11:59:30Z",
+    }
+
+
+@pytest.mark.asyncio
+async def test_surface_summary_returns_quality_checked_slices() -> None:
+    expiry = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+    contracts = tuple(
+        OptionContract(
+            asset="BTC",
+            symbol=f"BTC-{strike}-{'C' if strike == 78000 else 'P'}",
+            option_type="call" if strike == 78000 else "put",
+            strike=strike,
+            expiry_at=expiry,
+            expiry_code="15OCT26",
+            spot_price=78400,
+            mark_price=1000,
+            mark_iv=0.30 if strike == 78000 else 0.35,
+            bid_price=900,
+            ask_price=1100,
+            bid_iv=None,
+            ask_iv=None,
+            delta=0.5,
+            gamma=0.01,
+            theta=-1,
+            vega=2,
+            volume_24h=10,
+            open_interest=10,
+            quote_currency="USDT",
+            settle_currency="USDC",
+            quote_timestamp=DATA_TIME,
+        )
+        for strike in (78000, 80000)
+    )
+    app = create_app(adapter=FakeAdapter(contracts=contracts))
+
+    response = await request(app, "GET", "/api/v1/surfaces/btc")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["asset"] == "BTC"
+    assert body["is_valuation_ready"] is True
+    assert body["observed_points"] == 2
+    assert body["expiry_slices"][0]["expiry"] == "2026-10-15T12:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_surface_summary_returns_404_for_asset_without_quotes() -> None:
+    response = await request(create_app(adapter=FakeAdapter()), "GET", "/api/v1/surfaces/sol")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "asset_not_available",
+            "message": "No option quotes are available for this asset",
+        }
     }
 
 
@@ -201,6 +300,86 @@ async def test_invalid_numeric_type_returns_structured_422_instead_of_500() -> N
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_scenario_endpoint_returns_serialized_report() -> None:
+    app = create_app(adapter=FakeAdapter())
+
+    response = await request(app, "POST", "/api/v1/scenarios", json=scenario_payload())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "model_only"
+    assert body["max_profit"] is None
+    assert body["scenarios"][0]["name"] == "flat"
+    assert body["scenarios"][0]["elapsed_days"] == 5
+    assert "delta" in body["scenarios"][0]["greeks"]
+    assert {warning["code"] for warning in body["warnings"]} >= {
+        "model_only",
+        "execution_costs",
+    }
+
+
+@pytest.mark.asyncio
+async def test_scenario_invalid_strategy_returns_structured_validation_422() -> None:
+    app = create_app(adapter=FakeAdapter())
+    payload = scenario_payload(strategy_type="short_call")
+
+    response = await request(app, "POST", "/api/v1/scenarios", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"expiry": "not-a-datetime"},
+        {"spot": "not-a-number"},
+        {"iv": "NaN"},
+    ],
+)
+async def test_scenario_invalid_datetime_or_numeric_returns_structured_422(
+    change: dict[str, Any],
+) -> None:
+    app = create_app(adapter=FakeAdapter())
+    leg = {**SCENARIO_LEG, **change}
+
+    response = await request(
+        app,
+        "POST",
+        "/api/v1/scenarios",
+        json=scenario_payload(legs=[leg]),
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["message"] == "Request validation failed"
+    assert body["error"]["details"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_domain_error_returns_stable_422() -> None:
+    app = create_app(adapter=FakeAdapter())
+    leg = {**SCENARIO_LEG, "position": -1}
+
+    response = await request(
+        app,
+        "POST",
+        "/api/v1/scenarios",
+        json=scenario_payload(legs=[leg]),
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": {
+            "code": "scenario_invalid",
+            "message": "single-leg strategy must contain one long leg",
+        }
+    }
 
 
 @pytest.mark.asyncio

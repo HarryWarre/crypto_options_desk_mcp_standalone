@@ -26,6 +26,11 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert '<script src="/static/app.js" defer></script>' in response.text
     assert '<link rel="stylesheet" href="/static/styles.css">' in response.text
     assert "Không đặt lệnh" in response.text
+    assert 'id="opportunity-detail"' in response.text
+    assert 'id="scenario-form"' in response.text
+    assert 'name="underlying_move_pct"' in response.text
+    assert 'name="iv_move_points"' in response.text
+    assert 'name="elapsed_days"' in response.text
 
 
 @pytest.mark.asyncio
@@ -39,12 +44,32 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert javascript.headers["content-type"].startswith("text/javascript")
     assert '"/api/v1/assets"' in javascript.text
     assert '"/api/v1/opportunities/scan"' in javascript.text
+    assert '"/api/v1/scenarios"' in javascript.text
+    assert "strategy_type" in javascript.text
+    assert "legs" in javascript.text
+    for field in ("symbol", "option_type", "strike", "expiry", "valuation_time", "spot", "iv", "risk_free_rate", "bid", "ask", "position"):
+        assert field in javascript.text
+    assert "underlying_move_pct" in javascript.text
+    assert "iv_move" in javascript.text
+    assert "elapsed_days" in javascript.text
+    assert "exit_price_source" in javascript.text
+    assert "fee_per_contract" in javascript.text
+    assert "slippage_bps" in javascript.text
+    assert "contract_multiplier" in javascript.text
+    assert "Xem P&L" in javascript.text
+    assert "max_loss" in javascript.text
+    assert "max_profit" in javascript.text
+    assert "greeks" in javascript.text
+    assert "greeks.rho" in javascript.text
+    assert "surface_extrapolated" in javascript.text
     assert "textContent" in javascript.text
     assert "innerHTML" not in javascript.text
 
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
     assert "@media" in stylesheet.text
+    assert ".detail-panel" in stylesheet.text
+    assert ".detail-metrics" in stylesheet.text
 
 
 def test_static_directory_contains_only_the_expected_ui_files() -> None:

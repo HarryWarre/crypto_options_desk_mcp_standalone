@@ -113,13 +113,54 @@
               <tr>
                 <th>Tài sản / mã</th><th>Hạn</th><th>Chiến lược</th>
                 <th>Giá thị trường</th><th>Giá hợp lý</th><th>IV edge</th>
-                <th>Edge sau phí</th><th>Lỗ tối đa</th><th>Thanh khoản</th><th>Bằng chứng</th>
+                <th>Edge sau phí</th><th>Lỗ tối đa</th><th>Thanh khoản</th><th>Bằng chứng</th><th>Chi tiết</th>
               </tr>
             </thead>
             <tbody id="results-body"></tbody>
           </table>
         </div>
         <div class="secondary-results" id="secondary-results"></div>
+      </section>
+
+      <section class="panel detail-panel" id="opportunity-detail" hidden aria-labelledby="detail-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Bước 3</p>
+            <h2 id="detail-title">Chi tiết P&amp;L</h2>
+            <p class="muted" id="detail-summary">Chọn một cơ hội trong bảng để xem kịch bản.</p>
+          </div>
+          <button type="button" class="secondary-button" id="close-detail">Đóng</button>
+        </div>
+        <form id="scenario-form">
+          <div class="form-grid scenario-controls">
+            <label>Thay đổi giá cơ sở (%)
+              <input name="underlying_move_pct" type="number" value="0" step="1" min="-100" required>
+            </label>
+            <label>Thay đổi IV (điểm phần trăm)
+              <input name="iv_move_points" type="number" value="0" step="0.5" min="-100" required>
+            </label>
+            <label>Số ngày trôi qua
+              <input name="elapsed_days" type="number" value="0" step="1" min="0" required>
+            </label>
+            <div class="scenario-actions">
+              <button type="submit" class="primary-button">Tính P&amp;L</button>
+            </div>
+          </div>
+        </form>
+        <div class="state-message" id="scenario-state">Điều chỉnh kịch bản rồi bấm “Tính P&amp;L”.</div>
+        <div class="detail-metrics" id="detail-metrics"></div>
+        <div class="table-wrap">
+          <table class="scenario-table">
+            <thead>
+              <tr>
+                <th>Kịch bản</th><th>Giá cơ sở</th><th>IV</th><th>Ngày</th>
+                <th>P&amp;L</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Rho</th>
+              </tr>
+            </thead>
+            <tbody id="scenario-results-body"></tbody>
+          </table>
+        </div>
+        <div class="scenario-warnings" id="scenario-warnings" aria-live="polite"></div>
       </section>
     </main>
   </body>

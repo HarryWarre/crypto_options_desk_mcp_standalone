@@ -73,7 +73,7 @@ Checks: call/put parity fixtures where applicable, IV sensitivity, expiration, n
 
 Out of scope: automated calibration to every exchange-specific settlement nuance.
 
-## OPS-004 — Add scenario P&L and strategy evaluator
+## OPS-004 — Add scenario P&L and strategy evaluator — implemented
 
 Outcome: a researcher can evaluate a candidate under price, IV, and time changes with capped-risk metrics.
 
@@ -112,7 +112,7 @@ Checks: multi-asset scan, one asset failure with other assets succeeding, no can
 
 Out of scope: order creation and execution.
 
-## OPS-006 — Add read-only scanner API
+## OPS-006 — Add read-only scanner API — implemented
 
 Outcome: the UI and other clients can request assets, scans, surface summaries, opportunity details, and scenario reports through a stable JSON interface.
 
@@ -132,7 +132,7 @@ Checks: valid scan, invalid filter, empty result, partial asset failure, timeout
 
 Out of scope: authentication and order mutation.
 
-## OPS-007 — Build multi-asset opportunity scanner UI
+## OPS-007 — Build multi-asset opportunity scanner UI — implemented; browser QA pending
 
 Outcome: a researcher can scan and inspect opportunities from a browser without reading raw JSON or terminal output.
 
