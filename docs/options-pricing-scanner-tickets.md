@@ -153,15 +153,18 @@ Checks: initial load, multi-asset scan, filters, sorting, detail open/close, no-
 
 Out of scope: trading buttons, account login, and mobile-native app.
 
-## OPS-008 — Validate edge and positive expected value
+## OPS-008 — Validate edge and positive expected value — historical data foundation implemented
 
-Outcome: the project can state whether a strategy has evidence of positive expected value after costs, or explicitly state that evidence is insufficient.
+Outcome: the project can persist/replay timestamped option snapshots and state whether a strategy has evidence of positive expected value after costs, or explicitly state that evidence is insufficient. Snapshot capture/replay is implemented here; completed trade-outcome generation and the held-out backtest remain follow-up work.
 
 Blocking: OPS-001 through OPS-005 for the required data and strategy outputs.
 
 Acceptance criteria:
 
-- Historical snapshots and option outcomes are stored in a reproducible format.
+- Historical option snapshots can be captured prospectively and stored in a reproducible, versioned JSONL format; Bybit mark-price history can be downloaded per option symbol.
+- Bybit does not expose complete historical ticker snapshots through the public V5 REST API, so historical full-chain backfill is not claimed.
+- Replayed snapshots select the latest source timestamp at or before `as_of` with an explicit maximum-age tolerance and never fall back to current data.
+- Historical snapshots and option outcomes are separate inputs: snapshots enable signal replay, while outcomes are still required for EV validation.
 - Backtests separate training/development periods from a held-out test period.
 - Fees, spread, slippage, expiry handling, and missed fills are modeled.
 - Reports include trade count, win/loss distribution, average win, average loss, expected value, drawdown, and sensitivity to costs.

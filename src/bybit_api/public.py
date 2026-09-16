@@ -8,30 +8,32 @@ historical data, and other public information from Bybit.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, Tuple, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+import pandas as pd
 
 from .base_client import BaseClient
-from .types import RequestConfig, ConnectionStats, RateLimitConfig
 from .constants import TIMEFRAME_INTERVALS
-from .utils import (
-    encode_params,
-    format_bybit_timestamp,
-    safe_float,
-    round_to_timeframe,
-    get_cache_filepath,
-    load_cache_metadata,
-    save_cache_metadata,
-    load_cache_data,
-    save_cache_data,
-    now_utc,
-    datetime_to_ms,
-    ms_to_datetime,
-    ensure_utc_datetime,
-    datetime_to_iso_utc,
-    convert_interval_to_bybit_format,
-)
 from .iterators import time_range_iterator
-import pandas as pd
+from .option_mark_history import OptionMarkPriceBar, fetch_option_mark_price_history
+from .types import ConnectionStats, RateLimitConfig, RequestConfig
+from .utils import (
+    convert_interval_to_bybit_format,
+    datetime_to_iso_utc,
+    datetime_to_ms,
+    encode_params,
+    ensure_utc_datetime,
+    format_bybit_timestamp,
+    get_cache_filepath,
+    load_cache_data,
+    load_cache_metadata,
+    ms_to_datetime,
+    now_utc,
+    round_to_timeframe,
+    safe_float,
+    save_cache_data,
+    save_cache_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +314,30 @@ class BybitPublicClient(BaseClient):
 
         response = await self._make_request("/v5/market/tickers", params)
         return response.get("result", {}).get("list", [])
+
+    async def get_option_mark_price_history(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        interval: str = "60",
+        limit: int = 500,
+    ) -> List[OptionMarkPriceBar]:
+        """Fetch historical mark-price candles for one option symbol.
+
+        Bybit does not expose historical bid/ask, IV, Greeks, open interest,
+        or volume through this endpoint; callers must not treat these bars as
+        executable historical snapshots.
+        """
+
+        return await fetch_option_mark_price_history(
+            self._make_request,
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+            interval=interval,
+            limit=limit,
+        )
 
     async def get_options_chain_data(self, base_coin: str) -> List[Dict[str, Any]]:
         """Get complete options chain data with prices and Greeks combined."""

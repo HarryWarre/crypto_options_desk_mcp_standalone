@@ -6,6 +6,7 @@ Usage:
     python -m bybit_api price BTCUSDT
     python -m bybit_api prices BTC ETH SOL
     python -m bybit_api klines BTCUSDT --interval 4h --hours 24
+    python -m bybit_api option-mark-history BTC-30DEC26-100000-C --start 2026-09-15T00:00:00Z --end 2026-09-16T00:00:00Z
     python -m bybit_api options BTC [--min-oi 1]
     python -m bybit_api orderbook BTCUSDT [--depth 25]
     python -m bybit_api recent-trades BTCUSDT [--limit 60]
@@ -165,6 +166,49 @@ def cmd_klines(args):
             "interval": args.interval,
             "count": len(klines),
             "klines": klines,
+        },
+    )
+
+
+def cmd_option_mark_history(args):
+    """Download historical mark-price candles for one option symbol."""
+    from .public import BybitPublicClient
+
+    def parse_time(value):
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            raise ValueError("--start and --end must be timezone-aware ISO timestamps")
+        return parsed
+
+    async def _do():
+        client = BybitPublicClient()
+        return await client.get_option_mark_price_history(
+            args.symbol,
+            parse_time(args.start),
+            parse_time(args.end),
+            interval=args.interval,
+            limit=args.limit,
+        )
+
+    bars = _run(_do())
+    _output(
+        True,
+        {
+            "symbol": args.symbol,
+            "interval": args.interval,
+            "count": len(bars),
+            "mark_price_bars": [
+                {
+                    "start_time": bar.start_time.isoformat(),
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "source": bar.source,
+                }
+                for bar in bars
+            ],
+            "limitation": "mark-price history does not contain historical bid/ask, IV, Greeks, OI, or volume",
         },
     )
 
@@ -656,6 +700,14 @@ def main():
     )
     p.add_argument("--limit", type=int, default=200, help="Max candles (default: 200)")
 
+    # historical option mark-price candles
+    p = sub.add_parser("option-mark-history", help="Historical option mark-price candles")
+    p.add_argument("symbol", help="e.g. BTC-30DEC26-100000-C")
+    p.add_argument("--start", required=True, help="UTC ISO timestamp, e.g. 2026-09-15T00:00:00Z")
+    p.add_argument("--end", required=True, help="UTC ISO timestamp, e.g. 2026-09-16T00:00:00Z")
+    p.add_argument("--interval", default="60", help="Bybit interval, default 60 minutes")
+    p.add_argument("--limit", type=int, default=500, help="Rows per API page, max 500")
+
     # options
     p = sub.add_parser("options", help="Options chain with Greeks/IV")
     p.add_argument("base_coin", help="e.g. BTC, ETH, SOL")
@@ -767,6 +819,7 @@ def main():
         "price": cmd_price,
         "prices": cmd_prices,
         "klines": cmd_klines,
+        "option-mark-history": cmd_option_mark_history,
         "options": cmd_options,
         "orderbook": cmd_orderbook,
         "recent-trades": cmd_recent_trades,

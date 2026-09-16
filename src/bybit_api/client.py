@@ -5,21 +5,22 @@ Unified Bybit Client - Combines public and private operations.
 import logging
 import math
 import os
-from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
 from .models import Balance, Instrument, Kline, OptionPrice, OrderInfo, Position
+from .option_mark_history import OptionMarkPriceBar
+from .private import BybitPrivateClient
+from .public import BybitPublicClient
 from .types import (
     ApiCredentials,
-    RequestConfig,
-    RateLimitConfig,
-    OrderParams,
     HealthCheck,
     InstrumentSpec,
+    OrderParams,
+    RateLimitConfig,
+    RequestConfig,
 )
-from .public import BybitPublicClient
-from .private import BybitPrivateClient
-from .utils import now_utc, ensure_utc_datetime, safe_float, ms_to_datetime
+from .utils import ensure_utc_datetime, ms_to_datetime, now_utc, safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,24 @@ class BybitClient:
         self, base_coin: str, symbol: str = None
     ) -> List[Dict[str, Any]]:
         return await self.public.get_options_tickers(base_coin, symbol)
+
+    async def get_option_mark_price_history(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        interval: str = "60",
+        limit: int = 500,
+    ) -> List[OptionMarkPriceBar]:
+        """Fetch historical mark-price candles for one option symbol."""
+
+        return await self.public.get_option_mark_price_history(
+            symbol,
+            start_time,
+            end_time,
+            interval,
+            limit,
+        )
 
     async def get_options_chain_data(self, base_coin: str) -> List[Dict[str, Any]]:
         return await self.public.get_options_chain_data(base_coin)

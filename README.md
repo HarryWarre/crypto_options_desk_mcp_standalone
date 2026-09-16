@@ -77,6 +77,15 @@ unvalidated until a held-out historical test passes; it has no order buttons.
 The evidence helper can be used on timestamped outcomes with
 `options_lib.ev_validation.validate_backtest`.
 
+Historical option data is intentionally split by data quality. The
+`BybitPublicClient.get_option_mark_price_history()` method downloads historical
+mark-price candles per option symbol. For complete bid/ask, IV, Greeks, OI, and
+volume, use `BybitOptionSnapshotCollector` to capture ticker snapshots
+prospectively and `JsonlOptionSnapshotArchive` to persist/replay them. Bybit's
+public ticker API is latest-only, so the project does not fabricate a
+historical full-chain snapshot from current data. See
+[`docs/option-history.md`](docs/option-history.md).
+
 Smoke-test it:
 
 ```bash
