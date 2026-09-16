@@ -176,6 +176,37 @@ Checks: known profitable fixture, known unprofitable fixture, cost sensitivity, 
 
 Out of scope: a guarantee of future profitability and live deployment approval.
 
+## OPS-010 — Default EV gate and payoff decision metrics — implemented
+
+Outcome: the default scan filters on model-estimated expiry EV and the result
+detail exposes an expiry payoff curve, estimated win probability, and
+expected reward/risk metrics for single- and multi-leg option builders.
+
+Blocking: OPS-006 and OPS-007.
+
+Acceptance criteria:
+
+- The default API/UI request applies a non-negative expected-value threshold;
+  `null` explicitly disables the gate.
+- Expected value is kept separate from IV edge and current fair-value edge.
+- Results serialize the expiry instant in UTC and show it in the result/detail
+  views.
+- Payoff curves use the complete option-leg set, executable entry prices,
+  opening fees, and slippage assumptions.
+- Win probability and reward/risk are model estimates under the named
+  risk-neutral lognormal distribution; they are not historical win rates or a
+  guarantee of future returns.
+- Missing or mixed-expiry inputs return explicit unavailable states.
+
+Public test seam: normalized option universe → scan result → payoff detail.
+
+Checks: default/override EV filter, single-leg and multi-leg payoff curves,
+expiry serialization, model metric statuses, unavailable metrics, API tests,
+static UI tests, and browser payoff rendering.
+
+Out of scope: claiming validated historical EV without completed held-out
+trade outcomes and deploying order execution.
+
 ## OPS-009 — Full QA, Playwright, documentation, and review
 
 Outcome: the release is reproducible, documented, and reviewed across backend and UI behavior.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,6 +21,29 @@ from options_lib.opportunity_scanner import Opportunity, ScanResult
 
 VALUATION_TIME = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 DATA_TIME = datetime(2026, 9, 15, 11, 59, 30, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class MetricsOpportunity:
+    """Compatibility fixture for the metrics slice's extended Opportunity."""
+
+    asset: str = "BTC"
+    symbol: str = "BTC-30DEC26-78000-C"
+    expiry_at: datetime = datetime(2026, 12, 30, 12, 0, tzinfo=UTC)
+    expected_value: float = 12.5
+    win_probability: float = 0.62
+    risk_reward_ratio: float = 1.8
+    payoff_curve: tuple[dict[str, float], ...] = (
+        {"underlying_price": 70_000, "pnl": -100},
+        {"underlying_price": 90_000, "pnl": 250},
+    )
+    payoff_metrics_methodology: str = "risk_neutral_lognormal_expiry_payoff"
+    payoff_metrics_status: str = "estimated"
+    risk_reward_status: str = "available"
+    payoff_metrics_assumptions: dict[str, str] | None = None
+    payoff_metrics_limitations: tuple[str, ...] = ("Model estimates are not historical outcomes.",)
+    expected_value_status: str = "not_validated"
+
 
 SCENARIO_LEG = {
     "symbol": "BTC-30DEC26-78000-C",
@@ -290,7 +314,28 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
     )
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body.pop("scan_context") == {
+        "applied_filters": {
+            "min_dte": 2.0,
+            "max_dte": 30.0,
+            "min_delta": None,
+            "max_delta": None,
+            "min_iv_edge": 0.0,
+            "max_spread_pct": None,
+            "min_open_interest": 0.0,
+            "min_volume_24h": 0.0,
+            "min_edge_after_costs": 0.0,
+            "min_expected_value": 0.0,
+            "max_results": 10,
+        },
+        "expected_value_filter": {
+            "enabled": True,
+            "minimum_expected_value": 0.0,
+            "source": "opportunity.expected_value",
+        },
+    }
+    assert body == {
         "timestamp": "2026-09-15T12:00:00Z",
         "data_timestamp": "2026-09-15T11:59:30Z",
         "opportunities": [],
@@ -309,7 +354,7 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
         "evidence_gate_status": "blocked_unvalidated",
         "execution_allowed": False,
     }
-    assert adapter.load_calls == [(('BTC', 'ETH'), None)]
+    assert adapter.load_calls == [(("BTC", "ETH"), None)]
     assert scan_calls[0][1].assets == ("BTC", "ETH")
     assert scan_calls[0][1].strategies == ("long_put",)
     assert scan_calls[0][1].risk_free_rate == pytest.approx(0.075)
@@ -339,6 +384,176 @@ async def test_scan_uses_safe_default_rate_when_request_omits_risk_free_rate() -
 
     assert response.status_code == 200
     assert scan_requests[0].risk_free_rate == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_default_scan_filters_on_expected_value_and_reports_its_threshold() -> None:
+    opportunities = (
+        MetricsOpportunity(symbol="BTC-30DEC26-78000-C", expected_value=12.5),
+        MetricsOpportunity(symbol="BTC-30DEC26-80000-C", expected_value=-0.5),
+    )
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=opportunities,
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["symbol"] for item in body["opportunities"]] == ["BTC-30DEC26-78000-C"]
+    assert body["scan_context"]["applied_filters"]["min_expected_value"] == 0.0
+    assert body["scan_context"]["applied_filters"]["min_iv_edge"] == 0.0
+    assert body["scan_context"]["expected_value_filter"] == {
+        "enabled": True,
+        "minimum_expected_value": 0.0,
+        "source": "opportunity.expected_value",
+    }
+
+
+@pytest.mark.asyncio
+async def test_scan_accepts_an_explicit_non_negative_expected_value_threshold_override() -> None:
+    opportunities = (
+        MetricsOpportunity(symbol="BTC-30DEC26-78000-C", expected_value=12.5),
+        MetricsOpportunity(symbol="BTC-30DEC26-80000-C", expected_value=-0.5),
+    )
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=opportunities,
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "strategies": ["long_call"],
+            "min_expected_value": 12,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["symbol"] for item in body["opportunities"]] == [
+        "BTC-30DEC26-78000-C",
+    ]
+    assert body["scan_context"]["applied_filters"]["min_expected_value"] == 12.0
+
+
+@pytest.mark.asyncio
+async def test_null_expected_value_threshold_disables_the_gate() -> None:
+    opportunities = (
+        MetricsOpportunity(symbol="BTC-30DEC26-78000-C", expected_value=12.5),
+        MetricsOpportunity(symbol="BTC-30DEC26-80000-C", expected_value=-0.5),
+    )
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=opportunities,
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "strategies": ["long_call"],
+            "min_expected_value": None,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["symbol"] for item in body["opportunities"]] == [
+        "BTC-30DEC26-78000-C",
+        "BTC-30DEC26-80000-C",
+    ]
+    assert body["scan_context"]["expected_value_filter"] == {
+        "enabled": False,
+        "minimum_expected_value": None,
+        "source": "opportunity.expected_value",
+    }
+
+
+@pytest.mark.asyncio
+async def test_negative_expected_value_threshold_is_rejected() -> None:
+    response = await request(
+        create_app(adapter=FakeAdapter()),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "strategies": ["long_call"],
+            "min_expected_value": -1,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_scan_serializes_expiry_and_metrics_fields_on_opportunities() -> None:
+    opportunity = MetricsOpportunity()
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(opportunity,),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    serialized = response.json()["opportunities"][0]
+    assert serialized["expiry_at"] == "2026-12-30T12:00:00Z"
+    assert serialized["expected_value"] == 12.5
+    assert serialized["win_probability"] == 0.62
+    assert serialized["risk_reward"] == 1.8
+    assert serialized["risk_reward_ratio"] == 1.8
+    assert serialized["payoff_curve"] == [
+        {"underlying_price": 70_000, "pnl": -100},
+        {"underlying_price": 90_000, "pnl": 250},
+    ]
+    assert serialized["methodology"] == "risk_neutral_lognormal_expiry_payoff"
+    assert serialized["payoff_metrics_methodology"] == "risk_neutral_lognormal_expiry_payoff"
+    assert serialized["metrics_status"] == "estimated"
+    assert serialized["payoff_metrics_status"] == "estimated"
+    assert serialized["risk_reward_status"] == "available"
+    assert serialized["limitations"] == ["Model estimates are not historical outcomes."]
+    assert serialized["expected_value_status"] == "not_validated"
 
 
 @pytest.mark.asyncio
@@ -576,7 +791,9 @@ async def test_scan_stream_emits_progress_and_result_events() -> None:
         "broken_wing_butterfly",
     ],
 )
-async def test_scan_endpoint_accepts_supported_multi_leg_strategy_identifiers(strategy: str) -> None:
+async def test_scan_endpoint_accepts_supported_multi_leg_strategy_identifiers(
+    strategy: str,
+) -> None:
     scan_requests: list[Any] = []
 
     def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
@@ -649,6 +866,7 @@ async def test_scan_serializes_multi_leg_opportunities_recursively() -> None:
         open_interest=10,
         quote_timestamp=DATA_TIME,
         evidence_status="insufficient_evidence",
+        expected_value=1497,
         max_profit=17498,
         long_symbol="BTC-30DEC26-78000-C",
         short_symbol="BTC-30DEC26-80000-C",
@@ -752,8 +970,14 @@ async def test_scenario_endpoint_returns_serialized_report() -> None:
     [
         ("call_vertical", [SCENARIO_LEG, SCENARIO_SHORT_CALL_LEG]),
         ("put_vertical", [SCENARIO_LONG_PUT_LEG, SCENARIO_SHORT_PUT_LEG]),
-        ("bear_call_vertical", [{**SCENARIO_SHORT_CALL_LEG, "position": 1}, {**SCENARIO_LEG, "position": -1}]),
-        ("bull_put_vertical", [{**SCENARIO_SHORT_PUT_LEG, "position": 1}, {**SCENARIO_LONG_PUT_LEG, "position": -1}]),
+        (
+            "bear_call_vertical",
+            [{**SCENARIO_SHORT_CALL_LEG, "position": 1}, {**SCENARIO_LEG, "position": -1}],
+        ),
+        (
+            "bull_put_vertical",
+            [{**SCENARIO_SHORT_PUT_LEG, "position": 1}, {**SCENARIO_LONG_PUT_LEG, "position": -1}],
+        ),
     ],
 )
 async def test_scenario_vertical_request_identifiers_remain_stable(
