@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260916-3">
-    <script src="/static/app.js?v=20260916-3" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260917-1">
+    <script src="/static/app.js?v=20260917-1" defer></script>
   </head>
   <body>
     <header class="site-header">
@@ -107,6 +107,21 @@
             </label>
           </div>
 
+          <fieldset class="valuation-mode" aria-describedby="valuation-mode-help">
+            <legend>Cách định giá</legend>
+            <div class="valuation-mode-options">
+              <label class="valuation-mode-card">
+                <input type="radio" name="valuation_mode" value="executable" checked>
+                <span><strong>Executable — mặc định</strong><small>Dùng bid/ask để kiểm tra giá vào/ra và edge sau chi phí.</small></span>
+              </label>
+              <label class="valuation-mode-card">
+                <input type="radio" name="valuation_mode" value="theoretical">
+                <span><strong>Theoretical — bỏ qua bid/ask</strong><small>Chỉ dùng giá trị mô hình/fair value khi Bybit thiếu bid/ask; không phải giá khớp.</small></span>
+              </label>
+            </div>
+            <p class="field-help" id="valuation-mode-help">Theoretical có thể giúp tham khảo XRP, XAUT, SOL, HYPE, MNT khi quote kém, nhưng không tính edge sau phí/lỗ tối đa để giao dịch.</p>
+          </fieldset>
+
           <details class="advanced-filters" id="advanced-filters" data-testid="advanced-filters">
             <summary>Bộ lọc nâng cao <span class="muted">Dành cho người đã quen với options</span></summary>
             <div class="advanced-content">
@@ -192,6 +207,7 @@
             <h2>Kết quả</h2>
           </div>
         </div>
+        <div class="valuation-mode-notice" id="valuation-mode-notice" hidden role="status"></div>
         <div class="state-message" id="result-state">Chọn điều kiện rồi bấm “Quét cơ hội”.</div>
         <div class="quality-note" role="note">
           Biến động lịch sử 30 ngày chỉ dùng làm ngữ cảnh/kiểm tra chất lượng; định giá vẫn dùng IV hiện tại.

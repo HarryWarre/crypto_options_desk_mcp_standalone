@@ -184,6 +184,168 @@ def test_scan_supports_multiple_assets_and_ranks_after_costs() -> None:
     assert result.data_timestamp == VALUATION_TIME
 
 
+def test_theoretical_mode_values_missing_quote_without_executable_claims() -> None:
+    target = replace(
+        _contract("BTC", 100, mark_iv=0.15, ask=0.60, bid=0.50),
+        bid_price=None,
+        ask_price=0.0,
+        mark_price=0.60,
+    )
+    universe = _universe(
+        _contract("BTC", 90, mark_iv=0.30, ask=2.0, bid=1.8),
+        target,
+        _contract("BTC", 110, mark_iv=0.30, ask=2.0, bid=1.8),
+    )
+
+    result = scan_opportunities(
+        universe,
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("long_call",),
+            valuation_mode="theoretical",
+            max_spread_pct=0.0,
+            min_edge_after_costs=1_000_000.0,
+            max_loss=0.0,
+        ),
+    )
+
+    candidate = next(item for item in result.opportunities if item.symbol == target.symbol)
+    assert result.valuation_mode == "theoretical"
+    assert candidate.valuation_mode == "theoretical"
+    assert candidate.fair_price > 0
+    assert candidate.fair_iv > 0
+    assert candidate.mark_price == pytest.approx(0.60)
+    assert candidate.bid_price is None
+    assert candidate.ask_price == 0.0
+    assert candidate.executable_entry is None
+    assert candidate.edge_after_costs is None
+    assert candidate.edge_pct is None
+    assert candidate.max_loss is None
+    assert candidate.execution_allowed is False
+    assert candidate.edge_source == "theoretical_fair_value_only"
+    assert candidate.legs[0].mark_price == pytest.approx(0.60)
+    assert result.ignored_filters == ("max_spread_pct", "min_edge_after_costs", "max_loss")
+
+
+def test_theoretical_single_leg_keeps_fair_value_per_contract() -> None:
+    target = replace(
+        _contract("BTC", 100, mark_iv=0.15),
+        bid_price=None,
+        ask_price=0.0,
+    )
+    universe = _universe(
+        _contract("BTC", 90, mark_iv=0.30, ask=2.0, bid=1.8),
+        target,
+        _contract("BTC", 110, mark_iv=0.30, ask=2.0, bid=1.8),
+    )
+    base_request = ScanRequest(
+        risk_free_rate=0.0,
+        assets=("BTC",),
+        strategies=("long_call",),
+        valuation_mode="theoretical",
+    )
+    scaled_request = replace(base_request, quantity=2.0, contract_multiplier=10.0)
+
+    base_candidate = next(
+        item for item in scan_opportunities(universe, base_request).opportunities
+        if item.symbol == target.symbol
+    )
+    scaled_candidate = next(
+        item for item in scan_opportunities(universe, scaled_request).opportunities
+        if item.symbol == target.symbol
+    )
+
+    assert scaled_candidate.fair_price == pytest.approx(base_candidate.fair_price)
+    assert scaled_candidate.delta == pytest.approx(base_candidate.delta)
+
+
+def test_theoretical_multi_leg_preserves_mark_price_on_each_leg() -> None:
+    result = scan_opportunities(
+        _vertical_surface_fixture(),
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("bull_call_vertical",),
+            valuation_mode="theoretical",
+        ),
+    )
+
+    candidate = result.opportunities[0]
+    assert all(leg.mark_price is not None for leg in candidate.legs)
+
+
+def test_scan_request_rejects_unknown_valuation_mode() -> None:
+    with pytest.raises(ValueError, match="valuation_mode"):
+        ScanRequest(risk_free_rate=0.0, valuation_mode="unknown")  # type: ignore[arg-type]
+
+
+def test_executable_surface_excludes_unquoted_contracts() -> None:
+    base = _surface_fixture()
+    noisy = replace(
+        _contract("BTC", 95, mark_iv=0.95, ask=1.0, bid=0.9),
+        bid_price=None,
+        ask_price=0.0,
+    )
+    noisy_universe = _universe(*base.contracts, noisy)
+    request = ScanRequest(
+        risk_free_rate=0.0,
+        assets=("BTC",),
+        strategies=("long_call",),
+    )
+
+    base_candidate = next(
+        item for item in scan_opportunities(base, request).opportunities
+        if item.symbol == "BTC-100-C"
+    )
+    noisy_candidate = next(
+        item for item in scan_opportunities(noisy_universe, request).opportunities
+        if item.symbol == "BTC-100-C"
+    )
+
+    assert noisy_candidate.fair_iv == pytest.approx(base_candidate.fair_iv)
+
+
+def test_theoretical_mode_reports_evidence_rejection_without_crashing() -> None:
+    result = scan_opportunities(
+        _vertical_surface_fixture(),
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("bull_call_vertical",),
+            valuation_mode="theoretical",
+            include_unvalidated=False,
+        ),
+    )
+
+    assert not result.opportunities
+    assert any("evidence_not_validated" in item.reasons for item in result.rejections)
+
+
+def test_executable_mode_remains_conservative_for_missing_or_zero_quotes() -> None:
+    target = replace(
+        _contract("BTC", 100),
+        bid_price=None,
+        ask_price=0.0,
+    )
+    result = scan_opportunities(
+        _universe(
+            _contract("BTC", 90, mark_iv=0.30, ask=2.0, bid=1.8),
+            target,
+            _contract("BTC", 110, mark_iv=0.30, ask=2.0, bid=1.8),
+        ),
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("long_call",),
+        ),
+    )
+
+    assert all(item.symbol != target.symbol for item in result.opportunities)
+    rejection = next(item for item in result.rejections if item.symbol == target.symbol)
+    assert "invalid_market_data" in rejection.reasons
+
+
 def test_candidate_is_excluded_from_its_fitted_surface_quote() -> None:
     universe = _universe(
         _contract("BTC", 90, mark_iv=0.40, ask=2.0, bid=1.8),

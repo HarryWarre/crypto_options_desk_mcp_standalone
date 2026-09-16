@@ -126,8 +126,10 @@ class HistoricalVolatilityContexts:
 
 
 def _aware_utc(name: str, value: datetime) -> datetime:
-    if not isinstance(value, datetime) or value.tzinfo is None:
-        raise ValueError(f"historical volatility {name} must be timezone-aware")
+    if not isinstance(value, datetime):
+        raise TypeError(f"historical volatility {name} must be a datetime")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
 
 

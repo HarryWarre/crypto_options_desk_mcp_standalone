@@ -66,6 +66,7 @@ async function mockApi(page) {
     const payload = {
       timestamp: "2026-09-15T14:46:33Z",
       data_timestamp: "2026-09-15T14:46:33Z",
+      valuation_mode: body.valuation_mode || "executable",
       opportunities: empty ? [] : [opportunity],
       rejections: [],
       asset_failures: [],
@@ -217,6 +218,22 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
   await expect(page.locator("#scan-context")).toContainText("Nhiều chiến lược");
   await expect(page.locator("#result-state")).toContainText("1");
+});
+
+test("opts into theoretical valuation and labels the result as non-executable", async ({ page }) => {
+  await expect(page.getByLabel("Executable — mặc định")).toBeChecked();
+  await page.getByLabel("Theoretical — bỏ qua bid/ask").check();
+
+  const scanRequest = page.waitForRequest((request) => (
+    request.url().includes("/api/v1/opportunities/scan/stream")
+  ));
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  expect((await scanRequest).postDataJSON()).toMatchObject({ valuation_mode: "theoretical" });
+
+  await expect(page.locator("#valuation-mode-notice")).toBeVisible();
+  await expect(page.locator("#valuation-mode-notice")).toContainText("không phải giá khớp");
+  await expect(page.locator("#results-body")).toContainText("Tham khảo");
+  await expect(page.getByRole("button", { name: "P&L cần bid/ask" })).toBeDisabled();
 });
 
 test("submits selected strategy checkboxes, including spread group expansion", async ({ page }) => {

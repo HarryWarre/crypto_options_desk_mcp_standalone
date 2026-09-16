@@ -233,8 +233,10 @@ def _coerce_timestamp(value: Any) -> datetime:
 
 
 def _aware_utc(value: datetime) -> datetime:
-    if not isinstance(value, datetime) or value.tzinfo is None:
-        raise ValueError("historical volatility timestamps must be timezone-aware")
+    if not isinstance(value, datetime):
+        raise TypeError("historical volatility timestamps must be datetime values")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
 
 

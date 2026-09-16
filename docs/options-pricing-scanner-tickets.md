@@ -6,6 +6,9 @@ Source spec: [options-pricing-scanner-spec.md](options-pricing-scanner-spec.md)
 
 Strategy-specific backlog: [options-scanner-strategy-tickets.md](options-scanner-strategy-tickets.md)
 
+Theoretical valuation follow-up: [options-theoretical-valuation-spec.md](options-theoretical-valuation-spec.md)
+and [options-theoretical-valuation-tickets.md](options-theoretical-valuation-tickets.md)
+
 ## Dependency order
 
 ```text
@@ -13,6 +16,7 @@ OPS-001 → OPS-002 → OPS-003 → OPS-004 → OPS-005 → OPS-006 → OPS-007
                          ↘ OPS-008 (validation/backtest evidence)
 OPS-005 → OPS-010 (vertical spread scanner; STRAT-003…STRAT-006)
 OPS-005 → OPS-011 (iron condor/butterfly; STRAT-009/STRAT-011)
+OPS-013 → OPS-012 → OPS-014 (theoretical valuation and timestamp resilience)
 ```
 
 ## OPS-010 — Add vertical spreads to the opportunity scanner — implemented
