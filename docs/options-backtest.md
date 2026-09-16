@@ -19,6 +19,22 @@ Greeks, open interest and volume. Mark-price candles alone cannot produce an
 executable backtest. The endpoint returns `422 backtest_data_unavailable`
 instead of silently substituting live data or a current mark.
 
+For a local smoke test without a prospectively captured Bybit archive, the
+repository includes an explicit Deribit trade-derived adapter. It downloads
+public historical trades separately, computes Greeks from the recorded IV and
+underlying, and labels its synthetic bid/ask and liquidity assumptions:
+
+```bash
+uv run python scripts/build_deribit_trade_snapshot_archive.py \
+  --input-dir /tmp/flowsurface-deribit-trades \
+  --output ./data/deribit-btc-options.jsonl
+export OPTIONS_BACKTEST_ARCHIVE=./data/deribit-btc-options.jsonl
+```
+
+This fallback is useful for exercising signal and exit-policy logic, but it is
+not evidence of historical queue execution: public historical trades do not
+include the historical order book or open interest.
+
 ## HTTP request
 
 ```http

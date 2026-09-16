@@ -269,10 +269,16 @@ def run_snapshot_backtest(
         tuple(trade.to_sample() for trade in sorted(trades, key=lambda item: item.entry_time)),
         validation,
     )
+    sources = tuple(dict.fromkeys(snapshot.source for snapshot in loaded.snapshots))
+    trade_proxy = any("last-trade-proxy" in source for source in sources)
     quality = BacktestDataQuality(
-        source="bybit-option-snapshot:v1",
+        source=", ".join(sources) or "unknown",
         mode="quote_replay",
-        fill_model="top_of_book_bid_ask",
+        fill_model=(
+            "synthetic_bid_ask_around_last_trade"
+            if trade_proxy
+            else "top_of_book_bid_ask"
+        ),
         lookahead_free=True,
         snapshot_count=len(loaded.snapshots),
         signal_evaluations=signal_evaluations,
