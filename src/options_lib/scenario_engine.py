@@ -433,6 +433,11 @@ def _validate_strategy(strategy: StrategyDefinition) -> None:
         raise ScenarioValidationError("vertical legs must share an expiry")
     if long_leg.strike == short_leg.strike:
         raise ScenarioValidationError("vertical legs must use distinct strikes")
+    # The generic API identifiers are intentionally orientation-neutral so a
+    # caller can model either a debit or a credit spread.  Directional
+    # identifiers below retain their stricter strike orientation checks.
+    if strategy.strategy_type in {"call_vertical", "put_vertical"}:
+        return
     debit_orientation = strategy.strategy_type in {
         "call_vertical",
         "bull_call_vertical",

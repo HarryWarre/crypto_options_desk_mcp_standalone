@@ -320,3 +320,53 @@ test("renders API payoff curve and estimated outcome metrics from a quick-scan r
   await expect(page.locator("#pnl-chart-assumptions")).toContainText("Phương pháp / giả định API");
   await expect(page.locator("#scenario-state")).toContainText("4 điểm payoff");
 });
+
+test("runs a historical backtest and renders exit reasons", async ({ page }) => {
+  await page.route("**/api/v1/backtests", async (route) => {
+    const body = route.request().postDataJSON();
+    expect(body.assets).toEqual(["BTC"]);
+    expect(body.filters.strategies).toEqual(["long_call"]);
+    expect(body.exit_policy).toMatchObject({ type: "profit_target", profit_target_pct: 0.5 });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        engine: "snapshot_replay",
+        status: "completed",
+        data_quality: {
+          snapshot_count: 48,
+          signal_evaluations: 12,
+          fill_model: "top_of_book_bid_ask",
+          lookahead_free: true,
+        },
+        report: {
+          status: "insufficient_evidence",
+          train: { trade_count: 1 },
+          holdout: { trade_count: 1, net_pnl: 125, expected_value: 125, max_drawdown: 0 },
+        },
+        trades: [{
+          entry_time: "2026-01-10T00:00:00Z",
+          exit_time: "2026-01-11T00:00:00Z",
+          strategy: "long_call",
+          exit_reason: "profit_target",
+          gross_pnl: 150,
+          net_pnl: 125,
+          return_pct: 25,
+        }],
+        unresolved: [],
+      }),
+    });
+  });
+
+  await page.locator("#backtest-asset").selectOption("BTC");
+  await page.locator("#backtest-start").fill("2026-01-01T00:00");
+  await page.locator("#backtest-end").fill("2026-02-01T00:00");
+  await page.locator("#backtest-exit-policy").selectOption("profit_target");
+  await page.locator("#backtest-profit-target").fill("0.5");
+  await page.getByRole("button", { name: "Chạy backtest" }).click();
+
+  await expect(page.locator("#backtest-state")).toContainText("1 trade");
+  await expect(page.locator("#backtest-quality")).toContainText("Look-ahead: đã kiểm soát");
+  await expect(page.locator("#backtest-trades-body")).toContainText("profit_target");
+  await expect(page.locator("#backtest-metrics")).toContainText("125.00");
+});

@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+backtest = ["nautilus-trader==2.0.0rc6; python_version >= '3.12' and python_version < '3.15'"]
 
 [project.scripts]
 trading-mcp = "mcp_trading.__main__:main"

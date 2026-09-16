@@ -45,6 +45,8 @@ explicit freshness tolerance, and never calls Bybit or falls back to today's
 quotes. Incomplete or invalid records remain auditable in the archive but are
 excluded from the valuation universe.
 
-Snapshots make deterministic signal replay possible. They do not create
-completed trade outcomes, prove look-ahead-free signal generation, or validate
-positive expected value; those remain separate backtest work.
+Snapshots make deterministic signal replay possible and are now consumed by
+the explicit `/api/v1/backtests` quote-replay path to generate completed trade
+outcomes. The backtest still reports unresolved signals when future quotes or
+expiry settlement are unavailable, and it cannot turn insufficient data into
+a positive-EV claim.

@@ -23,6 +23,16 @@ const pnlChartAssumptions = document.querySelector("#pnl-chart-assumptions");
 const pnlChartStatus = document.querySelector("#pnl-chart-status");
 const scanTerminal = document.querySelector("#scan-terminal");
 const clearTerminalButton = document.querySelector("#clear-terminal");
+const backtestForm = document.querySelector("#backtest-form");
+const backtestAsset = document.querySelector("#backtest-asset");
+const backtestExitPolicy = document.querySelector("#backtest-exit-policy");
+const backtestState = document.querySelector("#backtest-state");
+const backtestQuality = document.querySelector("#backtest-quality");
+const backtestMetrics = document.querySelector("#backtest-metrics");
+const backtestTradesBody = document.querySelector("#backtest-trades-body");
+const backtestProfitField = document.querySelector("#backtest-profit-field");
+const backtestStopField = document.querySelector("#backtest-stop-field");
+const backtestDteField = document.querySelector("#backtest-dte-field");
 
 let selectedOpportunity = null;
 let activeScanContext = null;
@@ -667,12 +677,14 @@ async function showOpportunityDetail(item) {
 
 function renderAssets(payload) {
   assetList.replaceChildren();
+  backtestAsset.replaceChildren();
   const assets = payload.assets || [];
   if (!assets.length) {
     const empty = document.createElement("span");
     empty.className = "muted";
     empty.textContent = "Không tìm thấy tài sản đang giao dịch.";
     assetList.appendChild(empty);
+    backtestAsset.disabled = true;
     return;
   }
   const preferredAsset = assets.find((asset) => asset.base_coin === "BTC") || assets[0];
@@ -686,8 +698,67 @@ function renderAssets(payload) {
     input.checked = asset === preferredAsset;
     label.append(input, document.createTextNode(`${asset.base_coin} (${asset.contract_count})`));
     assetList.appendChild(label);
+    const option = document.createElement("option");
+    option.value = asset.base_coin;
+    option.textContent = `${asset.base_coin} (${asset.contract_count})`;
+    option.selected = asset === preferredAsset;
+    backtestAsset.appendChild(option);
   });
+  backtestAsset.disabled = false;
   return (payload.issues || []).length;
+}
+
+function updateBacktestExitFields() {
+  const policy = backtestExitPolicy.value;
+  backtestProfitField.hidden = policy !== "profit_target";
+  backtestStopField.hidden = policy !== "stop_loss";
+  backtestDteField.hidden = policy !== "min_dte";
+}
+
+function setBacktestState(message, className = "") {
+  backtestState.textContent = message;
+  backtestState.className = `state-message ${className}`.trim();
+}
+
+function renderBacktestResult(payload) {
+  const report = payload.report || {};
+  const holdout = report.holdout || {};
+  const train = report.train || {};
+  backtestTradesBody.replaceChildren();
+  backtestMetrics.replaceChildren();
+  const metrics = [
+    ["Trades", holdout.trade_count ?? train.trade_count ?? 0],
+    ["Net P&L holdout", number(holdout.net_pnl, 2)],
+    ["EV / trade", number(holdout.expected_value, 2)],
+    ["Max drawdown", number(holdout.max_drawdown, 2)],
+  ];
+  metrics.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "metric";
+    const caption = document.createElement("span");
+    caption.className = "muted";
+    caption.textContent = label;
+    const strong = document.createElement("strong");
+    strong.textContent = String(value);
+    item.append(caption, strong);
+    backtestMetrics.appendChild(item);
+  });
+  (payload.trades || []).forEach((trade) => {
+    const row = document.createElement("tr");
+    cell(row, new Date(trade.entry_time).toLocaleString("vi-VN"));
+    cell(row, new Date(trade.exit_time).toLocaleString("vi-VN"));
+    cell(row, strategyLabel(trade.strategy));
+    cell(row, trade.exit_reason || "—");
+    cell(row, number(trade.gross_pnl, 2), Number(trade.gross_pnl) >= 0 ? "positive" : "negative");
+    cell(row, number(trade.net_pnl, 2), Number(trade.net_pnl) >= 0 ? "positive" : "negative");
+    cell(row, `${number(trade.return_pct, 2)}%`, Number(trade.return_pct) >= 0 ? "positive" : "negative");
+    backtestTradesBody.appendChild(row);
+  });
+  const quality = payload.data_quality || {};
+  backtestQuality.textContent = `Engine: ${payload.engine || "snapshot_replay"} · ${quality.snapshot_count || 0} snapshots · ${quality.signal_evaluations || 0} lần đánh giá tín hiệu · Fill: ${quality.fill_model || "—"} · Look-ahead: ${quality.lookahead_free ? "đã kiểm soát" : "chưa xác minh"}`;
+  backtestQuality.hidden = false;
+  const unresolved = (payload.unresolved || []).length;
+  setBacktestState(`Đã hoàn tất: ${(payload.trades || []).length} trade · train ${train.trade_count || 0} · holdout ${holdout.trade_count || 0}${unresolved ? ` · ${unresolved} tín hiệu chưa thể đóng` : ""}.`);
 }
 
 function renderScanContext(context) {
@@ -975,6 +1046,63 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     setState(error.message, "error");
     appendTerminal(`LỖI: ${error.message}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+backtestExitPolicy.addEventListener("change", updateBacktestExitFields);
+updateBacktestExitFields();
+
+backtestForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = new FormData(backtestForm);
+  if (!backtestAsset.value) {
+    setBacktestState("Chưa có tài sản để backtest.", "error");
+    return;
+  }
+  const start = new Date(data.get("start_time"));
+  const end = new Date(data.get("end_time"));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
+    setBacktestState("Hãy chọn khoảng thời gian hợp lệ.", "error");
+    return;
+  }
+  const policy = data.get("exit_policy");
+  const payload = {
+    assets: [backtestAsset.value],
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    filters: {
+      strategies: [data.get("strategy")],
+      fee_per_contract: Number(data.get("fee_per_contract")),
+      slippage_bps: Number(data.get("slippage_bps")),
+      quantity: 1,
+      contract_multiplier: 1,
+      include_unvalidated: true,
+    },
+    exit_policy: {
+      type: policy,
+      profit_target_pct: Number(data.get("profit_target_pct")),
+      stop_loss_pct: Number(data.get("stop_loss_pct")),
+      min_dte: Number(data.get("min_dte_exit")),
+    },
+    signal_interval_minutes: Number(data.get("signal_interval_minutes")),
+  };
+  const button = document.querySelector("#backtest-submit");
+  button.disabled = true;
+  setBacktestState("Đang replay tín hiệu và kiểm tra quy tắc đóng lệnh…");
+  try {
+    appendTerminal("Bắt đầu backtest lịch sử…");
+    renderBacktestResult(await getJson("/api/v1/backtests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }));
+    appendTerminal("Backtest hoàn tất.", "success");
+  } catch (error) {
+    setBacktestState(error.message, "error");
+    backtestQuality.hidden = true;
+    appendTerminal(`LỖI BACKTEST: ${error.message}`, "error");
   } finally {
     button.disabled = false;
   }

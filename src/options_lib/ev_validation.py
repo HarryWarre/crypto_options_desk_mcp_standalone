@@ -24,15 +24,25 @@ class HistoricalTradeSample:
     timestamp: datetime
     gross_pnl: float
     notional: float
+    costs: float = 0.0
+    legs: int = 2
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None:
             raise ValueError("timestamp must be timezone-aware")
-        for name, value in (("gross_pnl", self.gross_pnl), ("notional", self.notional)):
+        for name, value in (
+            ("gross_pnl", self.gross_pnl),
+            ("notional", self.notional),
+            ("costs", self.costs),
+        ):
             if isinstance(value, bool) or not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be finite")
         if self.notional <= 0:
             raise ValueError("notional must be positive")
+        if self.costs < 0:
+            raise ValueError("costs cannot be negative")
+        if isinstance(self.legs, bool) or self.legs < 1:
+            raise ValueError("legs must be positive")
 
 
 @dataclass(frozen=True)
@@ -157,18 +167,24 @@ def _metrics(
 ) -> BacktestMetrics:
     net_values = tuple(
         sample.gross_pnl
-        - sample.notional
-        * 2.0
-        * (config.fee_bps_per_leg + config.slippage_bps_per_leg)
-        / 10_000.0
+        - (
+            sample.costs
+            + sample.notional
+            * sample.legs
+            * (config.fee_bps_per_leg + config.slippage_bps_per_leg)
+            / 10_000.0
+        )
         * multiplier
         for sample in samples
     )
     costs = tuple(
-        sample.notional
-        * 2.0
-        * (config.fee_bps_per_leg + config.slippage_bps_per_leg)
-        / 10_000.0
+        (
+            sample.costs
+            + sample.notional
+            * sample.legs
+            * (config.fee_bps_per_leg + config.slippage_bps_per_leg)
+            / 10_000.0
+        )
         * multiplier
         for sample in samples
     )

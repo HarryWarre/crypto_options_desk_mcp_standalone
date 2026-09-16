@@ -11,7 +11,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import fields, is_dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from bybit_api.option_history import JsonlOptionSnapshotArchive
 from bybit_api.option_volatility_history import BybitHistoricalVolatilityContextLoader
 from bybit_api.options_market_data import (
     BybitOptionMarketDataAdapter,
@@ -30,6 +31,14 @@ from bybit_api.options_market_data import (
     OptionAssetCatalog,
 )
 from bybit_api.public import BybitPublicClient
+from options_lib.backtest_engine import (
+    BacktestDataUnavailable,
+    BacktestResult,
+    BacktestRunConfig,
+    ExitPolicy,
+    run_snapshot_backtest,
+)
+from options_lib.ev_validation import ValidationConfig
 from options_lib.historical_volatility import (
     HistoricalVolatilityContext,
     HistoricalVolatilityContexts,
@@ -89,6 +98,7 @@ _SIMPLE_HORIZONS = {
 }
 _LOCAL_FRONTEND_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 _CORS_ORIGINS_ENV = "OPTIONS_APP_CORS_ORIGINS"
+_BACKTEST_ARCHIVE_ENV = "OPTIONS_BACKTEST_ARCHIVE"
 _DEFAULT_SCAN_RISK_FREE_RATE = 0.05
 _DEFAULT_MIN_EXPECTED_VALUE = 0.0
 
@@ -439,10 +449,130 @@ class ScenarioRequest(BaseModel):
         return strategy, scenario_set
 
 
+class BacktestExitPolicyRequest(BaseModel):
+    """Exit rules evaluated against future archived quotes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[
+        "hold_to_expiry",
+        "profit_target",
+        "stop_loss",
+        "min_dte",
+        "end_of_test",
+    ] = "hold_to_expiry"
+    profit_target_pct: float = Field(default=0.5, ge=0)
+    stop_loss_pct: float = Field(default=1.0, ge=0)
+    min_dte: float = Field(default=3.0, ge=0)
+
+    @field_validator("profit_target_pct", "stop_loss_pct", "min_dte", mode="before")
+    @classmethod
+    def finite_number(cls, value: Any) -> Any:
+        if value is not None:
+            try:
+                finite = math.isfinite(float(value))
+            except (TypeError, ValueError):
+                finite = False
+            if isinstance(value, bool) or not finite:
+                raise ValueError("must be a finite number")
+        return value
+
+    @model_validator(mode="after")
+    def validate_for_type(self) -> BacktestExitPolicyRequest:
+        if self.type == "profit_target" and self.profit_target_pct <= 0:
+            raise ValueError("profit_target_pct must be positive for profit_target")
+        if self.type == "stop_loss" and self.stop_loss_pct <= 0:
+            raise ValueError("stop_loss_pct must be positive for stop_loss")
+        return self
+
+    def to_domain(self) -> ExitPolicy:
+        return ExitPolicy(**self.model_dump())
+
+
+class BacktestRequest(BaseModel):
+    """Request for a historical, quote-replay options backtest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assets: list[str] = Field(min_length=1)
+    start_time: datetime
+    end_time: datetime
+    filters: ScanFilters = Field(default_factory=ScanFilters)
+    exit_policy: BacktestExitPolicyRequest = Field(default_factory=BacktestExitPolicyRequest)
+    signal_interval_minutes: float = Field(default=60.0, gt=0)
+    max_signals_per_snapshot: int = Field(default=5, ge=1, le=100)
+    holdout_fraction: float = Field(default=0.3, gt=0, lt=1)
+    minimum_train_samples: int = Field(default=30, ge=0)
+    minimum_holdout_samples: int = Field(default=30, ge=1)
+    cost_sensitivity_multipliers: list[float] = Field(default_factory=lambda: [1.0, 2.0, 5.0])
+
+    @field_validator(
+        "signal_interval_minutes",
+        "holdout_fraction",
+        "cost_sensitivity_multipliers",
+        mode="before",
+    )
+    @classmethod
+    def finite_numbers(cls, value: Any) -> Any:
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            try:
+                finite = math.isfinite(float(item))
+            except (TypeError, ValueError):
+                finite = False
+            if isinstance(item, bool) or not finite:
+                raise ValueError("must contain only finite numbers")
+        return value
+
+    @field_validator("assets")
+    @classmethod
+    def normalize_assets(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip().upper() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("asset names cannot be empty")
+        return list(dict.fromkeys(normalized))
+
+    @field_validator("cost_sensitivity_multipliers")
+    @classmethod
+    def validate_cost_sensitivity(cls, values: list[float]) -> list[float]:
+        if not values or any(value <= 0 for value in values):
+            raise ValueError("cost_sensitivity_multipliers must be positive")
+        return values
+
+    @model_validator(mode="after")
+    def validate_range(self) -> BacktestRequest:
+        if self.start_time.tzinfo is None or self.end_time.tzinfo is None:
+            raise ValueError("start_time and end_time must be timezone-aware")
+        if self.start_time >= self.end_time:
+            raise ValueError("start_time must be before end_time")
+        return self
+
+    def to_domain(self, archive_path: Path) -> BacktestRunConfig:
+        filters = self.filters.model_copy(update={"assets": self.assets})
+        return BacktestRunConfig(
+            archive=JsonlOptionSnapshotArchive(archive_path),
+            start_time=self.start_time,
+            end_time=self.end_time,
+            assets=tuple(self.assets),
+            scan_request=filters.to_scan_request(),
+            exit_policy=self.exit_policy.to_domain(),
+            signal_interval=timedelta(minutes=self.signal_interval_minutes),
+            max_signals_per_snapshot=self.max_signals_per_snapshot,
+            validation=ValidationConfig(
+                holdout_fraction=self.holdout_fraction,
+                minimum_train_samples=self.minimum_train_samples,
+                minimum_holdout_samples=self.minimum_holdout_samples,
+                cost_sensitivity_multipliers=tuple(self.cost_sensitivity_multipliers),
+                lookahead_verified=True,
+            ),
+        )
+
+
 def create_app(
     adapter: ScannerAdapter | None = None,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult] = scan_opportunities,
     historical_volatility_loader: HistoricalVolatilityLoader | None = None,
+    backtest_runner: Callable[[BacktestRequest], Any] | None = None,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
 
@@ -455,6 +585,7 @@ def create_app(
     else:
         market_adapter = adapter
         history_loader = historical_volatility_loader
+    run_backtest = backtest_runner or _default_backtest_runner
     app = FastAPI(title="Crypto Options Scanner API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -651,7 +782,34 @@ def create_app(
             raise ApiError(422, "scenario_invalid", str(exc)) from exc
         return JSONResponse(content=_serialize(report))
 
+    @app.post("/api/v1/backtests")
+    async def backtest(request: BacktestRequest) -> JSONResponse:
+        try:
+            result = await _maybe_await(run_backtest(request))
+        except BacktestDataUnavailable as exc:
+            raise ApiError(422, "backtest_data_unavailable", str(exc)) from exc
+        except (FileNotFoundError, OSError) as exc:
+            raise ApiError(422, "backtest_data_unavailable", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(422, "backtest_invalid", str(exc)) from exc
+        except Exception as exc:
+            logger.exception("[OPTIONS] backtest failed")
+            raise ApiError(500, "backtest_failed", "Backtest failed") from exc
+        payload = _serialize(result)
+        if isinstance(result, BacktestResult) and isinstance(payload, dict):
+            payload["equity_curve"] = _serialize(result.equity_curve)
+        return JSONResponse(content=payload)
+
     return app
+
+
+def _default_backtest_runner(request: BacktestRequest) -> Any:
+    archive_value = os.getenv(_BACKTEST_ARCHIVE_ENV, "").strip()
+    if not archive_value:
+        raise BacktestDataUnavailable(
+            f"historical archive is not configured; set {_BACKTEST_ARCHIVE_ENV} to a JSONL snapshot archive"
+        )
+    return run_snapshot_backtest(request.to_domain(Path(archive_value)))
 
 
 async def _execute_scan(
@@ -964,6 +1122,8 @@ def _opportunity_value(opportunity: Any, names: tuple[str, ...]) -> Any | None:
 
 
 __all__ = [
+    "BacktestExitPolicyRequest",
+    "BacktestRequest",
     "ExecutionAssumptionsRequest",
     "MarketScenarioRequest",
     "ScanFilters",

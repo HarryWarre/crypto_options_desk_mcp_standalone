@@ -78,6 +78,13 @@ available separately through `options_lib.ev_validation.validate_backtest`.
 The evidence helper can be used on timestamped outcomes with
 `options_lib.ev_validation.validate_backtest`.
 
+The web app also includes historical options backtesting with explicit exit
+rules, top-of-book execution costs, trade-level results, unresolved signals,
+and train/holdout evidence. Configure `OPTIONS_BACKTEST_ARCHIVE` with a
+prospectively captured JSONL archive before calling `POST /api/v1/backtests`.
+See [`docs/options-backtest.md`](docs/options-backtest.md) for setup and the
+optional NautilusTrader catalog bridge.
+
 Historical option data is intentionally split by data quality. The
 `BybitPublicClient.get_option_mark_price_history()` method downloads historical
 mark-price candles per option symbol. For complete bid/ask, IV, Greeks, OI, and
