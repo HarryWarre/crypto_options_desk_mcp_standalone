@@ -1003,10 +1003,11 @@ def _serialize_scan_result(
     else:
         payload = _serialize(result)
         opportunities = result.opportunities
+    theoretical = scan_request.valuation_mode == "theoretical"
     payload["opportunities"] = [
         _serialize_opportunity(opportunity)
         for opportunity in opportunities
-        if _passes_expected_value_filter(opportunity, filters.min_expected_value)
+        if theoretical or _passes_expected_value_filter(opportunity, filters.min_expected_value)
     ]
     applied_filters = {
         "min_dte": scan_request.min_dte,
@@ -1021,22 +1022,23 @@ def _serialize_scan_result(
         "min_expected_value": filters.min_expected_value,
         "max_results": scan_request.max_results,
     }
+    ignored_filters = (
+        ["max_spread_pct", "min_edge_after_costs", "max_loss", "min_expected_value"]
+        if theoretical
+        else []
+    )
     payload["scan_context"] = {
         "applied_filters": applied_filters,
         "expected_value_filter": {
-            "enabled": filters.min_expected_value is not None,
+            "enabled": filters.min_expected_value is not None and not theoretical,
             "minimum_expected_value": filters.min_expected_value,
-            "source": "opportunity.expected_value",
+            "source": "ignored_in_theoretical_mode" if theoretical else "opportunity.expected_value",
         },
     }
     # The request is authoritative so legacy/injected scanners cannot hide the
     # mode selected by the caller in the HTTP response.
     payload["valuation_mode"] = scan_request.valuation_mode
-    payload["ignored_filters"] = (
-        ["max_spread_pct", "min_edge_after_costs", "max_loss"]
-        if scan_request.valuation_mode == "theoretical"
-        else []
-    )
+    payload["ignored_filters"] = ignored_filters
     if filters.market_view is not None and filters.time_horizon is not None:
         assumptions = {
             "valuation_mode": scan_request.valuation_mode,

@@ -98,7 +98,7 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "breakevens" in javascript.text
     assert 'P&L tại đáo hạn ${number(point.pnl, 2)}' in javascript.text
     assert 'node.setAttribute("aria-label"' in javascript.text
-    assert '"/api/v1/scenarios"' in javascript.text
+    assert '"/api/v1/scenarios"' not in javascript.text
     assert "max_loss" in javascript.text
     assert "max_profit" in javascript.text
     for strategy in (

@@ -66,9 +66,9 @@ conservative and clearly separate.
 - Theoretical output is explicitly non-executable and cannot expose a fake
   executable entry, edge-after-costs, slippage-adjusted edge, or tradable
   maximum-loss claim.
-- Theoretical mode reports `max_spread_pct`, `min_edge_after_costs`, and
-  `max_loss` as ignored filters and does not require a max-loss input in the
-  simple scan form.
+- Theoretical mode reports `max_spread_pct`, `min_edge_after_costs`,
+  `max_loss`, and `min_expected_value` as ignored filters and does not
+  require a max-loss input in the simple scan form.
 - Existing response fields remain backward-compatible for executable scans.
 - The live scan does not call mark-price history in either mode.
 - One asset's missing/invalid quotes do not remove another asset's results.

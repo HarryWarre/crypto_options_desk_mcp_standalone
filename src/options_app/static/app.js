@@ -693,7 +693,7 @@ function renderPayoffDetail(item) {
   }
 }
 
-async function showOpportunityDetail(item) {
+function showOpportunityDetail(item) {
   selectedOpportunity = item;
   detailPanel.hidden = false;
   const legs = opportunityLegs(item);
@@ -709,31 +709,7 @@ async function showOpportunityDetail(item) {
   pnlChartStatus.textContent = "Đang dựng biểu đồ";
   setScenarioState("Đang đọc payoff tại đáo hạn từ kết quả quét…");
   detailPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-  const requestId = ++scenarioRequestId;
-  const spec = buildAutomaticScenarioSet(item);
-  pnlChartAssumptions.textContent = `${isTheoreticalMode(item?.valuation_mode || activeScanValuationMode) ? "Theoretical mode: đây là mô phỏng giá trị mô hình, không phải giá khớp hay cam kết lãi/lỗ. " : ""}Mô phỏng tự động từ ngày 0 đến ngày ${dayLabel(spec.horizon)}: giá cơ sở được stress ở −10%, −5%, 0%, +5%, +10% so với hiện tại và IV giữ nguyên. Đây là mô phỏng tham khảo, không phải dự đoán đường giá.`;
-  try {
-    const report = await getJson("/api/v1/scenarios", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        strategy_type: scenarioStrategyType(item.strategy),
-        legs: legs.map((leg) => scenarioLeg(item, leg, legs)),
-        scenarios: spec.scenarios,
-        execution: {
-          fee_per_contract: Number(activeScanContext?.assumptions?.fee_per_contract ?? form.elements.fee_per_contract.value),
-          slippage_bps: Number(activeScanContext?.assumptions?.slippage_bps ?? form.elements.slippage_bps.value),
-          contract_multiplier: Number(activeScanContext?.assumptions?.contract_multiplier ?? form.elements.contract_multiplier.value),
-          exit_price_source: "model",
-        },
-      }),
-    });
-    if (requestId === scenarioRequestId && selectedOpportunity === item) renderScenarioReport(report, spec);
-  } catch (error) {
-    if (requestId !== scenarioRequestId || selectedOpportunity !== item) return;
-    pnlChartStatus.textContent = "Không có dữ liệu";
-    setScenarioState(error.message, "error");
-  }
+  renderPayoffDetail(item);
 }
 
 function renderAssets(payload) {
@@ -847,11 +823,13 @@ function renderScanContext(context) {
   const edgeText = Number(appliedFilters.min_iv_edge) > 0
     ? ` · Edge IV tối thiểu: ${percent(appliedFilters.min_iv_edge)}`
     : "";
-  const expectedValueText = appliedFilters.min_expected_value === null
+  const expectedValueText = theoretical
+    ? " · EV: không tính"
+    : appliedFilters.min_expected_value === null
     ? " · EV: không lọc"
     : ` · EV tối thiểu: ${number(appliedFilters.min_expected_value, 2)}`;
   const ignoredText = theoretical && context.ignored_filters?.length
-    ? " · Bỏ qua: spread, edge sau phí, lỗ tối đa"
+    ? " · Bỏ qua: spread, edge sau phí, lỗ tối đa, EV"
     : "";
   scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Mode: ${valuationModeLabel(context.valuation_mode || activeScanValuationMode)} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${theoretical ? "" : edgeText}${expectedValueText}${ignoredText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
   scanContext.hidden = false;

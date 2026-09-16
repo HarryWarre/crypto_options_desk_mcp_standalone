@@ -49,6 +49,12 @@ class MetricsOpportunity:
     expected_value_status: str = "not_validated"
 
 
+@dataclass(frozen=True)
+class TheoreticalMetricsOpportunity(MetricsOpportunity):
+    expected_value: float | None = None
+    valuation_mode: str = "theoretical"
+
+
 SCENARIO_LEG = {
     "symbol": "BTC-30DEC26-78000-C",
     "option_type": "call",
@@ -532,6 +538,7 @@ async def test_theoretical_simple_scan_does_not_require_max_loss() -> None:
         "max_spread_pct",
         "min_edge_after_costs",
         "max_loss",
+        "min_expected_value",
     ]
 
 
@@ -713,6 +720,44 @@ async def test_default_scan_filters_on_expected_value_and_reports_its_threshold(
         "enabled": True,
         "minimum_expected_value": 0.0,
         "source": "opportunity.expected_value",
+    }
+
+
+@pytest.mark.asyncio
+async def test_theoretical_scan_keeps_candidates_without_expected_value() -> None:
+    opportunity = TheoreticalMetricsOpportunity()
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(opportunity,),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+            valuation_mode=scan_request.valuation_mode,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["XRP"], "strategies": ["long_call"], "valuation_mode": "theoretical"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["symbol"] for item in body["opportunities"]] == [opportunity.symbol]
+    assert body["ignored_filters"] == [
+        "max_spread_pct",
+        "min_edge_after_costs",
+        "max_loss",
+        "min_expected_value",
+    ]
+    assert body["scan_context"]["expected_value_filter"] == {
+        "enabled": False,
+        "minimum_expected_value": 0.0,
+        "source": "ignored_in_theoretical_mode",
     }
 
 

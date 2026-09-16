@@ -100,9 +100,11 @@ produces an explicit degraded context rather than crashing the scan stream.
   or non-positive. Do not calculate executable entry, exit, spread-adjusted
   edge, fee/slippage edge, or a tradable max-loss claim from a mark price.
   If a reference mark price is shown, label it as a non-executable reference.
-- In theoretical mode, report `max_spread_pct`, `min_edge_after_costs`, and
-  `max_loss` as ignored execution filters. The browser disables those inputs;
-  the API may accept them for compatibility but must expose the ignored list.
+- In theoretical mode, report `max_spread_pct`, `min_edge_after_costs`,
+  `max_loss`, and `min_expected_value` as ignored execution filters. The
+  browser disables those inputs; the API may accept them for compatibility but
+  must expose the ignored list. Theoretical output does not calculate EV, so
+  the default EV gate must never remove a theoretical candidate.
 - Preserve a separate executable opportunity collection and expose theoretical
   valuations through an explicit collection or an equivalently typed status;
   consumers must not need to infer the distinction from null numeric fields.
