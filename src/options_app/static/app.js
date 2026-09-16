@@ -6,6 +6,7 @@ const resultState = document.querySelector("#result-state");
 const resultsBody = document.querySelector("#results-body");
 const secondaryResults = document.querySelector("#secondary-results");
 const resultsGuide = document.querySelector("#results-guide");
+const valuationModeNotice = document.querySelector("#valuation-mode-notice");
 const scanContext = document.querySelector("#scan-context");
 const historicalContext = document.querySelector("#historical-context");
 const opportunityExplanations = document.querySelector("#opportunity-explanations");
@@ -36,6 +37,16 @@ const backtestDteField = document.querySelector("#backtest-dte-field");
 
 let selectedOpportunity = null;
 let activeScanContext = null;
+let activeScanValuationMode = "executable";
+
+const valuationModeInputs = [...form.querySelectorAll('input[name="valuation_mode"]')];
+const modeSensitiveInputNames = [
+  "quick_max_loss",
+  "max_loss",
+  "max_spread_pct",
+  "min_edge_after_costs",
+];
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const STRATEGY_LABELS = Object.freeze({
@@ -288,8 +299,33 @@ function signedPriceLabel(value) {
   return `Trả premium khoảng ${number(amount, 2)}`;
 }
 
+function isTheoreticalMode(value) {
+  return String(value || "").toLowerCase() === "theoretical";
+}
+
+function valuationModeLabel(value) {
+  return isTheoreticalMode(value) ? "Theoretical" : "Executable";
+}
+
+function selectedValuationMode() {
+  return form.querySelector('input[name="valuation_mode"]:checked')?.value || "executable";
+}
+
+function syncValuationModeInputs() {
+  const theoretical = isTheoreticalMode(selectedValuationMode());
+  modeSensitiveInputNames.forEach((name) => {
+    const input = form.elements[name];
+    if (!input) return;
+    input.disabled = theoretical;
+    input.closest("label")?.classList.toggle("mode-disabled", theoretical);
+  });
+}
+
 function strategyTakeaway(item, legs) {
   const asset = firstDefined(item?.asset, "tài sản");
+  if (isTheoreticalMode(item?.valuation_mode || activeScanValuationMode)) {
+    return `Đây là tham khảo giá trị mô hình của ${asset}; không có giá bid/ask đáng tin cậy để khẳng định giá khớp, edge hoặc lỗ tối đa.`;
+  }
   const strategy = normalizedStrategy(item?.strategy);
   const strikes = legs
     .map(legStrike)
@@ -350,6 +386,7 @@ function explanationFact(label, value, className = "") {
 
 function renderOpportunityExplanation(item, index) {
   const legs = opportunityLegs(item);
+  const theoretical = isTheoreticalMode(item?.valuation_mode || activeScanValuationMode);
   const card = document.createElement("article");
   card.className = "explanation-card";
 
@@ -359,7 +396,7 @@ function renderOpportunityExplanation(item, index) {
   title.textContent = `${index + 1}. ${firstDefined(item?.asset, "—")} · ${strategyLabel(item?.strategy)}`;
   const badge = document.createElement("span");
   badge.className = "badge";
-  badge.textContent = `${legs.length} chân`;
+  badge.textContent = theoretical ? `${legs.length} chân · Theoretical` : `${legs.length} chân`;
   heading.append(title, badge);
   card.appendChild(heading);
 
@@ -393,13 +430,13 @@ function renderOpportunityExplanation(item, index) {
   const facts = document.createElement("div");
   facts.className = "explanation-facts";
   facts.append(
-    explanationFact("Tiền vào/ra ước tính", signedPriceLabel(executablePrice)),
-    explanationFact("Mô hình định giá", signedPriceLabel(fairPrice)),
-    explanationFact("Edge sau phí", Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "—", edge >= 0 ? "positive" : "negative"),
-    explanationFact("EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev))),
-    explanationFact("Xác suất có lãi", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit))),
-    explanationFact("RR", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio))),
-    explanationFact("Lỗ tối đa", number(item?.max_loss, 2), "negative"),
+    explanationFact("Tiền vào/ra ước tính", theoretical ? "Không có giá khớp" : signedPriceLabel(executablePrice), theoretical ? "theoretical-value" : ""),
+    explanationFact("Mô hình định giá", signedPriceLabel(fairPrice), theoretical ? "theoretical-value" : ""),
+    explanationFact("Edge sau phí", theoretical ? "Không tính" : Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "—", theoretical ? "theoretical-value" : edge >= 0 ? "positive" : "negative"),
+    explanationFact("EV ước tính", theoretical ? "Không tính" : estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), theoretical ? "theoretical-value" : ""),
+    explanationFact("Xác suất có lãi", theoretical ? "Không tính" : estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), theoretical ? "theoretical-value" : ""),
+    explanationFact("RR", theoretical ? "Không tính" : estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), theoretical ? "theoretical-value" : ""),
+    explanationFact("Lỗ tối đa", theoretical ? "Không tính" : number(item?.max_loss, 2), theoretical ? "theoretical-value" : "negative"),
   );
   card.appendChild(facts);
 
@@ -408,9 +445,9 @@ function renderOpportunityExplanation(item, index) {
   const maxProfit = item?.max_profit;
   const breakevens = Array.isArray(item?.breakevens) ? item.breakevens : [];
   const parts = [];
-  if (maxProfit !== undefined && maxProfit !== null) parts.push(`Lãi tối đa: ${number(maxProfit, 2)}`);
+  if (!theoretical && maxProfit !== undefined && maxProfit !== null) parts.push(`Lãi tối đa: ${number(maxProfit, 2)}`);
   if (breakevens.length) parts.push(`Hòa vốn: ${breakevens.map((value) => `K${number(value, 2)}`).join(" và ")}`);
-  parts.push(`IV edge: ${percent(item?.iv_edge)}`);
+  parts.push(`${theoretical ? "IV edge mô hình" : "IV edge"}: ${percent(item?.iv_edge)}`);
   extra.textContent = parts.join(" · ");
   card.appendChild(extra);
   return card;
@@ -672,7 +709,31 @@ async function showOpportunityDetail(item) {
   pnlChartStatus.textContent = "Đang dựng biểu đồ";
   setScenarioState("Đang đọc payoff tại đáo hạn từ kết quả quét…");
   detailPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-  renderPayoffDetail(item);
+  const requestId = ++scenarioRequestId;
+  const spec = buildAutomaticScenarioSet(item);
+  pnlChartAssumptions.textContent = `${isTheoreticalMode(item?.valuation_mode || activeScanValuationMode) ? "Theoretical mode: đây là mô phỏng giá trị mô hình, không phải giá khớp hay cam kết lãi/lỗ. " : ""}Mô phỏng tự động từ ngày 0 đến ngày ${dayLabel(spec.horizon)}: giá cơ sở được stress ở −10%, −5%, 0%, +5%, +10% so với hiện tại và IV giữ nguyên. Đây là mô phỏng tham khảo, không phải dự đoán đường giá.`;
+  try {
+    const report = await getJson("/api/v1/scenarios", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        strategy_type: scenarioStrategyType(item.strategy),
+        legs: legs.map((leg) => scenarioLeg(item, leg, legs)),
+        scenarios: spec.scenarios,
+        execution: {
+          fee_per_contract: Number(activeScanContext?.assumptions?.fee_per_contract ?? form.elements.fee_per_contract.value),
+          slippage_bps: Number(activeScanContext?.assumptions?.slippage_bps ?? form.elements.slippage_bps.value),
+          contract_multiplier: Number(activeScanContext?.assumptions?.contract_multiplier ?? form.elements.contract_multiplier.value),
+          exit_price_source: "model",
+        },
+      }),
+    });
+    if (requestId === scenarioRequestId && selectedOpportunity === item) renderScenarioReport(report, spec);
+  } catch (error) {
+    if (requestId !== scenarioRequestId || selectedOpportunity !== item) return;
+    pnlChartStatus.textContent = "Không có dữ liệu";
+    setScenarioState(error.message, "error");
+  }
 }
 
 function renderAssets(payload) {
@@ -775,9 +836,12 @@ function renderScanContext(context) {
   };
   const horizons = { "0_7": "0–7 ngày", "7_30": "7–30 ngày", "30_90": "30–90 ngày" };
   const strategies = (context.strategies || []).map(strategyLabel).join(", ");
+  const theoretical = isTheoreticalMode(context.valuation_mode || activeScanValuationMode);
   const assumptions = context.assumptions || {};
   const appliedFilters = context.applied_filters || {};
-  const maxLoss = context.max_loss === null || context.max_loss === undefined
+  const maxLoss = theoretical
+    ? "không dùng để khẳng định lỗ"
+    : context.max_loss === null || context.max_loss === undefined
     ? "không giới hạn"
     : number(context.max_loss, 2);
   const edgeText = Number(appliedFilters.min_iv_edge) > 0
@@ -786,8 +850,26 @@ function renderScanContext(context) {
   const expectedValueText = appliedFilters.min_expected_value === null
     ? " · EV: không lọc"
     : ` · EV tối thiểu: ${number(appliedFilters.min_expected_value, 2)}`;
-  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${edgeText}${expectedValueText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
+  const ignoredText = theoretical && context.ignored_filters?.length
+    ? " · Bỏ qua: spread, edge sau phí, lỗ tối đa"
+    : "";
+  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Mode: ${valuationModeLabel(context.valuation_mode || activeScanValuationMode)} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${theoretical ? "" : edgeText}${expectedValueText}${ignoredText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
   scanContext.hidden = false;
+}
+
+function renderValuationModeNotice(mode) {
+  if (!valuationModeNotice) return;
+  valuationModeNotice.replaceChildren();
+  if (!isTheoreticalMode(mode)) {
+    valuationModeNotice.hidden = true;
+    return;
+  }
+  const title = document.createElement("strong");
+  title.textContent = "Theoretical mode — chỉ định giá mô hình";
+  const explanation = document.createElement("span");
+  explanation.textContent = "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả chỉ là fair value, IV và Greeks tham khảo; không phải giá khớp, không tính edge sau phí/lỗ tối đa, spread hay bộ lọc giao dịch và không dùng để đặt giao dịch.";
+  valuationModeNotice.append(title, explanation);
+  valuationModeNotice.hidden = false;
 }
 
 function historicalContextStatus(context) {
@@ -920,17 +1002,26 @@ function simpleScanContext(strategy, horizon) {
 }
 
 function renderResults(payload) {
+  activeScanValuationMode = payload.valuation_mode || payload.scan_context?.valuation_mode || "executable";
   activeScanContext = payload.scan_context || null;
   resultsBody.replaceChildren();
   secondaryResults.replaceChildren();
   opportunityExplanations.replaceChildren();
   renderScanContext(payload.scan_context);
+  renderValuationModeNotice(activeScanValuationMode);
   renderHistoricalContext(payload.historical_volatility_contexts);
   detailPanel.hidden = true;
   selectedOpportunity = null;
   const opportunities = payload.opportunities || [];
   resultsGuide.hidden = !opportunities.length;
+  const guide = resultsGuide.querySelector("span");
+  if (guide) {
+    guide.textContent = isTheoreticalMode(activeScanValuationMode)
+      ? "Các dòng dưới đây là fair value/IV/Greeks từ mô hình. Bid/ask thiếu không được thay bằng giá giả; edge, lãi/lỗ và khả năng khớp không được suy ra từ kết quả này."
+      : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
+  }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
+  else if (isTheoreticalMode(activeScanValuationMode)) setState(`${opportunities.length} định giá lý thuyết đạt điều kiện; không phải cơ hội giao dịch.`);
   else setState(`${opportunities.length} cơ hội đạt điều kiện.`);
   opportunities.forEach((item, index) => {
     opportunityExplanations.appendChild(renderOpportunityExplanation(item, index));
@@ -938,18 +1029,29 @@ function renderResults(payload) {
     renderInstrumentCell(row, item);
     cell(row, expiryLabel(item));
     cell(row, strategyLabel(item.strategy));
-    cell(row, number(item.market_mid));
-    cell(row, number(item.fair_price));
+    const theoretical = isTheoreticalMode(item.valuation_mode || activeScanValuationMode);
+    const hasPositiveQuote = Number(item.bid_price) > 0 && Number(item.ask_price) > 0;
+    const quoteLabel = hasPositiveQuote
+      ? `Tham khảo ${number(item.market_mid)} · không dùng để khớp`
+      : "Thiếu bid/ask · không có giá khớp";
+    cell(row, theoretical ? quoteLabel : number(item.market_mid), theoretical ? "theoretical-value" : "");
+    cell(row, number(item.fair_price), theoretical ? "theoretical-value" : "");
     cell(row, percent(item.iv_edge), item.iv_edge >= 0 ? "positive" : "negative");
-    cell(row, number(item.edge_after_costs), item.edge_after_costs >= 0 ? "positive" : "negative");
-    cell(row, number(item.max_loss));
+    cell(row, theoretical ? "Không tính" : number(item.edge_after_costs), theoretical ? "theoretical-value" : item.edge_after_costs >= 0 ? "positive" : "negative");
+    cell(row, theoretical ? "Không tính" : number(item.max_loss), theoretical ? "theoretical-value" : "");
     cell(row, `OI ${number(item.open_interest, 0)} · Vol ${number(item.volume_24h, 0)}`);
     const actionCell = document.createElement("td");
     const detailButton = document.createElement("button");
     detailButton.type = "button";
     detailButton.className = "secondary-button compact-button";
-    detailButton.textContent = "Xem payoff";
-    detailButton.addEventListener("click", () => showOpportunityDetail(item));
+    if (theoretical) {
+      detailButton.disabled = true;
+      detailButton.textContent = "P&L cần bid/ask";
+      detailButton.title = "Theoretical mode không có quote thực thi để dựng P&L giao dịch.";
+    } else {
+      detailButton.textContent = "Xem payoff / P&L";
+      detailButton.addEventListener("click", () => showOpportunityDetail(item));
+    }
     actionCell.appendChild(detailButton);
     row.appendChild(actionCell);
     resultsBody.appendChild(row);
@@ -986,6 +1088,7 @@ form.addEventListener("submit", async (event) => {
   const useAdvancedFilters = Boolean(advancedFilters?.open);
   const strategies = selectedStrategies(data);
   const assets = data.getAll("assets");
+  const valuationMode = data.get("valuation_mode") || "executable";
   if (!assets.length) {
     setState("Hãy chọn ít nhất một tài sản để quét.", "error");
     return;
@@ -998,11 +1101,12 @@ form.addEventListener("submit", async (event) => {
   const maxLoss = useAdvancedFilters
     ? optionalNumber(data, "max_loss")
     : optionalNumber(data, "quick_max_loss");
-  if (!useAdvancedFilters && maxLoss === null) {
+  if (!useAdvancedFilters && maxLoss === null && valuationMode !== "theoretical") {
     setState("Hãy nhập mức lỗ tối đa cho mỗi ý tưởng.", "error");
     return;
   }
   const payload = {
+    valuation_mode: valuationMode,
     risk_free_rate: useAdvancedFilters
       ? optionalDecimal(data, "risk_free_rate_pct", 100) ?? 0.05
       : 0.05,
@@ -1107,6 +1211,8 @@ backtestForm.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
+valuationModeInputs.forEach((input) => input.addEventListener("change", syncValuationModeInputs));
+syncValuationModeInputs();
 
 clearTerminalButton.addEventListener("click", clearTerminal);
 

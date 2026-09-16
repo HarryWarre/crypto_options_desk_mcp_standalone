@@ -321,6 +321,41 @@ async def test_load_universe_rejects_missing_result_and_non_positive_prices():
 
 
 @pytest.mark.asyncio
+async def test_load_universe_keeps_model_valid_contract_without_bid_or_ask() -> None:
+    symbol = "MNT-25SEP26-1-C"
+    responses = {
+        "instruments": {
+            "first": {
+                "retCode": 0,
+                "result": {
+                    "list": [_instrument(symbol, base_coin="MNT", strike="1")],
+                    "nextPageCursor": "",
+                },
+            }
+        },
+        "tickers": {
+            "MNT": {
+                "retCode": 0,
+                "time": datetime_to_ms(VALUATION_TIME),
+                "result": {
+                    "list": [_ticker(symbol, bid1Price="", ask1Price="0")]
+                },
+            }
+        },
+    }
+
+    universe = await _adapter(FixturePublicRequest(responses)).load_universe()
+
+    assert len(universe.contracts) == 1
+    contract = universe.contracts[0]
+    assert contract.bid_price is None
+    assert contract.ask_price == 0.0
+    assert contract.mark_price > 0
+    assert contract.mark_iv > 0
+    assert "missing_bid_price" in {issue.code for issue in universe.issues}
+
+
+@pytest.mark.asyncio
 async def test_discovery_rejects_metadata_that_disagrees_with_symbol():
     asset_mismatch = "BTC-25SEP26-78000-C"
     type_mismatch = "ETH-25SEP26-3000-P"

@@ -28,7 +28,7 @@ from .historical_volatility import (
 )
 from .payoff_metrics import METHODOLOGY as PAYOFF_METRICS_METHODOLOGY
 from .payoff_metrics import PayoffAssumptions, PayoffPoint, calculate_payoff_metrics
-from .pricing import FairValueRequest, PricingValidationError, price_fair_value
+from .pricing import FairValueRequest, FairValueResult, PricingValidationError, price_fair_value
 from .scenario_engine import ExecutionAssumptions, OptionLeg, StrategyDefinition
 from .volatility_surface import (
     SurfaceConfig,
@@ -55,6 +55,12 @@ Strategy = Literal[
     "broken_wing_butterfly",
 ]
 EvidenceStatus = Literal["not_validated", "insufficient_evidence"]
+ValuationMode = Literal["executable", "theoretical"]
+_THEORETICAL_IGNORED_FILTERS = (
+    "max_spread_pct",
+    "min_edge_after_costs",
+    "max_loss",
+)
 
 
 @dataclass(frozen=True)
@@ -88,9 +94,12 @@ class ScanRequest:
     strategies: tuple[str, ...] = ("long_call", "long_put")
     max_results: int | None = None
     surface_config: SurfaceConfig | None = None
+    valuation_mode: ValuationMode = "executable"
 
     def __post_init__(self) -> None:
         _finite("risk_free_rate", self.risk_free_rate)
+        if self.valuation_mode not in {"executable", "theoretical"}:
+            raise ValueError("valuation_mode must be executable or theoretical")
         for name in (
             "min_dte",
             "max_dte",
@@ -152,8 +161,8 @@ class OpportunityLeg:
     strike: float
     expiry_at: datetime
     spot_price: float
-    bid_price: float
-    ask_price: float
+    bid_price: float | None
+    ask_price: float | None
     market_iv: float
     fair_iv: float
     fair_price: float
@@ -162,6 +171,7 @@ class OpportunityLeg:
     open_interest: float
     quote_timestamp: datetime
     position: int
+    mark_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -174,20 +184,20 @@ class Opportunity:
     expiry_at: datetime
     dte: float
     spot_price: float
-    bid_price: float
-    ask_price: float
-    market_mid: float
+    bid_price: float | None
+    ask_price: float | None
+    market_mid: float | None
     market_iv: float
     fair_iv: float
     iv_edge: float
     surface_status: str
     fair_price: float
-    executable_entry: float
+    executable_entry: float | None
     fee: float
     slippage_cost: float
-    edge_after_costs: float
-    edge_pct: float
-    max_loss: float
+    edge_after_costs: float | None
+    edge_pct: float | None
+    max_loss: float | None
     delta: float
     volume_24h: float
     open_interest: float
@@ -201,7 +211,7 @@ class Opportunity:
     exit_slippage_cost: float = 0.0
     total_cost: float = 0.0
     execution_allowed: bool = False
-    max_profit: float = 0.0
+    max_profit: float | None = 0.0
     long_symbol: str | None = None
     short_symbol: str | None = None
     long_strike: float | None = None
@@ -220,6 +230,8 @@ class Opportunity:
     payoff_metrics_methodology: str = PAYOFF_METRICS_METHODOLOGY
     payoff_metrics_assumptions: PayoffAssumptions | None = None
     payoff_metrics_limitations: tuple[str, ...] = ()
+    valuation_mode: ValuationMode = "executable"
+    mark_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +267,8 @@ class ScanResult:
     evidence_status: EvidenceStatus = "insufficient_evidence"
     evidence_gate_status: str = "blocked_unvalidated"
     execution_allowed: bool = False
+    valuation_mode: ValuationMode = "executable"
+    ignored_filters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -341,12 +355,22 @@ def scan_opportunities(
                 if rejection:
                     rejections.append(rejection)
                     continue
+                if request.valuation_mode == "theoretical":
+                    _scan_theoretical_candidate(
+                        candidate,
+                        asset_contracts,
+                        request,
+                        universe.valuation_time,
+                        opportunities,
+                        rejections,
+                    )
+                    continue
                 try:
                     surface = build_volatility_surface(
-                        (
-                            _to_observation(contract)
-                            for contract in asset_contracts
-                            if contract.symbol != candidate.symbol
+                        _surface_observations(
+                            asset_contracts,
+                            excluded_symbols={candidate.symbol},
+                            allow_unquoted=request.valuation_mode == "theoretical",
                         ),
                         valuation_time=_as_utc(universe.valuation_time),
                         config=request.surface_config,
@@ -499,9 +523,14 @@ def scan_opportunities(
         _with_payoff_metrics(opportunity, request, universe.valuation_time)
         for opportunity in opportunities
     ]
-    opportunities.sort(
-        key=lambda item: (-item.edge_after_costs, -item.iv_edge, item.asset, item.symbol)
-    )
+    if request.valuation_mode == "theoretical":
+        opportunities.sort(
+            key=lambda item: (-item.fair_price, -item.iv_edge, item.asset, item.symbol)
+        )
+    else:
+        opportunities.sort(
+            key=lambda item: (-item.edge_after_costs, -item.iv_edge, item.asset, item.symbol)
+        )
     if request.max_results is not None:
         opportunities = opportunities[: request.max_results]
     return ScanResult(
@@ -527,6 +556,12 @@ def scan_opportunities(
         if request.include_unvalidated
         else "blocked_unvalidated",
         execution_allowed=False,
+        valuation_mode=request.valuation_mode,
+        ignored_filters=(
+            _THEORETICAL_IGNORED_FILTERS
+            if request.valuation_mode == "theoretical"
+            else ()
+        ),
     )
 
 
@@ -571,6 +606,9 @@ def _with_payoff_metrics(
     valuation_time: datetime,
 ) -> Opportunity:
     """Attach one consistently calculated payoff contract to any candidate."""
+
+    if opportunity.valuation_mode == "theoretical":
+        return opportunity
 
     scenario_legs = (
         ()
@@ -627,6 +665,256 @@ def _scenario_strategy(strategy: Strategy) -> str:
     if strategy in {"bull_put_vertical", "bear_put_vertical"}:
         return "put_vertical"
     return strategy
+
+
+def _scan_theoretical_candidate(
+    candidate: OptionContract,
+    asset_contracts: tuple[OptionContract, ...],
+    request: ScanRequest,
+    valuation_time: datetime,
+    opportunities: list[Opportunity],
+    rejections: list[RejectedCandidate],
+) -> None:
+    """Value a single contract without turning reference data into a quote."""
+
+    try:
+        surface = build_volatility_surface(
+            _surface_observations(
+                asset_contracts,
+                excluded_symbols={candidate.symbol},
+                allow_unquoted=request.valuation_mode == "theoretical",
+            ),
+            valuation_time=_as_utc(valuation_time),
+            config=request.surface_config,
+        ).surface_for(candidate.asset)
+        valued = price_fair_value(
+            FairValueRequest(
+                option_type=candidate.option_type,
+                spot=candidate.spot_price,
+                strike=candidate.strike,
+                expiry=_as_utc(candidate.expiry_at),
+                valuation_time=_as_utc(valuation_time),
+                iv=None,
+                risk_free_rate=request.risk_free_rate,
+                surface=surface,
+                prefer_observed_surface=False,
+            )
+        )
+    except (PricingValidationError, VolatilitySurfaceError, ValueError, KeyError) as exc:
+        rejections.append(_rejection(candidate, ("surface_or_pricing_failed",), (str(exc),)))
+        return
+
+    iv_edge = valued.fair_iv - candidate.mark_iv
+    reasons: list[str] = []
+    messages: list[str] = []
+    if iv_edge < request.min_iv_edge:
+        reasons.append("iv_edge_below_minimum")
+        messages.append(f"IV edge {iv_edge:.6f} is below {request.min_iv_edge:.6f}")
+    if not request.include_unvalidated:
+        reasons.append("evidence_not_validated")
+        messages.append("Historical out-of-sample evidence is not available")
+    if reasons:
+        rejections.append(_rejection(candidate, tuple(reasons), tuple(messages)))
+        return
+
+    market_mid = _positive_quote_mid(candidate.bid_price, candidate.ask_price)
+    opportunities.append(
+        Opportunity(
+            asset=candidate.asset,
+            symbol=candidate.symbol,
+            strategy=_strategy_for(candidate),
+            option_type=candidate.option_type,
+            strike=candidate.strike,
+            expiry_at=_as_utc(candidate.expiry_at),
+            dte=_dte(candidate.expiry_at, valuation_time),
+            spot_price=candidate.spot_price,
+            bid_price=candidate.bid_price,
+            ask_price=candidate.ask_price,
+            market_mid=market_mid,
+            market_iv=candidate.mark_iv,
+            fair_iv=valued.fair_iv,
+            iv_edge=iv_edge,
+            surface_status=valued.surface_status or "unknown",
+            fair_price=valued.fair_price,
+            executable_entry=None,
+            fee=0.0,
+            slippage_cost=0.0,
+            edge_after_costs=None,
+            edge_pct=None,
+            max_loss=None,
+            max_profit=None,
+            delta=valued.delta,
+            volume_24h=candidate.volume_24h,
+            open_interest=candidate.open_interest,
+            quote_timestamp=_as_utc(candidate.quote_timestamp),
+            evidence_status="insufficient_evidence",
+            edge_source="theoretical_fair_value_only",
+            execution_allowed=False,
+            long_symbol=candidate.symbol,
+            long_strike=candidate.strike,
+            risk_note="Theoretical valuation only; bid/ask is not an executable quote.",
+            valuation_mode="theoretical",
+            mark_price=candidate.mark_price,
+            legs=(
+                OpportunityLeg(
+                    symbol=candidate.symbol,
+                    option_type=candidate.option_type,
+                    strike=candidate.strike,
+                    expiry_at=_as_utc(candidate.expiry_at),
+                    spot_price=candidate.spot_price,
+                    bid_price=candidate.bid_price,
+                    ask_price=candidate.ask_price,
+                    market_iv=candidate.mark_iv,
+                    fair_iv=valued.fair_iv,
+                    fair_price=valued.fair_price,
+                    delta=valued.delta,
+                    volume_24h=candidate.volume_24h,
+                    open_interest=candidate.open_interest,
+                    quote_timestamp=_as_utc(candidate.quote_timestamp),
+                    position=1,
+                    mark_price=candidate.mark_price,
+                ),
+            ),
+        )
+    )
+
+
+def _append_theoretical_multi_leg(
+    strategy: str,
+    legs: tuple[OptionContract, ...],
+    positions: tuple[int, ...],
+    valued: tuple[FairValueResult, ...],
+    request: ScanRequest,
+    valuation_time: datetime,
+    opportunities: list[Opportunity],
+    rejections: list[RejectedCandidate],
+    *,
+    requires_underlying_position: bool = False,
+    risk_note: str | None = None,
+) -> None:
+    """Append a model-only structure without deriving execution metrics."""
+
+    fair_values = tuple(valued)
+    fair_price = sum(
+        position * value.fair_price
+        for position, value in zip(positions, fair_values)
+    ) * request.quantity * request.contract_multiplier
+    fair_iv = sum(
+        position * value.fair_iv for position, value in zip(positions, fair_values)
+    )
+    iv_edge = sum(
+        position * (value.fair_iv - leg.mark_iv)
+        for position, value, leg in zip(positions, fair_values, legs)
+    )
+    reasons: list[str] = []
+    messages: list[str] = []
+    if iv_edge < request.min_iv_edge:
+        reasons.append("iv_edge_below_minimum")
+        messages.append(f"IV edge {iv_edge:.6f} is below {request.min_iv_edge:.6f}")
+    if not request.include_unvalidated:
+        reasons.append("evidence_not_validated")
+        messages.append("Historical out-of-sample evidence is not available")
+    if reasons:
+        rejections.append(
+            _multi_leg_rejection(strategy, legs, tuple(reasons), tuple(messages))
+        )
+        return
+
+    scale = request.quantity * request.contract_multiplier
+    positive_quotes = all(
+        _positive_quote_mid(leg.bid_price, leg.ask_price) is not None for leg in legs
+    )
+    market_mid = None
+    bid_price = None
+    ask_price = None
+    if positive_quotes:
+        market_mid = sum(
+            position * (leg.bid_price + leg.ask_price) / 2.0
+            for position, leg in zip(positions, legs)
+        ) * scale
+        bid_price = sum(
+            (leg.bid_price if position > 0 else -leg.ask_price)
+            for position, leg in zip(positions, legs)
+        ) * scale
+        ask_price = sum(
+            (leg.ask_price if position > 0 else -leg.bid_price)
+            for position, leg in zip(positions, legs)
+        ) * scale
+    first = legs[0]
+    opportunities.append(
+        Opportunity(
+            asset=first.asset,
+            symbol="/".join(leg.symbol for leg in legs),
+            strategy=strategy,  # type: ignore[arg-type]
+            option_type="multi" if len(legs) > 1 else first.option_type,
+            strike=min(leg.strike for leg in legs),
+            expiry_at=_as_utc(first.expiry_at),
+            dte=_dte(first.expiry_at, valuation_time),
+            spot_price=first.spot_price,
+            bid_price=bid_price,
+            ask_price=ask_price,
+            market_mid=market_mid,
+            market_iv=sum(position * leg.mark_iv for position, leg in zip(positions, legs)),
+            fair_iv=fair_iv,
+            iv_edge=iv_edge,
+            surface_status=_surface_status(*(value.surface_status for value in fair_values)),
+            fair_price=fair_price,
+            executable_entry=None,
+            fee=0.0,
+            slippage_cost=0.0,
+            edge_after_costs=None,
+            edge_pct=None,
+            max_loss=None,
+            max_profit=None,
+            delta=sum(position * value.delta for position, value in zip(positions, fair_values)) * scale,
+            volume_24h=min(leg.volume_24h for leg in legs),
+            open_interest=min(leg.open_interest for leg in legs),
+            quote_timestamp=max(_as_utc(leg.quote_timestamp) for leg in legs),
+            evidence_status="insufficient_evidence",
+            edge_source="theoretical_fair_value_only",
+            execution_allowed=False,
+            long_symbol=next(
+                (leg.symbol for leg, position in zip(legs, positions) if position > 0),
+                None,
+            ),
+            short_symbol=next(
+                (leg.symbol for leg, position in zip(legs, positions) if position < 0),
+                None,
+            ),
+            long_strike=next(
+                (leg.strike for leg, position in zip(legs, positions) if position > 0),
+                None,
+            ),
+            short_strike=next(
+                (leg.strike for leg, position in zip(legs, positions) if position < 0),
+                None,
+            ),
+            requires_underlying_position=requires_underlying_position,
+            risk_note=risk_note or "Theoretical valuation only; bid/ask is not an executable quote.",
+            valuation_mode="theoretical",
+            legs=tuple(
+                OpportunityLeg(
+                    symbol=leg.symbol,
+                    option_type=leg.option_type,
+                    strike=leg.strike,
+                    expiry_at=_as_utc(leg.expiry_at),
+                    spot_price=leg.spot_price,
+                    bid_price=leg.bid_price,
+                    ask_price=leg.ask_price,
+                    market_iv=leg.mark_iv,
+                    fair_iv=value.fair_iv,
+                    fair_price=value.fair_price,
+                    delta=value.delta,
+                    volume_24h=leg.volume_24h,
+                    open_interest=leg.open_interest,
+                    quote_timestamp=_as_utc(leg.quote_timestamp),
+                    position=position,
+                    mark_price=leg.mark_price,
+                )
+                for leg, value, position in zip(legs, fair_values, positions)
+            ),
+        )
+    )
 
 
 def _scan_verticals(
@@ -980,12 +1268,13 @@ def _scan_overlay_candidate(
             )
         )
         return
+    position = 1 if strategy == "protective_put" else -1
     try:
         surface = build_volatility_surface(
-            (
-                _to_observation(contract)
-                for contract in asset_contracts
-                if contract.symbol != candidate.symbol
+            _surface_observations(
+                asset_contracts,
+                excluded_symbols={candidate.symbol},
+                allow_unquoted=request.valuation_mode == "theoretical",
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -1009,7 +1298,25 @@ def _scan_overlay_candidate(
         )
         return
 
-    position = 1 if strategy == "protective_put" else -1
+    if request.valuation_mode == "theoretical":
+        _append_theoretical_multi_leg(
+            strategy,
+            (candidate,),
+            (position,),
+            (valued,),
+            request,
+            valuation_time,
+            opportunities,
+            rejections,
+            requires_underlying_position=True,
+            risk_note=(
+                "Theoretical valuation only; protective put requires an existing spot/perpetual position."
+                if strategy == "protective_put"
+                else "Theoretical valuation only; covered call requires an existing spot/perpetual position."
+            ),
+        )
+        return
+
     scale = request.quantity * request.contract_multiplier
     entry_unit = candidate.ask_price if position > 0 else -candidate.bid_price
     fair_unit = valued.fair_price * position
@@ -1194,10 +1501,10 @@ def _scan_multi_leg_candidate(
     excluded = {leg.symbol for leg in legs}
     try:
         surface = build_volatility_surface(
-            (
-                _to_observation(contract)
-                for contract in asset_contracts
-                if contract.symbol not in excluded
+            _surface_observations(
+                asset_contracts,
+                excluded_symbols=excluded,
+                allow_unquoted=request.valuation_mode == "theoretical",
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -1227,6 +1534,19 @@ def _scan_multi_leg_candidate(
                 (str(exc),),
             )
         )
+        return
+
+    if request.valuation_mode == "theoretical":
+        _append_theoretical_multi_leg(
+            strategy,
+            legs,
+            _positions_for(strategy, legs),
+            valued,
+            request,
+            valuation_time,
+            opportunities,
+            rejections,
+            )
         return
 
     scale = request.quantity * request.contract_multiplier
@@ -1483,10 +1803,10 @@ def _scan_vertical_pair(
     try:
         excluded = {long_leg.symbol, short_leg.symbol}
         surface = build_volatility_surface(
-            (
-                _to_observation(contract)
-                for contract in asset_contracts
-                if contract.symbol not in excluded
+            _surface_observations(
+                asset_contracts,
+                excluded_symbols=excluded,
+                allow_unquoted=request.valuation_mode == "theoretical",
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -1527,6 +1847,19 @@ def _scan_vertical_pair(
                 (str(exc),),
             )
         )
+        return
+
+    if request.valuation_mode == "theoretical":
+        _append_theoretical_multi_leg(
+            strategy,
+            (long_leg, short_leg),
+            (1, -1),
+            (long_valued, short_valued),
+            request,
+            valuation_time,
+            opportunities,
+            rejections,
+            )
         return
 
     scale = request.quantity * request.contract_multiplier
@@ -1793,8 +2126,6 @@ def _precheck(
     numeric_fields = (
         candidate.spot_price,
         candidate.mark_iv,
-        candidate.bid_price,
-        candidate.ask_price,
         candidate.delta,
         candidate.volume_24h,
         candidate.open_interest,
@@ -1803,18 +2134,30 @@ def _precheck(
         finite_market_data = all(math.isfinite(float(value)) for value in numeric_fields)
     except (TypeError, ValueError):
         finite_market_data = False
-    if not finite_market_data:
+    quote_values = (candidate.bid_price, candidate.ask_price)
+    quote_values_finite = all(
+        value is None or math.isfinite(float(value)) for value in quote_values
+    )
+    quote_is_positive = all(value is not None and value > 0 for value in quote_values)
+    quote_is_inverted = (
+        candidate.bid_price is not None
+        and candidate.ask_price is not None
+        and candidate.ask_price < candidate.bid_price
+    )
+    quote_is_invalid = (
+        not quote_values_finite
+        or any(value is not None and value < 0 for value in quote_values)
+        or quote_is_inverted
+    )
+    if not finite_market_data or quote_is_invalid:
         reasons.append("invalid_market_data")
-        messages.append("Market quote contains a non-finite value")
-    elif (
-        candidate.spot_price <= 0
-        or candidate.mark_iv <= 0
-        or candidate.bid_price <= 0
-        or candidate.ask_price <= 0
-        or candidate.ask_price < candidate.bid_price
-    ):
+        messages.append("Market quote contains a non-finite or invalid value")
+    elif candidate.spot_price <= 0 or candidate.mark_iv <= 0:
         reasons.append("invalid_market_data")
-        messages.append("Market quote must have positive prices and a non-inverted spread")
+        messages.append("Market quote must have a positive spot price and IV")
+    elif request.valuation_mode == "executable" and not quote_is_positive:
+        reasons.append("invalid_market_data")
+        messages.append("Executable valuation requires positive bid and ask")
     if check_strategy and strategy not in request.strategies:
         reasons.append("strategy_not_allowed")
         messages.append(f"Strategy {strategy} was not selected")
@@ -1841,31 +2184,63 @@ def _precheck(
             reasons.append("volume_below_minimum")
         if candidate.open_interest < request.min_open_interest:
             reasons.append("open_interest_below_minimum")
-        mid = (candidate.bid_price + candidate.ask_price) / 2.0
-        if mid <= 0:
-            reasons.append("invalid_market_data")
-            messages.append("Market quote midpoint must be positive")
-        else:
-            spread_pct = (candidate.ask_price - candidate.bid_price) / mid
-            if request.max_spread_pct is not None and spread_pct > request.max_spread_pct:
-                reasons.append("spread_above_maximum")
+        mid = _positive_quote_mid(candidate.bid_price, candidate.ask_price)
+        if request.valuation_mode == "executable":
+            if mid is not None:
+                spread_pct = (candidate.ask_price - candidate.bid_price) / mid
+                if request.max_spread_pct is not None and spread_pct > request.max_spread_pct:
+                    reasons.append("spread_above_maximum")
+            else:
+                reasons.append("invalid_market_data")
+                messages.append("Market quote midpoint must be positive")
     if reasons:
         messages.extend(_filter_messages(reasons))
         return _rejection(candidate, tuple(reasons), tuple(messages))
     return None
 
 
-def _to_observation(contract: OptionContract) -> VolatilityObservation:
+def _surface_observations(
+    contracts: tuple[OptionContract, ...],
+    *,
+    excluded_symbols: set[str],
+    allow_unquoted: bool,
+) -> Iterator[VolatilityObservation]:
+    for contract in contracts:
+        if contract.symbol in excluded_symbols:
+            continue
+        observation = _to_observation(contract, allow_unquoted=allow_unquoted)
+        if observation is not None:
+            yield observation
+
+
+def _to_observation(
+    contract: OptionContract,
+    *,
+    allow_unquoted: bool,
+) -> VolatilityObservation | None:
+    bid = contract.bid_price if contract.bid_price is not None and contract.bid_price > 0 else None
+    ask = contract.ask_price if contract.ask_price is not None and contract.ask_price > 0 else None
+    if bid is None or ask is None:
+        if not allow_unquoted:
+            return None
+        bid = None
+        ask = None
     return VolatilityObservation(
         asset=contract.asset,
         expiry=_as_utc(contract.expiry_at),
         strike=contract.strike,
         spot=contract.spot_price,
         iv=contract.mark_iv,
-        bid=contract.bid_price,
-        ask=contract.ask_price,
+        bid=bid,
+        ask=ask,
         liquidity=max(contract.volume_24h, contract.open_interest),
     )
+
+
+def _positive_quote_mid(bid: float | None, ask: float | None) -> float | None:
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
+        return None
+    return (bid + ask) / 2.0
 
 
 def _strategy_for(contract: OptionContract) -> Strategy:
@@ -1932,5 +2307,6 @@ __all__ = [
     "RejectedCandidate",
     "ScanRequest",
     "ScanResult",
+    "ValuationMode",
     "scan_opportunities",
 ]

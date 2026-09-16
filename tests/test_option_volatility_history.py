@@ -44,6 +44,29 @@ async def test_loader_requests_period_30_and_normalizes_latest_point() -> None:
 
 
 @pytest.mark.asyncio
+async def test_loader_treats_naive_clock_and_as_of_as_utc() -> None:
+    naive_now = NOW.replace(tzinfo=None)
+    calls = []
+
+    async def fetch(asset, *, start_time, end_time, period):
+        calls.append((asset, start_time, end_time, period))
+        return [{"time": naive_now - timedelta(minutes=5), "value": 0.5, "period": period}]
+
+    loader = BybitHistoricalVolatilityContextLoader(
+        fetch,
+        now_fn=lambda: naive_now,
+    )
+    result = await loader.load(("btc",), as_of=naive_now)
+
+    context = result.for_asset("BTC")
+    assert context is not None
+    assert context.requested_at == NOW
+    assert context.retrieved_at == NOW
+    assert context.as_of == NOW - timedelta(minutes=5)
+    assert calls == [("BTC", NOW - timedelta(days=30), NOW, 30)]
+
+
+@pytest.mark.asyncio
 async def test_loader_deduplicates_assets_and_caches_for_one_hour() -> None:
     clock = [NOW]
     calls = []

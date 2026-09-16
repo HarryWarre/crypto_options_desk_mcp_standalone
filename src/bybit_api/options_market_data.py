@@ -24,7 +24,7 @@ logger = logging.getLogger("uvicorn.error")
 
 @dataclass(frozen=True)
 class OptionDataQualityIssue:
-    """A reason why a public market-data record was not normalized."""
+    """A quality caveat or reason a public market-data record was excluded."""
 
     code: str
     message: str
@@ -44,7 +44,7 @@ class OptionAsset:
 
 @dataclass(frozen=True)
 class OptionContract:
-    """A normalized, quality-checked public option quote."""
+    """A normalized public option record with optional executable quotes."""
 
     asset: str
     symbol: str
@@ -55,8 +55,8 @@ class OptionContract:
     spot_price: float
     mark_price: float
     mark_iv: float
-    bid_price: float
-    ask_price: float
+    bid_price: float | None
+    ask_price: float | None
     bid_iv: float | None
     ask_iv: float | None
     delta: float
@@ -697,8 +697,48 @@ class BybitOptionMarketDataAdapter:
         spot = required_number("underlyingPrice", strictly_positive=True)
         mark_price = required_number("markPrice", strictly_positive=True)
         mark_iv = required_number("markIv", minimum=0.0)
-        bid_price = required_number("bid1Price", minimum=0.0)
-        ask_price = required_number("ask1Price", minimum=0.0)
+        bid_price = self._number(ticker.get("bid1Price"))
+        ask_price = self._number(ticker.get("ask1Price"))
+        if bid_price is None:
+            issues.append(
+                OptionDataQualityIssue(
+                    code="missing_bid_price",
+                    message="Ticker bid1Price is missing; contract is not executable",
+                    symbol=instrument.symbol,
+                    asset=instrument.asset,
+                    field="bid_price",
+                )
+            )
+        elif bid_price < 0:
+            issues.append(
+                OptionDataQualityIssue(
+                    code="invalid_bid_price",
+                    message="Ticker bid1Price cannot be negative",
+                    symbol=instrument.symbol,
+                    asset=instrument.asset,
+                    field="bid_price",
+                )
+            )
+        if ask_price is None:
+            issues.append(
+                OptionDataQualityIssue(
+                    code="missing_ask_price",
+                    message="Ticker ask1Price is missing; contract is not executable",
+                    symbol=instrument.symbol,
+                    asset=instrument.asset,
+                    field="ask_price",
+                )
+            )
+        elif ask_price < 0:
+            issues.append(
+                OptionDataQualityIssue(
+                    code="invalid_ask_price",
+                    message="Ticker ask1Price cannot be negative",
+                    symbol=instrument.symbol,
+                    asset=instrument.asset,
+                    field="ask_price",
+                )
+            )
         delta = required_number("delta")
         gamma = required_number("gamma")
         theta = required_number("theta")
@@ -739,9 +779,18 @@ class BybitOptionMarketDataAdapter:
                 )
             )
 
-        if any(value is None for value in (spot, mark_price, mark_iv, bid_price, ask_price, delta, gamma, theta, vega, volume, open_interest)):
+        if any(value is None for value in (spot, mark_price, mark_iv, delta, gamma, theta, vega, volume, open_interest)):
             return None, issues
-        if mark_iv <= 0 or bid_price <= 0 or ask_price <= 0 or ask_price < bid_price:
+        if (
+            mark_iv <= 0
+            or (bid_price is not None and bid_price < 0)
+            or (ask_price is not None and ask_price < 0)
+            or (
+                bid_price is not None
+                and ask_price is not None
+                and ask_price < bid_price
+            )
+        ):
             return None, issues
 
         return (

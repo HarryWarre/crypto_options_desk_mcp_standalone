@@ -314,6 +314,46 @@ async def test_surface_summary_returns_quality_checked_slices() -> None:
 
 
 @pytest.mark.asyncio
+async def test_surface_summary_uses_liquidity_when_bid_ask_is_missing() -> None:
+    expiry = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+    contracts = tuple(
+        OptionContract(
+            asset="MNT",
+            symbol=f"MNT-{strike}-C",
+            option_type="call",
+            strike=strike,
+            expiry_at=expiry,
+            expiry_code="15OCT26",
+            spot_price=1.0,
+            mark_price=0.1,
+            mark_iv=0.80,
+            bid_price=None,
+            ask_price=0.0,
+            bid_iv=None,
+            ask_iv=None,
+            delta=0.5,
+            gamma=0.01,
+            theta=-1,
+            vega=2,
+            volume_24h=10,
+            open_interest=10,
+            quote_currency="USDT",
+            settle_currency="USDC",
+            quote_timestamp=DATA_TIME,
+        )
+        for strike in (0.8, 1.0, 1.2)
+    )
+    app = create_app(adapter=FakeAdapter(contracts=contracts))
+
+    response = await request(app, "GET", "/api/v1/surfaces/mnt")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_valuation_ready"] is True
+    assert body["observed_points"] == 3
+
+
+@pytest.mark.asyncio
 async def test_surface_summary_returns_404_for_asset_without_quotes() -> None:
     response = await request(create_app(adapter=FakeAdapter()), "GET", "/api/v1/surfaces/sol")
 
@@ -388,6 +428,7 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
         for key in (
             "timestamp",
             "data_timestamp",
+            "valuation_mode",
             "opportunities",
             "rejections",
             "asset_failures",
@@ -395,10 +436,12 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
             "evidence_status",
             "evidence_gate_status",
             "execution_allowed",
+            "ignored_filters",
         )
     } == {
         "timestamp": "2026-09-15T12:00:00Z",
         "data_timestamp": "2026-09-15T11:59:30Z",
+        "valuation_mode": "executable",
         "opportunities": [],
         "rejections": [],
         "asset_failures": [],
@@ -414,6 +457,7 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
         "evidence_status": "insufficient_evidence",
         "evidence_gate_status": "blocked_unvalidated",
         "execution_allowed": False,
+        "ignored_filters": [],
     }
     assert [context["asset"] for context in body["historical_volatility_contexts"]] == ["BTC", "ETH"]
     assert all(context["status"] == "not_loaded" for context in body["historical_volatility_contexts"])
@@ -422,6 +466,86 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
     assert scan_calls[0][1].assets == ("BTC", "ETH")
     assert scan_calls[0][1].strategies == ("long_put",)
     assert scan_calls[0][1].risk_free_rate == pytest.approx(0.075)
+    assert scan_calls[0][1].valuation_mode == "executable"
+
+
+@pytest.mark.asyncio
+async def test_scan_theoretical_mode_round_trips_explicitly() -> None:
+    scan_requests: list[ScanRequest] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+            valuation_mode=scan_request.valuation_mode,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["XRP"], "strategies": ["long_call"], "valuation_mode": "theoretical"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["valuation_mode"] == "theoretical"
+    assert scan_requests[0].valuation_mode == "theoretical"
+
+
+@pytest.mark.asyncio
+async def test_theoretical_simple_scan_does_not_require_max_loss() -> None:
+    scan_requests: list[ScanRequest] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+            valuation_mode=scan_request.valuation_mode,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["MNT"],
+            "market_view": "custom",
+            "time_horizon": "7_30",
+            "strategies": ["long_call"],
+            "valuation_mode": "theoretical",
+        },
+    )
+
+    assert response.status_code == 200
+    assert scan_requests[0].max_loss is None
+    assert response.json()["ignored_filters"] == [
+        "max_spread_pct",
+        "min_edge_after_costs",
+        "max_loss",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scan_rejects_unknown_valuation_mode() -> None:
+    response = await request(
+        create_app(adapter=FakeAdapter()),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"valuation_mode": "mark_price", "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 @pytest.mark.asyncio
@@ -763,9 +887,12 @@ async def test_scan_accepts_simple_market_view_and_horizon_request() -> None:
     context = response.json()["scan_context"]
     assert context["market_view"] == "up"
     assert context["time_horizon"] == "7_30"
+    assert context["valuation_mode"] == "executable"
     assert context["max_loss"] == 120.0
     assert context["strategies"] == ["long_call"]
+    assert context["ignored_filters"] == []
     assert context["assumptions"] == {
+        "valuation_mode": "executable",
         "risk_free_rate": 0.05,
         "fee_per_contract": 0.0,
         "slippage_bps": 0.0,
@@ -940,6 +1067,33 @@ async def test_scan_stream_emits_progress_and_result_events() -> None:
     assert any("market data loaded" in message for message in messages)
     assert events[-1]["type"] == "result"
     assert events[-1]["payload"]["opportunities"] == []
+    assert events[-1]["payload"]["valuation_mode"] == "executable"
+
+
+@pytest.mark.asyncio
+async def test_scan_stream_serializes_theoretical_valuation_mode() -> None:
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+            valuation_mode=scan_request.valuation_mode,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan/stream",
+        json={"assets": ["XRP"], "strategies": ["long_call"], "valuation_mode": "theoretical"},
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines()]
+    assert events[-1]["type"] == "result"
+    assert events[-1]["payload"]["valuation_mode"] == "theoretical"
 
 
 @pytest.mark.asyncio

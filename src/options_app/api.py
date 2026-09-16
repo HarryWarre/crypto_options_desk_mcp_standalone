@@ -154,6 +154,7 @@ class ScanFilters(BaseModel):
 
     risk_free_rate: float = _DEFAULT_SCAN_RISK_FREE_RATE
     assets: list[str] = Field(default_factory=list)
+    valuation_mode: Literal["executable", "theoretical"] = "executable"
     market_view: Literal["up", "down", "sideways", "custom"] | None = None
     time_horizon: Literal["0_7", "7_30", "30_90"] | None = None
     strategy_preference: (
@@ -252,7 +253,7 @@ class ScanFilters(BaseModel):
         if self.market_view is not None:
             if not self.assets:
                 raise ValueError("at least one asset is required for a simple scan")
-            if self.max_loss is None:
+            if self.max_loss is None and self.valuation_mode == "executable":
                 raise ValueError("max_loss is required for a simple scan")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
@@ -741,8 +742,16 @@ def create_app(
                 strike=contract.strike,
                 spot=contract.spot_price,
                 iv=contract.mark_iv,
-                bid=contract.bid_price,
-                ask=contract.ask_price,
+                bid=(
+                    contract.bid_price
+                    if contract.bid_price is not None and contract.bid_price > 0
+                    else None
+                ),
+                ask=(
+                    contract.ask_price
+                    if contract.ask_price is not None and contract.ask_price > 0
+                    else None
+                ),
                 liquidity=max(contract.volume_24h, contract.open_interest),
             )
             for contract in contracts
@@ -1020,8 +1029,17 @@ def _serialize_scan_result(
             "source": "opportunity.expected_value",
         },
     }
+    # The request is authoritative so legacy/injected scanners cannot hide the
+    # mode selected by the caller in the HTTP response.
+    payload["valuation_mode"] = scan_request.valuation_mode
+    payload["ignored_filters"] = (
+        ["max_spread_pct", "min_edge_after_costs", "max_loss"]
+        if scan_request.valuation_mode == "theoretical"
+        else []
+    )
     if filters.market_view is not None and filters.time_horizon is not None:
         assumptions = {
+            "valuation_mode": scan_request.valuation_mode,
             "risk_free_rate": scan_request.risk_free_rate,
             "fee_per_contract": scan_request.fee_per_contract,
             "slippage_bps": scan_request.slippage_bps,
@@ -1029,6 +1047,7 @@ def _serialize_scan_result(
             "contract_multiplier": scan_request.contract_multiplier,
             "include_unvalidated": scan_request.include_unvalidated,
         }
+        ignored_filters = payload["ignored_filters"]
         max_loss_text = (
             "không giới hạn" if scan_request.max_loss is None else f"{scan_request.max_loss:g}"
         )
@@ -1049,10 +1068,19 @@ def _serialize_scan_result(
                 "time_horizon": filters.time_horizon,
                 "strategy_preference": filters.strategy_preference,
                 "max_loss": scan_request.max_loss,
+                "valuation_mode": scan_request.valuation_mode,
                 "strategies": list(scan_request.strategies),
                 "applied_filters": applied_filters,
+                "ignored_filters": ignored_filters,
                 "assumptions": assumptions,
-                "summary": (f"Kỳ vọng {view_text} · {horizon_text} · lỗ tối đa {max_loss_text}"),
+                "summary": (
+                    f"Kỳ vọng {view_text} · {horizon_text} · "
+                    + (
+                        "chỉ định giá lý thuyết, không có giá khớp"
+                        if scan_request.valuation_mode == "theoretical"
+                        else f"lỗ tối đa {max_loss_text}"
+                    )
+                ),
             }
         )
     return payload
