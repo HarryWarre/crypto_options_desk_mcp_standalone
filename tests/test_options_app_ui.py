@@ -68,7 +68,7 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'name="valuation_mode" value="executable" checked' in response.text
     assert 'name="valuation_mode" value="theoretical"' in response.text
     assert "Theoretical — bỏ qua bid/ask" in response.text
-    assert "không tính edge sau phí/lỗ tối đa để giao dịch" in response.text
+    assert "payoff, EV và risk/reward vẫn là ước tính từ fair value" in response.text
     assert "Khi nào nên chọn" in response.text
 
 
@@ -133,7 +133,8 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "valuation_mode" in javascript.text
     assert "Theoretical mode" in javascript.text
     assert "Thiếu bid/ask" in javascript.text
-    assert "P&L cần bid/ask" in javascript.text
+    assert "Xem payoff mô hình" in javascript.text
+    assert "EV mô hình" in javascript.text
 
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")

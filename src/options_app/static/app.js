@@ -182,6 +182,34 @@ function expiryLabel(item) {
   return Number.isFinite(dte) ? `${date}\nCòn ${Math.max(0, Math.round(dte))} ngày` : date;
 }
 
+function legExpiryLabel(leg, item) {
+  const rawExpiry = firstDefined(
+    leg?.expiry_at,
+    leg?.expiry,
+    leg?.expiry_date,
+    leg?.expiration_date,
+    item?.expiry_at,
+    item?.expiry,
+    item?.expiry_date,
+    item?.expiration_date,
+  );
+  if (!rawExpiry) return "Hết hạn —";
+  const parsedExpiry = new Date(rawExpiry);
+  if (Number.isNaN(parsedExpiry.getTime())) return `Hết hạn ${String(rawExpiry)}`;
+  const date = parsedExpiry.toLocaleDateString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Asia/Ho_Chi_Minh",
+  });
+  const time = parsedExpiry.toLocaleTimeString("vi-VN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Ho_Chi_Minh",
+  });
+  return `Hết hạn ${date} ${time}`;
+}
+
 function renderInstrumentCell(row, item) {
   const element = document.createElement("td");
   element.className = "symbol instrument-cell";
@@ -324,7 +352,7 @@ function syncValuationModeInputs() {
 function strategyTakeaway(item, legs) {
   const asset = firstDefined(item?.asset, "tài sản");
   if (isTheoreticalMode(item?.valuation_mode || activeScanValuationMode)) {
-    return `Đây là tham khảo giá trị mô hình của ${asset}; không có giá bid/ask đáng tin cậy để khẳng định giá khớp, edge hoặc lỗ tối đa.`;
+    return `Đây là định giá mô hình của ${asset}; payoff, EV, xác suất và RR được tính từ fair value nhưng không khẳng định giá khớp hay lợi nhuận thực tế.`;
   }
   const strategy = normalizedStrategy(item?.strategy);
   const strikes = legs
@@ -419,7 +447,7 @@ function renderOpportunityExplanation(item, index) {
     legLine.className = position > 0 ? "buy-leg" : "sell-leg";
     const action = position > 0 ? "Mua" : "Bán";
     const strike = legStrike(leg);
-    legLine.textContent = `${action} K${strike === undefined ? "—" : number(strike, 2)} ${optionTypeLabel(leg)}`;
+    legLine.textContent = `${action} K${strike === undefined ? "—" : number(strike, 2)} ${optionTypeLabel(leg)} · ${legExpiryLabel(leg, item)}`;
     legList.appendChild(legLine);
   });
   card.appendChild(legList);
@@ -433,10 +461,10 @@ function renderOpportunityExplanation(item, index) {
     explanationFact("Tiền vào/ra ước tính", theoretical ? "Không có giá khớp" : signedPriceLabel(executablePrice), theoretical ? "theoretical-value" : ""),
     explanationFact("Mô hình định giá", signedPriceLabel(fairPrice), theoretical ? "theoretical-value" : ""),
     explanationFact("Edge sau phí", theoretical ? "Không tính" : Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "—", theoretical ? "theoretical-value" : edge >= 0 ? "positive" : "negative"),
-    explanationFact("EV ước tính", theoretical ? "Không tính" : estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), theoretical ? "theoretical-value" : ""),
-    explanationFact("Xác suất có lãi", theoretical ? "Không tính" : estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), theoretical ? "theoretical-value" : ""),
-    explanationFact("RR", theoretical ? "Không tính" : estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), theoretical ? "theoretical-value" : ""),
-    explanationFact("Lỗ tối đa", theoretical ? "Không tính" : number(item?.max_loss, 2), theoretical ? "theoretical-value" : "negative"),
+    explanationFact(theoretical ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), theoretical ? "theoretical-value" : ""),
+    explanationFact(theoretical ? "Xác suất có lãi (mô hình)" : "Xác suất có lãi", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), theoretical ? "theoretical-value" : ""),
+    explanationFact(theoretical ? "RR (mô hình)" : "RR", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), theoretical ? "theoretical-value" : ""),
+    explanationFact(theoretical ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), theoretical ? "theoretical-value" : "negative"),
   );
   card.appendChild(facts);
 
@@ -445,7 +473,7 @@ function renderOpportunityExplanation(item, index) {
   const maxProfit = item?.max_profit;
   const breakevens = Array.isArray(item?.breakevens) ? item.breakevens : [];
   const parts = [];
-  if (!theoretical && maxProfit !== undefined && maxProfit !== null) parts.push(`Lãi tối đa: ${number(maxProfit, 2)}`);
+  if (maxProfit !== undefined && maxProfit !== null) parts.push(`${theoretical ? "Lãi tối đa (mô hình)" : "Lãi tối đa"}: ${number(maxProfit, 2)}`);
   if (breakevens.length) parts.push(`Hòa vốn: ${breakevens.map((value) => `K${number(value, 2)}`).join(" và ")}`);
   parts.push(`${theoretical ? "IV edge mô hình" : "IV edge"}: ${percent(item?.iv_edge)}`);
   extra.textContent = parts.join(" · ");
@@ -667,16 +695,17 @@ function metric(label, value, className = "") {
 
 function renderPayoffDetail(item) {
   const points = payoffPoints(item);
+  const theoretical = isTheoreticalMode(item?.valuation_mode || activeScanValuationMode);
   renderPayoffChart(item, points);
   scenarioResultsBody.replaceChildren();
   detailMetrics.replaceChildren();
   detailMetrics.append(
     metric("Ngày đáo hạn", opportunityExpiry(item) ? expiryLabel(item) : "Không có dữ liệu"),
-    metric("EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev))),
-    metric("Xác suất có lãi (ước tính)", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit))),
-    metric("RR (ước tính)", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio))),
-    metric("Lỗ tối đa", estimatedNumber(item?.max_loss), "negative"),
-    metric("Lãi tối đa", estimatedNumber(item?.max_profit), "positive"),
+    metric(theoretical ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), theoretical ? "theoretical-value" : ""),
+    metric(theoretical ? "Xác suất có lãi (mô hình)" : "Xác suất có lãi (ước tính)", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), theoretical ? "theoretical-value" : ""),
+    metric(theoretical ? "RR (mô hình)" : "RR (ước tính)", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), theoretical ? "theoretical-value" : ""),
+    metric(theoretical ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), theoretical ? "theoretical-value" : "negative"),
+    metric(theoretical ? "Lãi tối đa (mô hình)" : "Lãi tối đa", estimatedNumber(item?.max_profit), theoretical ? "theoretical-value" : "positive"),
     metric("Điểm hòa vốn", (Array.isArray(item?.breakevens) ? item.breakevens : []).map((value) => number(value, 2)).join(", ") || "Không có dữ liệu"),
   );
   points.forEach((point) => {
@@ -685,7 +714,7 @@ function renderPayoffDetail(item) {
     cell(row, number(point.pnl, 2), point.pnl >= 0 ? "positive" : "negative");
     scenarioResultsBody.appendChild(row);
   });
-  pnlChartAssumptions.textContent = `Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất có lãi và RR đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
+  pnlChartAssumptions.textContent = `${theoretical ? "Theoretical: premium vào lệnh dùng fair value, không phải bid/ask khớp được. " : ""}Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất có lãi và RR đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
   if (points.length) {
     setScenarioState(`Hiển thị ${points.length} điểm payoff tại đáo hạn do API trả về.`);
   } else {
@@ -845,7 +874,7 @@ function renderValuationModeNotice(mode) {
   const title = document.createElement("strong");
   title.textContent = "Theoretical mode — chỉ định giá mô hình";
   const explanation = document.createElement("span");
-  explanation.textContent = "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả chỉ là fair value, IV và Greeks tham khảo; không phải giá khớp, không tính edge sau phí/lỗ tối đa, spread hay bộ lọc giao dịch và không dùng để đặt giao dịch.";
+  explanation.textContent = "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value làm giá vào mô hình; payoff, EV, xác suất, RR và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
   valuationModeNotice.append(title, explanation);
   valuationModeNotice.hidden = false;
 }
@@ -995,7 +1024,7 @@ function renderResults(payload) {
   const guide = resultsGuide.querySelector("span");
   if (guide) {
     guide.textContent = isTheoreticalMode(activeScanValuationMode)
-      ? "Các dòng dưới đây là fair value/IV/Greeks từ mô hình. Bid/ask thiếu không được thay bằng giá giả; edge, lãi/lỗ và khả năng khớp không được suy ra từ kết quả này."
+      ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, RR và lỗ tối đa chỉ là ước tính mô hình, còn edge giao dịch và khả năng khớp không được suy ra."
       : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
   }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
@@ -1016,16 +1045,16 @@ function renderResults(payload) {
     cell(row, number(item.fair_price), theoretical ? "theoretical-value" : "");
     cell(row, percent(item.iv_edge), item.iv_edge >= 0 ? "positive" : "negative");
     cell(row, theoretical ? "Không tính" : number(item.edge_after_costs), theoretical ? "theoretical-value" : item.edge_after_costs >= 0 ? "positive" : "negative");
-    cell(row, theoretical ? "Không tính" : number(item.max_loss), theoretical ? "theoretical-value" : "");
+    cell(row, theoretical ? `Mô hình ${number(item.max_loss)}` : number(item.max_loss), theoretical ? "theoretical-value" : "");
     cell(row, `OI ${number(item.open_interest, 0)} · Vol ${number(item.volume_24h, 0)}`);
     const actionCell = document.createElement("td");
     const detailButton = document.createElement("button");
     detailButton.type = "button";
     detailButton.className = "secondary-button compact-button";
     if (theoretical) {
-      detailButton.disabled = true;
-      detailButton.textContent = "P&L cần bid/ask";
-      detailButton.title = "Theoretical mode không có quote thực thi để dựng P&L giao dịch.";
+      detailButton.textContent = "Xem payoff mô hình";
+      detailButton.title = "Payoff, EV và risk/reward dùng fair value mô hình; không phải P&L theo giá khớp.";
+      detailButton.addEventListener("click", () => showOpportunityDetail(item));
     } else {
       detailButton.textContent = "Xem payoff / P&L";
       detailButton.addEventListener("click", () => showOpportunityDetail(item));

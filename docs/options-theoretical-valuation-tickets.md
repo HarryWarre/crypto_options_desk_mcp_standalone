@@ -62,7 +62,8 @@ conservative and clearly separate.
 - `theoretical` is accepted only as an explicit mode and permits missing or
   non-positive bid/ask when all required model inputs remain valid.
 - Theoretical output exposes fair value, fair IV, Greeks, reference mark data,
-  and model/surface status where available.
+  model/surface status, expiry payoff, and model-estimated EV, probability,
+  risk/reward, and payoff bounds where the strategy has a single expiry.
 - Theoretical output is explicitly non-executable and cannot expose a fake
   executable entry, edge-after-costs, slippage-adjusted edge, or tradable
   maximum-loss claim.

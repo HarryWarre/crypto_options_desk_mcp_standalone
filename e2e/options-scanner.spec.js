@@ -46,6 +46,48 @@ const opportunity = {
   }],
 };
 
+const theoreticalVerticalOpportunity = {
+  ...opportunity,
+  asset: "DOGE",
+  symbol: "DOGE-30OCT26-0.07-C/DOGE-30OCT26-0.14-C",
+  strategy: "bull_call_vertical",
+  option_type: "multi",
+  valuation_mode: "theoretical",
+  bid_price: 0.009,
+  ask_price: 0.011,
+  market_mid: 0.01,
+  fair_price: 0.01,
+  edge_after_costs: null,
+  max_loss: 0.01,
+  max_profit: 0.06,
+  expected_value: 0.02,
+  win_probability: 0.45,
+  risk_reward: 1.2,
+  breakevens: [0.08],
+  payoff_curve: [
+    { underlying_price: 0, pnl: -0.01 },
+    { underlying_price: 0.07, pnl: -0.01 },
+    { underlying_price: 0.08, pnl: 0 },
+    { underlying_price: 0.14, pnl: 0.06 },
+  ],
+  legs: [
+    {
+      ...opportunity.legs[0],
+      symbol: "DOGE-30OCT26-0.07-C",
+      strike: 0.07,
+      expiry_at: "2026-10-30T08:00:00Z",
+      position: 1,
+    },
+    {
+      ...opportunity.legs[0],
+      symbol: "DOGE-30OCT26-0.14-C",
+      strike: 0.14,
+      expiry_at: "2026-10-30T08:00:00Z",
+      position: -1,
+    },
+  ],
+};
+
 async function mockApi(page) {
   await page.route("**/api/v1/assets", (route) => route.fulfill({
     status: 200,
@@ -79,7 +121,7 @@ async function mockApi(page) {
       timestamp: "2026-09-15T14:46:33Z",
       data_timestamp: "2026-09-15T14:46:33Z",
       valuation_mode: body.valuation_mode || "executable",
-      opportunities: empty ? [] : [opportunity],
+      opportunities: empty ? [] : [body.valuation_mode === "theoretical" ? theoreticalVerticalOpportunity : opportunity],
       rejections: [],
       asset_failures: [],
       issues: [],
@@ -233,7 +275,12 @@ test("opts into theoretical valuation and labels the result as non-executable", 
   await expect(page.locator("#valuation-mode-notice")).toBeVisible();
   await expect(page.locator("#valuation-mode-notice")).toContainText("không phải giá khớp");
   await expect(page.locator("#results-body")).toContainText("Tham khảo");
-  await expect(page.getByRole("button", { name: "P&L cần bid/ask" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Xem payoff mô hình" })).toBeEnabled();
+  await expect(page.locator("#opportunity-explanations")).toContainText("Hết hạn 30/10/2026");
+  await expect(page.locator("#opportunity-explanations")).toContainText("EV mô hình");
+  await page.getByRole("button", { name: "Xem payoff mô hình" }).click();
+  await expect(page.locator("#opportunity-detail")).toBeVisible();
+  await expect(page.locator("#detail-metrics")).toContainText("Lỗ tối đa (mô hình)");
 });
 
 test("submits selected strategy checkboxes, including spread group expansion", async ({ page }) => {

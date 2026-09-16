@@ -26,11 +26,13 @@ explicit user choice that allows missing or zero bid/ask quotes when the
 remaining model inputs are valid.
 
 Theoretical results are clearly marked as non-executable. They may expose
-mark-price reference data, current-surface fair IV, fair price, Greeks, and
-model status, but they must not claim an executable entry, edge after costs,
-maximum tradable loss, or positive trading opportunity when no bid/ask quote
-exists. The UI and API must keep theoretical valuations separate from
-executable opportunities or make the distinction impossible to miss.
+mark-price reference data, current-surface fair IV, fair price, Greeks, expiry
+payoff, model EV, win probability, risk/reward, and model payoff bounds when
+fair value is used as the model entry. They must not claim an executable entry,
+edge after costs, maximum tradable loss, or positive trading opportunity when
+no bid/ask quote exists. The UI and API must keep theoretical valuations
+separate from executable opportunities or make the distinction impossible to
+miss.
 
 Normalize timestamps at the historical-volatility boundary. A naive datetime
 from the existing repository convention is interpreted as UTC and normalized
@@ -99,12 +101,15 @@ produces an explicit degraded context rather than crashing the scan stream.
 - Define a theoretical result as non-executable whenever bid or ask is absent
   or non-positive. Do not calculate executable entry, exit, spread-adjusted
   edge, fee/slippage edge, or a tradable max-loss claim from a mark price.
+  Expiry payoff, EV, win probability, risk/reward, and model max-loss/max-profit
+  may still be calculated using fair value as a clearly labeled model entry.
   If a reference mark price is shown, label it as a non-executable reference.
 - In theoretical mode, report `max_spread_pct`, `min_edge_after_costs`,
   `max_loss`, and `min_expected_value` as ignored execution filters. The
   browser disables those inputs; the API may accept them for compatibility but
-  must expose the ignored list. Theoretical output does not calculate EV, so
-  the default EV gate must never remove a theoretical candidate.
+  must expose the ignored list. The default EV gate must never remove a
+  theoretical candidate; any displayed EV is a model estimate from fair-value
+  entry, not an executable edge or historical result.
 - Preserve a separate executable opportunity collection and expose theoretical
   valuations through an explicit collection or an equivalently typed status;
   consumers must not need to infer the distinction from null numeric fields.

@@ -607,8 +607,7 @@ def _with_payoff_metrics(
 ) -> Opportunity:
     """Attach one consistently calculated payoff contract to any candidate."""
 
-    if opportunity.valuation_mode == "theoretical":
-        return opportunity
+    theoretical = opportunity.valuation_mode == "theoretical"
 
     scenario_legs = (
         ()
@@ -623,8 +622,8 @@ def _with_payoff_metrics(
                 spot=leg.spot_price,
                 iv=leg.fair_iv,
                 risk_free_rate=request.risk_free_rate,
-                bid=leg.bid_price,
-                ask=leg.ask_price,
+                bid=leg.fair_price if theoretical else leg.bid_price,
+                ask=leg.fair_price if theoretical else leg.ask_price,
                 position=leg.position,
             )
             for leg in opportunity.legs
@@ -642,6 +641,7 @@ def _with_payoff_metrics(
             contract_multiplier=request.contract_multiplier,
         ),
         quantity=request.quantity,
+        entry_price_source="theoretical_fair_value" if theoretical else "long ask / short bid",
     )
     return replace(
         opportunity,
@@ -656,6 +656,9 @@ def _with_payoff_metrics(
         payoff_metrics_methodology=metrics.methodology,
         payoff_metrics_assumptions=metrics.assumptions,
         payoff_metrics_limitations=metrics.limitations,
+        max_loss=metrics.max_loss if theoretical else opportunity.max_loss,
+        max_profit=metrics.max_profit if theoretical else opportunity.max_profit,
+        breakevens=metrics.breakevens if theoretical else opportunity.breakevens,
     )
 
 

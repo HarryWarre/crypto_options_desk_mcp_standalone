@@ -229,11 +229,39 @@ def test_theoretical_mode_values_missing_quote_without_executable_claims() -> No
     assert candidate.executable_entry is None
     assert candidate.edge_after_costs is None
     assert candidate.edge_pct is None
-    assert candidate.max_loss is None
+    assert candidate.max_loss is not None
+    assert candidate.max_profit is not None
+    assert candidate.payoff_curve
+    assert candidate.expected_value is not None
+    assert candidate.win_probability is not None
+    assert candidate.risk_reward is not None
     assert candidate.execution_allowed is False
     assert candidate.edge_source == "theoretical_fair_value_only"
     assert candidate.legs[0].mark_price == pytest.approx(0.60)
     assert result.ignored_filters == ("max_spread_pct", "min_edge_after_costs", "max_loss")
+
+
+def test_theoretical_vertical_calculates_model_payoff_metrics_from_fair_values() -> None:
+    result = scan_opportunities(
+        _vertical_surface_fixture(),
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("bull_call_vertical",),
+            valuation_mode="theoretical",
+        ),
+    )
+
+    candidate = result.opportunities[0]
+    assert candidate.payoff_curve
+    assert candidate.expected_value is not None
+    assert candidate.win_probability is not None
+    assert candidate.risk_reward is not None
+    assert candidate.max_loss is not None
+    assert candidate.max_profit is not None
+    assert candidate.breakevens
+    assert candidate.payoff_metrics_assumptions is not None
+    assert candidate.payoff_metrics_assumptions.entry_price_source == "theoretical_fair_value"
 
 
 def test_theoretical_single_leg_keeps_fair_value_per_contract() -> None:

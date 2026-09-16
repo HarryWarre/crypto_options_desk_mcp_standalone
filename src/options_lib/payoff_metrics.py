@@ -103,6 +103,7 @@ def calculate_payoff_metrics(
     *,
     quantity: float = 1.0,
     model_iv: float | None = None,
+    entry_price_source: str = "long ask / short bid",
     curve_points: int = 101,
 ) -> PayoffMetrics:
     """Return expiry payoff and model-estimated EV, win probability, and RR.
@@ -139,6 +140,7 @@ def calculate_payoff_metrics(
         fee_per_contract=float(execution.fee_per_contract),
         slippage_bps=float(execution.slippage_bps),
         net_entry_cash_flow=net_debit,
+        entry_price_source=entry_price_source,
     )
 
     payoff = lambda price: _expiry_pnl(price, legs, net_debit, scale)
@@ -185,12 +187,20 @@ def calculate_payoff_metrics(
         expected_value_status="model_estimate",
         win_probability_status="model_estimate",
         risk_reward_status=risk_reward_status,
-        methodology=METHODOLOGY,
+        methodology=_methodology(entry_price_source),
         assumptions=assumptions,
         limitations=(
             "These are model estimates, not historical results; no completed outcomes were supplied.",
             "The risk-neutral distribution is a pricing model, not a forecast of realized returns.",
             "Expiry payoff includes opening costs but no early-exit or assignment costs.",
+        )
+        + (
+            (
+                "Bid/ask was unavailable; theoretical fair value was used as the model entry price "
+                + "and does not represent an executable quote.",
+            )
+            if entry_price_source == "theoretical_fair_value"
+            else ()
         ),
     )
 
@@ -274,6 +284,17 @@ def _unavailable(issue: str) -> PayoffMetrics:
         assumptions=PayoffAssumptions(),
         limitations=(issue,),
     )
+
+
+def _methodology(entry_price_source: str) -> str:
+    if entry_price_source == "theoretical_fair_value":
+        return (
+            "Risk-neutral lognormal expiry distribution using the stated spot, annualized IV, "
+            "risk-free rate, and time to expiry. Payoff uses theoretical fair value for each "
+            "leg plus stated opening fees/slippage as a model estimate; no executable bid/ask "
+            "quote was available."
+        )
+    return METHODOLOGY
 
 
 def _representative_iv(legs: tuple[OptionLeg, ...]) -> float:
