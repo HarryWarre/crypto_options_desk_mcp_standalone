@@ -195,19 +195,44 @@ class BybitOptionSnapshotCollector:
         ):
             raise SnapshotFormatError(f"invalid Bybit ticker response for {asset}")
         issues: list[OptionDataQualityIssue] = []
-        quotes: list[HistoricalOptionQuote] = []
+        quotes_by_symbol: dict[str, HistoricalOptionQuote] = {}
+        conflicting_symbols: set[str] = set()
         for raw in result["list"]:
             quote, quote_issues = _normalize_ticker(asset, raw)
             issues.extend(quote_issues)
-            if quote is not None and (not selected_symbols or quote.symbol in selected_symbols):
-                quotes.append(quote)
+            if quote is None or (selected_symbols and quote.symbol not in selected_symbols):
+                continue
+            previous = quotes_by_symbol.get(quote.symbol)
+            if previous is None and quote.symbol not in conflicting_symbols:
+                quotes_by_symbol[quote.symbol] = quote
+                continue
+            if previous == quote:
+                issues.append(
+                    OptionDataQualityIssue(
+                        "duplicate_ticker",
+                        "identical duplicate ticker coalesced",
+                        symbol=quote.symbol,
+                        asset=asset,
+                    )
+                )
+                continue
+            conflicting_symbols.add(quote.symbol)
+            quotes_by_symbol.pop(quote.symbol, None)
+            issues.append(
+                OptionDataQualityIssue(
+                    "conflicting_duplicate_ticker",
+                    "conflicting duplicate ticker excluded from the snapshot",
+                    symbol=quote.symbol,
+                    asset=asset,
+                )
+            )
         return HistoricalOptionSnapshot(
             schema_version=1,
             source="bybit-option-ticker:v1",
             source_timestamp=source_timestamp,
             retrieval_timestamp=_aware_utc(self._now_fn()),
             asset=asset,
-            quotes=tuple(sorted(quotes, key=_quote_sort_key)),
+            quotes=tuple(sorted(quotes_by_symbol.values(), key=_quote_sort_key)),
             issues=tuple(sorted(issues, key=_issue_sort_key)),
         )
 
@@ -354,10 +379,15 @@ class JsonlOptionSnapshotArchive:
         )
 
     def _read_strict(self) -> list[HistoricalOptionSnapshot]:
-        result = self.load()
-        if result.issues:
-            raise SnapshotFormatError("archive contains invalid snapshot records")
-        return list(result.snapshots)
+        if not self.path.exists():
+            return []
+        snapshots: list[HistoricalOptionSnapshot] = []
+        for line_number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
+            try:
+                snapshots.append(_snapshot_from_dict(json.loads(line)))
+            except (SnapshotFormatError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise SnapshotFormatError(f"line {line_number}: {exc}") from exc
+        return snapshots
 
     def _atomic_write(self, snapshots: Sequence[HistoricalOptionSnapshot]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -467,6 +497,20 @@ def _quote_to_contract(
     source_timestamp: datetime,
     as_of: datetime,
 ) -> tuple[OptionContract | None, OptionDataQualityIssue | None]:
+    parsed_symbol = parse_bybit_option_symbol(quote.symbol)
+    if (
+        parsed_symbol is None
+        or parsed_symbol["asset"].upper() != asset.upper()
+        or parsed_symbol["option_type_long"].lower() != quote.option_type.lower()
+        or parsed_symbol["strike"] != quote.strike
+        or parsed_symbol["expiry_date"].date() != quote.expiry_at.date()
+    ):
+        return None, OptionDataQualityIssue(
+            "inconsistent_historical_identity",
+            "historical quote identity does not match its Bybit symbol",
+            symbol=quote.symbol,
+            asset=asset,
+        )
     required = {
         "underlying_price": quote.underlying_price,
         "mark_price": quote.mark_price,
@@ -497,10 +541,14 @@ def _quote_to_contract(
             field="expiry_at",
         )
     if (
-        quote.bid_price <= 0
+        quote.underlying_price <= 0
+        or quote.mark_price <= 0
+        or quote.bid_price <= 0
         or quote.ask_price <= 0
         or quote.ask_price < quote.bid_price
         or quote.mark_iv <= 0
+        or quote.volume_24h < 0
+        or quote.open_interest < 0
     ):
         return None, OptionDataQualityIssue(
             "invalid_historical_quote",
@@ -619,13 +667,33 @@ def _issue_from_dict(raw: Any) -> OptionDataQualityIssue:
 
 
 def _normalized_snapshot(snapshot: HistoricalOptionSnapshot) -> HistoricalOptionSnapshot:
+    deduplicated: dict[str, HistoricalOptionQuote] = {}
+    issues = list(snapshot.issues)
+    for quote in sorted(snapshot.quotes, key=_quote_sort_key):
+        previous = deduplicated.get(quote.symbol)
+        if previous is None:
+            deduplicated[quote.symbol] = quote
+        elif previous == quote:
+            issues.append(
+                OptionDataQualityIssue(
+                    "duplicate_ticker",
+                    "identical duplicate quote coalesced while archiving",
+                    symbol=quote.symbol,
+                    asset=snapshot.asset,
+                )
+            )
+        else:
+            raise SnapshotConflictError(
+                f"conflicting quote payload for {quote.symbol} at "
+                f"{snapshot.source_timestamp.isoformat()}"
+            )
     return replace(
         snapshot,
         asset=snapshot.asset.upper(),
         source_timestamp=_aware_utc(snapshot.source_timestamp),
         retrieval_timestamp=_aware_utc(snapshot.retrieval_timestamp),
-        quotes=tuple(sorted(snapshot.quotes, key=_quote_sort_key)),
-        issues=tuple(sorted(snapshot.issues, key=_issue_sort_key)),
+        quotes=tuple(deduplicated.values()),
+        issues=tuple(sorted(issues, key=_issue_sort_key)),
     )
 
 

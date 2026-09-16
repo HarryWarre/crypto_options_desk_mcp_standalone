@@ -6,7 +6,8 @@ Usage:
     python -m bybit_api price BTCUSDT
     python -m bybit_api prices BTC ETH SOL
     python -m bybit_api klines BTCUSDT --interval 4h --hours 24
-    python -m bybit_api option-mark-history BTC-30DEC26-100000-C --start 2026-09-15T00:00:00Z --end 2026-09-16T00:00:00Z
+    python -m bybit_api option-mark-history BTC-30DEC26-100000-C
+        --start 2026-09-15T00:00:00Z --end 2026-09-16T00:00:00Z
     python -m bybit_api options BTC [--min-oi 1]
     python -m bybit_api orderbook BTCUSDT [--depth 25]
     python -m bybit_api recent-trades BTCUSDT [--limit 60]
@@ -208,7 +209,9 @@ def cmd_option_mark_history(args):
                 }
                 for bar in bars
             ],
-            "limitation": "mark-price history does not contain historical bid/ask, IV, Greeks, OI, or volume",
+            "limitation": (
+                "mark-price history does not contain historical bid/ask, IV, Greeks, OI, or volume"
+            ),
         },
     )
 

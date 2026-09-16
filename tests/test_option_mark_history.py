@@ -29,6 +29,7 @@ async def test_fetches_reverse_ordered_option_mark_candles() -> None:
                         "13",
                     ],
                     [str(int(START.timestamp() * 1000)), "10", "12", "9", "11"],
+                    [str(int(START.timestamp() * 1000)), "10", "12", "9", "11"],
                 ]
             },
         }
