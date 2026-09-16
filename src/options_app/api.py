@@ -23,12 +23,23 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from bybit_api.option_volatility_history import BybitHistoricalVolatilityContextLoader
 from bybit_api.options_market_data import (
     BybitOptionMarketDataAdapter,
     NormalizedOptionUniverse,
     OptionAssetCatalog,
 )
-from options_lib.opportunity_scanner import ScanRequest, ScanResult, scan_opportunities
+from bybit_api.public import BybitPublicClient
+from options_lib.historical_volatility import (
+    HistoricalVolatilityContext,
+    HistoricalVolatilityContexts,
+)
+from options_lib.opportunity_scanner import (
+    HistoricalContextScanResult,
+    ScanRequest,
+    ScanResult,
+    scan_opportunities,
+)
 from options_lib.scenario_engine import (
     ExecutionAssumptions,
     MarketScenario,
@@ -90,6 +101,15 @@ class ScannerAdapter(Protocol):
         *,
         valuation_time: datetime | None = None,
     ) -> NormalizedOptionUniverse: ...
+
+
+class HistoricalVolatilityLoader(Protocol):
+    async def load(
+        self,
+        assets: tuple[str, ...],
+        *,
+        as_of: datetime | None = None,
+    ) -> HistoricalVolatilityContexts: ...
 
 
 ProgressCallback = Callable[[str], Awaitable[None]]
@@ -386,10 +406,19 @@ class ScenarioRequest(BaseModel):
 def create_app(
     adapter: ScannerAdapter | None = None,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult] = scan_opportunities,
+    historical_volatility_loader: HistoricalVolatilityLoader | None = None,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
 
-    market_adapter = adapter or BybitOptionMarketDataAdapter()
+    if adapter is None:
+        public_client = BybitPublicClient()
+        market_adapter = BybitOptionMarketDataAdapter(client=public_client)
+        history_loader = historical_volatility_loader or BybitHistoricalVolatilityContextLoader(
+            public_client.get_historical_volatility
+        )
+    else:
+        market_adapter = adapter
+        history_loader = historical_volatility_loader
     app = FastAPI(title="Crypto Options Scanner API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -461,7 +490,12 @@ def create_app(
     @app.post("/api/v1/opportunities/scan")
     async def scan(filters: ScanFilters) -> JSONResponse:
         scan_request = filters.to_scan_request()
-        result = await _execute_scan(scan_request, market_adapter, scanner)
+        result = await _execute_scan(
+            scan_request,
+            market_adapter,
+            scanner,
+            historical_volatility_loader=history_loader,
+        )
         return JSONResponse(content=_serialize_scan_result(result, filters, scan_request))
 
     @app.post("/api/v1/opportunities/scan/stream")
@@ -475,7 +509,13 @@ def create_app(
                 await queue.put({"type": "log", "message": message})
 
             scan_task = asyncio.create_task(
-                _execute_scan(scan_request, market_adapter, scanner, on_progress=on_progress)
+                _execute_scan(
+                    scan_request,
+                    market_adapter,
+                    scanner,
+                    historical_volatility_loader=history_loader,
+                    on_progress=on_progress,
+                )
             )
             try:
                 while not scan_task.done() or not queue.empty():
@@ -579,8 +619,9 @@ async def _execute_scan(
     market_adapter: ScannerAdapter,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult],
     *,
+    historical_volatility_loader: HistoricalVolatilityLoader | None = None,
     on_progress: ProgressCallback | None = None,
-) -> ScanResult:
+) -> HistoricalContextScanResult:
     started_at = time.perf_counter()
     selected_assets = ",".join(scan_request.assets) if scan_request.assets else "all"
 
@@ -607,6 +648,16 @@ async def _execute_scan(
         f"assets={len(universe.assets)} contracts={len(universe.contracts)} "
         f"issues={len(universe.issues)} elapsed={time.perf_counter() - started_at:.2f}s"
     )
+    history_assets = _history_assets(universe, scan_request)
+    await progress(
+        "[OPTIONS] loading 30-day historical volatility "
+        f"assets={','.join(history_assets) if history_assets else 'none'}"
+    )
+    historical_contexts = await _load_historical_contexts(
+        historical_volatility_loader,
+        history_assets,
+        requested_at=universe.valuation_time,
+    )
     await progress("[OPTIONS] running opportunity scanner")
     try:
         result = await _run_scanner(scanner, universe, scan_request)
@@ -620,7 +671,64 @@ async def _execute_scan(
         f"asset_failures={len(result.asset_failures)} "
         f"elapsed={time.perf_counter() - started_at:.2f}s"
     )
-    return result
+    return HistoricalContextScanResult(
+        scan=result,
+        historical_volatility_contexts=historical_contexts,
+    )
+
+
+def _history_assets(
+    universe: NormalizedOptionUniverse,
+    scan_request: ScanRequest,
+) -> tuple[str, ...]:
+    if scan_request.assets:
+        return tuple(sorted({asset.strip().upper() for asset in scan_request.assets if asset.strip()}))
+    assets = {asset.base_coin.upper() for asset in universe.assets}
+    assets.update(contract.asset.upper() for contract in universe.contracts)
+    return tuple(sorted(assets))
+
+
+async def _load_historical_contexts(
+    loader: HistoricalVolatilityLoader | None,
+    assets: tuple[str, ...],
+    *,
+    requested_at: datetime,
+) -> HistoricalVolatilityContexts:
+    if not assets:
+        return HistoricalVolatilityContexts()
+    if loader is None:
+        return HistoricalVolatilityContexts(
+            tuple(
+                HistoricalVolatilityContext.not_loaded(asset, requested_at=requested_at)
+                for asset in assets
+            )
+        )
+    try:
+        loaded = await _maybe_await(loader.load(assets, as_of=requested_at))
+        if not isinstance(loaded, HistoricalVolatilityContexts):
+            raise TypeError("historical volatility loader returned an invalid context collection")
+        return HistoricalVolatilityContexts(
+            loaded.cover(assets, requested_at=requested_at)
+        )
+    except Exception as exc:
+        logger.exception("[OPTIONS] historical volatility loading failed")
+        retrieved_at = datetime.now(UTC)
+        return HistoricalVolatilityContexts(
+            tuple(
+                HistoricalVolatilityContext(
+                    asset=asset,
+                    period_days=30,
+                    available=False,
+                    status="fetch_error",
+                    historical_volatility=None,
+                    as_of=None,
+                    requested_at=requested_at,
+                    retrieved_at=retrieved_at,
+                    message=f"Historical volatility context failed to load: {exc}",
+                )
+                for asset in assets
+            )
+        )
 
 
 async def _run_scanner(
@@ -674,11 +782,18 @@ def _serialize(value: Any) -> Any:
 
 
 def _serialize_scan_result(
-    result: ScanResult,
+    result: ScanResult | HistoricalContextScanResult,
     filters: ScanFilters,
     scan_request: ScanRequest,
 ) -> dict[str, Any]:
-    payload = _serialize(result)
+    if isinstance(result, HistoricalContextScanResult):
+        payload = _serialize(result.scan)
+        payload["historical_volatility_contexts"] = [
+            _serialize_historical_context(context)
+            for context in result.historical_volatility_contexts.contexts
+        ]
+    else:
+        payload = _serialize(result)
     if filters.market_view is not None and filters.time_horizon is not None:
         applied_filters = {
             "min_dte": scan_request.min_dte,
@@ -728,6 +843,24 @@ def _serialize_scan_result(
             ),
         }
     return payload
+
+
+def _serialize_historical_context(context: HistoricalVolatilityContext) -> dict[str, Any]:
+    """Serialize the stable API shape for history quality metadata."""
+
+    return {
+        "asset": context.asset,
+        "period_days": context.period_days,
+        "available": context.available,
+        "status": context.status,
+        "historical_volatility": context.historical_volatility,
+        "as_of": _serialize(context.as_of),
+        "requested_at": _serialize(context.requested_at),
+        "retrieved_at": _serialize(context.retrieved_at),
+        "source": context.source,
+        "message": context.message,
+        "role": "anchor_quality_only",
+    }
 
 
 __all__ = [

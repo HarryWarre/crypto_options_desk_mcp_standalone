@@ -136,8 +136,9 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByRole("group", { name: "Tài sản" })).toBeVisible();
   await expect(page.getByLabel("Thời hạn")).toBeVisible();
   await expect(page.getByLabel("Lỗ tối đa mỗi ý tưởng")).toBeVisible();
-  await expect(page.getByLabel("Edge IV tối thiểu (%)")).toBeVisible();
   await expect(page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Bạn muốn tìm ý tưởng nào?" })).toBeVisible();
+  await expect(page.locator('.strategy-card input[type="checkbox"]')).toHaveCount(13);
 
   const advancedFilters = page.getByTestId("advanced-filters");
   await expect(advancedFilters.locator(".advanced-content")).not.toBeVisible();
@@ -146,22 +147,28 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByLabel("Phí mỗi chiều")).not.toBeVisible();
 });
 
-test("shows strategy presets and market goal choices", async ({ page }) => {
-  const strategyPresets = page.getByRole("radiogroup", { name: "Ý tưởng giao dịch" });
+test("shows strategy checkbox cards and keeps all strategy choices available", async ({ page }) => {
+  const strategyPicker = page.getByRole("group", { name: "Bạn muốn tìm ý tưởng nào?" });
 
   for (const strategy of [
     "long_call",
     "long_put",
-    "bull_call_vertical",
-    "bear_put_vertical",
+    "call_vertical",
+    "put_vertical",
     "iron_condor",
+    "iron_butterfly",
+    "long_straddle",
+    "long_strangle",
+    "protective_put",
+    "covered_call",
+    "calendar_spread",
+    "butterfly",
+    "broken_wing_butterfly",
   ]) {
-    await expect(strategyPresets.locator(`input[type="radio"][value="${strategy}"]`)).toBeVisible();
+    await expect(strategyPicker.locator(`input[type="checkbox"][value="${strategy}"]`)).toBeVisible();
   }
 
-  await expect(strategyPresets).toContainText("Kỳ vọng giá tăng");
-  await expect(strategyPresets).toContainText("Kỳ vọng giá giảm");
-  await expect(strategyPresets).toContainText("Kỳ vọng đi ngang");
+  await expect(strategyPicker).toContainText("có thể chọn nhiều chiến lược");
 });
 
 test("keeps advanced filters collapsed until the user expands them", async ({ page }) => {
@@ -183,9 +190,7 @@ test("keeps advanced filters collapsed until the user expands them", async ({ pa
 });
 
 test("submits a backend-compatible quick-scan payload and renders results", async ({ page }) => {
-  await page.getByRole("radiogroup", { name: "Ý tưởng giao dịch" }).getByRole("radio", { name: /Mua call/ }).check();
   await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
-  await page.getByLabel("Edge IV tối thiểu (%)").fill("2");
 
   const scanRequest = page.waitForRequest((request) => (
     request.url().includes("/api/v1/opportunities/scan/stream")
@@ -196,42 +201,42 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
   expect(payload).toMatchObject({
     assets: ["BTC"],
     strategies: ["long_call"],
-    market_view: "up",
-    strategy_preference: "long_call",
+    market_view: "custom",
     time_horizon: "7_30",
     min_dte: 7,
     max_dte: 30,
     risk_free_rate: expect.any(Number),
-    min_iv_edge: 0.02,
+    min_iv_edge: 0,
     max_loss: 1000,
     include_unvalidated: true,
   });
 
   await expect(page.locator("#results-body")).toContainText(opportunity.symbol);
+  await expect(page.locator("#results-body")).toContainText("30/10/2026");
+  await expect(page.locator("#results-body")).toContainText("Còn 45 ngày");
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
-  await expect(page.locator("#scan-context")).toContainText("Kỳ vọng tăng");
-  await expect(page.locator("#scan-context")).toContainText("Edge IV tối thiểu: 2.00%");
+  await expect(page.locator("#scan-context")).toContainText("Nhiều chiến lược");
   await expect(page.locator("#result-state")).toContainText("1");
 });
 
-test("submits the selected downward and sideways presets", async ({ page }) => {
-  for (const [label, view, strategy] of [
-    ["Mua put", "down", "long_put"],
-    ["Iron condor", "sideways", "iron_condor"],
-  ]) {
-    await page.getByRole("radio", { name: new RegExp(label) }).check();
-    await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
-    const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
-    await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
-    expect((await request).postDataJSON()).toMatchObject({ market_view: view, strategies: [strategy] });
-  }
+test("submits selected strategy checkboxes, including spread group expansion", async ({ page }) => {
+  await page.getByLabel("Mua call").uncheck();
+  await page.getByLabel("Mua put").check();
+  await page.getByLabel("Call spread").check();
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
+  const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    market_view: "custom",
+    strategies: ["long_put", "bull_call_vertical", "bear_call_vertical"],
+  });
 });
 
 test("applies explicit Advanced overrides and shows them in the scan context", async ({ page }) => {
   const advancedFilters = page.getByTestId("advanced-filters");
   await advancedFilters.locator("summary").click();
-  await advancedFilters.getByLabel("Dùng lựa chọn chiến lược nâng cao thay cho preset bên trên").check();
-  await advancedFilters.locator('input[name="strategies"][value="long_put"]').uncheck();
+  await page.getByLabel("Mua call").uncheck();
+  await page.getByLabel("Mua put").check();
   await advancedFilters.getByLabel("Ngày tối thiểu").fill("10");
   await advancedFilters.getByLabel("Ngày tối đa").fill("20");
   await advancedFilters.getByLabel("Lãi suất mô hình (%/năm)").fill("7");
@@ -240,7 +245,7 @@ test("applies explicit Advanced overrides and shows them in the scan context", a
   const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
   await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
   expect((await request).postDataJSON()).toMatchObject({
-    strategies: ["long_call"],
+    strategies: ["long_put"],
     min_dte: 10,
     max_dte: 20,
     risk_free_rate: 0.07,

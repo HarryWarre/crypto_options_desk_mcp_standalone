@@ -41,6 +41,8 @@ class StrategyDefinition:
         "iron_butterfly",
         "long_straddle",
         "long_strangle",
+        "protective_put",
+        "covered_call",
         "calendar_spread",
         "butterfly",
         "broken_wing_butterfly",
@@ -113,7 +115,7 @@ def evaluate_scenarios(
     strategy: StrategyDefinition,
     scenario_set: ScenarioSet,
 ) -> ScenarioReport:
-    """Evaluate a single leg or defined-risk vertical over supplied scenarios."""
+    """Evaluate a supported option strategy over the supplied market scenarios."""
 
     _validate_execution(scenario_set.execution)
     _validate_strategy(strategy)
@@ -188,7 +190,7 @@ def _evaluate_one(
         valuation_time = leg.valuation_time + timedelta(days=scenario.elapsed_days)
         fair_iv = iv
         leg_warnings: list[ScenarioWarning] = []
-        if leg.surface is not None:
+        if leg.surface is not None and leg.expiry > valuation_time:
             try:
                 point = leg.surface.quote(
                     expiry=leg.expiry,
@@ -208,6 +210,14 @@ def _evaluate_one(
                 raise ScenarioValidationError(
                     f"unable to value {leg.symbol} from surface: {exc}"
                 ) from exc
+        elif leg.surface is not None:
+            leg_warnings.append(
+                ScenarioWarning(
+                    "surface_not_used_expired",
+                    "Expired scenario uses intrinsic value; volatility surface is not queried",
+                    leg.symbol,
+                )
+            )
         request = FairValueRequest(
             option_type=leg.option_type,
             strike=leg.strike,
@@ -322,6 +332,14 @@ def _payoff_bounds(
     if strategy.strategy_type == "calendar_spread":
         return max(0.0, net_debit), math.inf, ()
 
+    if strategy.strategy_type in {"protective_put", "covered_call"}:
+        # The underlying position is implicit for overlay strategies.  The
+        # scenario engine therefore reports the option overlay's entry risk
+        # and does not invent a stock cost basis or quantity.
+        if strategy.strategy_type == "protective_put":
+            return max(0.0, net_debit), math.inf, ()
+        return math.inf, max(0.0, -net_debit), ()
+
     if strategy.strategy_type in {
         "iron_condor",
         "iron_butterfly",
@@ -356,6 +374,9 @@ def _validate_strategy(strategy: StrategyDefinition) -> None:
         return
     if strategy.strategy_type in {"long_straddle", "long_strangle"}:
         _validate_long_volatility_strategy(strategy)
+        return
+    if strategy.strategy_type in {"protective_put", "covered_call"}:
+        _validate_overlay_strategy(strategy)
         return
     if strategy.strategy_type == "calendar_spread":
         _validate_calendar_spread(strategy)
@@ -396,6 +417,21 @@ def _validate_long_volatility_strategy(strategy: StrategyDefinition) -> None:
         raise ScenarioValidationError("straddle legs must share a strike")
     if strategy.strategy_type == "long_strangle" and put_leg.strike >= call_leg.strike:
         raise ScenarioValidationError("strangle put strike must be below call strike")
+
+
+def _validate_overlay_strategy(strategy: StrategyDefinition) -> None:
+    if len(strategy.legs) != 1:
+        raise ScenarioValidationError("overlay strategy must contain one option leg")
+    leg = strategy.legs[0]
+    expected_type = "put" if strategy.strategy_type == "protective_put" else "call"
+    expected_position = 1 if strategy.strategy_type == "protective_put" else -1
+    if leg.position != expected_position:
+        position_name = "long" if expected_position > 0 else "short"
+        raise ScenarioValidationError(
+            f"{strategy.strategy_type} must contain one {position_name} {expected_type} leg"
+        )
+    if leg.option_type.lower().strip() not in {expected_type, expected_type[0]}:
+        raise ScenarioValidationError("overlay strategy option type does not match its name")
 
 
 def _validate_calendar_spread(strategy: StrategyDefinition) -> None:

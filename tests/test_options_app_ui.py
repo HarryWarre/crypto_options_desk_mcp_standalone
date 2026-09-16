@@ -23,11 +23,14 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/app.js?v=20260916-2" defer></script>' in response.text
-    assert '<link rel="stylesheet" href="/static/styles.css">' in response.text
+    assert '<script src="/static/app.js?v=20260916-3" defer></script>' in response.text
+    assert '<link rel="stylesheet" href="/static/styles.css?v=20260916-3">' in response.text
     assert 'id="service-status"' in response.text
     assert 'id="scan-terminal"' in response.text
     assert 'id="clear-terminal"' in response.text
+    assert 'id="historical-context"' in response.text
+    assert "Biến động lịch sử 30 ngày" in response.text
+    assert "không tải lịch sử mark-price" in response.text
     assert "Không đặt lệnh" not in response.text
     assert "Chưa kiểm định" not in response.text
     assert "include_unvalidated" not in response.text
@@ -36,13 +39,12 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'id="pnl-chart-legend"' in response.text
     assert 'id="pnl-chart-assumptions"' in response.text
     assert 'id="scenario-results-body"' in response.text
+    assert 'class="strategy-grid"' in response.text
+    assert 'name="strategies" value="call_vertical"' in response.text
+    assert 'name="strategies" value="put_vertical"' in response.text
     for strategy in (
         "long_call",
         "long_put",
-        "bull_call_vertical",
-        "bear_call_vertical",
-        "bull_put_vertical",
-        "bear_put_vertical",
         "iron_condor",
         "iron_butterfly",
         "long_straddle",
@@ -54,9 +56,9 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
         "broken_wing_butterfly",
     ):
         assert f'name="strategies" value="{strategy}"' in response.text
-    assert 'role="radiogroup" aria-label="Ý tưởng giao dịch"' in response.text
-    assert 'type="radio" name="quick_strategy"' in response.text
-    assert 'name="quick_target_edge_pct"' in response.text
+    assert 'type="radio" name="quick_strategy"' not in response.text
+    assert 'name="quick_target_edge_pct"' not in response.text
+    assert "có thể chọn nhiều chiến lược" in response.text
     assert 'name="risk_free_rate_pct"' in response.text
     assert "Khi nào nên chọn" in response.text
 
@@ -108,6 +110,9 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     ):
         assert strategy in javascript.text
     assert "strategyLabel" in javascript.text
+    assert "historical_volatility_contexts" in javascript.text
+    assert "anchor/quality" in javascript.text
+    assert "không tải lịch sử mark-price" in javascript.text
     assert "scenarioStrategyType" in javascript.text
     assert "opportunityLegs" in javascript.text
     assert "leg-summary" in javascript.text
@@ -122,6 +127,7 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "@media" in stylesheet.text
     assert ".detail-panel" in stylesheet.text
     assert ".detail-metrics" in stylesheet.text
+    assert ".historical-context" in stylesheet.text
 
 
 def test_static_directory_contains_only_the_expected_ui_files() -> None:

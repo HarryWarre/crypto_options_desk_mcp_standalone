@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css">
-    <script src="/static/app.js?v=20260916-2" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260916-3">
+    <script src="/static/app.js?v=20260916-3" defer></script>
   </head>
   <body>
     <header class="site-header">
@@ -33,31 +33,63 @@
             <div class="asset-list" id="asset-list" aria-live="polite"></div>
             <p class="field-help">Mặc định chỉ chọn một tài sản. Có thể chọn thêm để so sánh.</p>
           </fieldset>
-          <fieldset class="quick-idea-fieldset">
+          <fieldset class="strategy-options strategy-picker" aria-describedby="strategy-help">
             <legend>Bạn muốn tìm ý tưởng nào?</legend>
-            <div class="strategy-presets" role="radiogroup" aria-label="Ý tưởng giao dịch">
-              <label class="strategy-preset">
-                <input type="radio" name="quick_strategy" value="long_call" checked>
-                <span><strong>Mua call</strong><small>Kỳ vọng giá tăng</small></span>
+            <div class="strategy-grid">
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="long_call" checked>
+                <span><strong>Mua call</strong><small>Khi kỳ vọng giá tăng và muốn hưởng lợi từ đà tăng.</small></span>
               </label>
-              <label class="strategy-preset">
-                <input type="radio" name="quick_strategy" value="long_put">
-                <span><strong>Mua put</strong><small>Kỳ vọng giá giảm</small></span>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="long_put">
+                <span><strong>Mua put</strong><small>Khi kỳ vọng giá giảm và muốn giới hạn lỗ ở premium đã trả.</small></span>
               </label>
-              <label class="strategy-preset">
-                <input type="radio" name="quick_strategy" value="bull_call_vertical">
-                <span><strong>Call spread</strong><small>Tăng giá, rủi ro giới hạn</small></span>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="call_vertical">
+                <span><strong>Call spread</strong><small>Khi kỳ vọng tăng nhưng muốn giới hạn chi phí và rủi ro.</small></span>
               </label>
-              <label class="strategy-preset">
-                <input type="radio" name="quick_strategy" value="bear_put_vertical">
-                <span><strong>Put spread</strong><small>Giảm giá, rủi ro giới hạn</small></span>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="put_vertical">
+                <span><strong>Put spread</strong><small>Khi kỳ vọng giảm nhưng muốn giới hạn chi phí và rủi ro.</small></span>
               </label>
-              <label class="strategy-preset">
-                <input type="radio" name="quick_strategy" value="iron_condor">
-                <span><strong>Iron condor</strong><small>Kỳ vọng đi ngang</small></span>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="iron_condor">
+                <span><strong>Iron condor</strong><small>Khi kỳ vọng giá đi ngang trong một vùng và muốn giới hạn rủi ro.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="long_straddle">
+                <span><strong>Long straddle</strong><small>Khi dự đoán biến động mạnh nhưng chưa biết giá sẽ đi hướng nào.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="long_strangle">
+                <span><strong>Long strangle</strong><small>Khi kỳ vọng biến động rất mạnh và muốn premium thấp hơn straddle.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="protective_put">
+                <span><strong>Protective put</strong><small>Khi đang nắm tài sản cơ sở và muốn bảo hiểm trước rủi ro giảm giá.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="covered_call">
+                <span><strong>Covered call</strong><small>Khi đang nắm tài sản, kỳ vọng tăng nhẹ hoặc đi ngang và muốn thu premium.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="calendar_spread">
+                <span><strong>Calendar spread</strong><small>Khi muốn tận dụng chênh lệch thời gian hoặc IV giữa các kỳ hạn.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="butterfly">
+                <span><strong>Butterfly</strong><small>Khi dự đoán giá hội tụ về strike trung tâm và muốn giới hạn rủi ro.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="broken_wing_butterfly">
+                <span><strong>Broken-wing butterfly</strong><small>Khi có thiên kiến nhẹ một hướng và muốn vùng lợi nhuận lệch.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="iron_butterfly">
+                <span><strong>Iron butterfly</strong><small>Khi kỳ vọng giá đi ngang gần strike trung tâm với rủi ro giới hạn.</small></span>
               </label>
             </div>
-            <p class="field-help">Khi nào nên chọn: chọn theo hướng bạn nghĩ giá cơ sở sẽ đi, không cần hiểu mã chiến lược phía sau.</p>
+            <p class="field-help" id="strategy-help">Khi nào nên chọn: có thể chọn nhiều chiến lược để so sánh. Nếu bỏ chọn hết, hệ thống sẽ yêu cầu chọn ít nhất một chiến lược.</p>
           </fieldset>
 
           <div class="quick-grid">
@@ -70,19 +102,14 @@
               <small class="field-help" id="time-horizon-help">Khoảng thời gian còn lại đến ngày đáo hạn.</small>
             </label>
             <label>Lỗ tối đa mỗi ý tưởng
-              <input name="quick_max_loss" type="number" min="0" step="0.01" required aria-describedby="quick-max-loss-help">
+              <input name="quick_max_loss" type="number" min="0" step="0.01" aria-describedby="quick-max-loss-help">
               <small class="field-help" id="quick-max-loss-help">Nhập số tiền tối đa bạn chấp nhận mất, theo đơn vị báo giá của hợp đồng.</small>
-            </label>
-            <label>Edge IV tối thiểu (%)
-              <input name="quick_target_edge_pct" type="number" value="0" step="0.5" min="0" aria-describedby="quick-edge-help">
-              <small class="field-help" id="quick-edge-help">Nhập 3 = mô hình phải cao hơn IV thị trường ít nhất 3 điểm %. Đây không phải xác suất có lãi.</small>
             </label>
           </div>
 
           <details class="advanced-filters" id="advanced-filters" data-testid="advanced-filters">
             <summary>Bộ lọc nâng cao <span class="muted">Dành cho người đã quen với options</span></summary>
             <div class="advanced-content">
-              <label class="advanced-toggle"><input type="checkbox" name="use_advanced_strategies"> Dùng lựa chọn chiến lược nâng cao thay cho preset bên trên</label>
               <div class="form-grid">
                 <label>Ngày tối thiểu
                   <input name="min_dte" type="number" min="0" placeholder="Ví dụ 3">
@@ -137,24 +164,6 @@
                   <small class="field-help" id="risk-free-rate-help">Giả định lãi suất dùng để định giá; mặc định 5%, không phải lợi nhuận kỳ vọng.</small>
                 </label>
               </div>
-              <fieldset class="strategy-options">
-                <legend>Chiến lược giới hạn rủi ro</legend>
-                <label><input type="checkbox" name="strategies" value="long_call" checked><span><strong>Mua call</strong><small>Khi kỳ vọng giá tăng.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="long_put" checked><span><strong>Mua put</strong><small>Khi kỳ vọng giá giảm.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="bull_call_vertical"><span><strong>Bull call vertical</strong><small>Tăng giá, giới hạn rủi ro.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="bear_call_vertical"><span><strong>Bear call vertical</strong><small>Giảm hoặc đi ngang, thu credit giới hạn.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="bull_put_vertical"><span><strong>Bull put vertical</strong><small>Tăng hoặc đi ngang, thu credit giới hạn.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="bear_put_vertical"><span><strong>Bear put vertical</strong><small>Giảm giá, giới hạn rủi ro.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="iron_condor"><span><strong>Iron condor</strong><small>Đi ngang trong một vùng giá.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="iron_butterfly"><span><strong>Iron butterfly</strong><small>Đi ngang gần strike trung tâm.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="long_straddle"><span><strong>Long straddle</strong><small>Biến động mạnh, chưa biết hướng.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="long_strangle"><span><strong>Long strangle</strong><small>Biến động rất mạnh, premium thấp hơn straddle.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="protective_put"><span><strong>Protective put</strong><small>Bảo hiểm vị thế spot/perpetual đang nắm giữ.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="covered_call"><span><strong>Covered call</strong><small>Thu premium khi đang nắm tài sản.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="calendar_spread"><span><strong>Calendar spread</strong><small>Khai thác chênh lệch IV hoặc thời gian.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="butterfly"><span><strong>Butterfly</strong><small>Giá hội tụ về strike trung tâm.</small></span></label>
-                <label><input type="checkbox" name="strategies" value="broken_wing_butterfly"><span><strong>Broken-wing butterfly</strong><small>Giá lệch nhẹ một hướng, vùng lợi nhuận bất đối xứng.</small></span></label>
-              </fieldset>
             </div>
           </details>
 
@@ -184,11 +193,16 @@
           </div>
         </div>
         <div class="state-message" id="result-state">Chọn điều kiện rồi bấm “Quét cơ hội”.</div>
+        <div class="quality-note" role="note">
+          Biến động lịch sử 30 ngày chỉ dùng làm ngữ cảnh/kiểm tra chất lượng; định giá vẫn dùng IV hiện tại.
+          Khi quét live không tải lịch sử mark-price.
+        </div>
         <div class="results-guide" id="results-guide" hidden>
           <strong>Cách đọc nhanh</strong>
           <span>Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.</span>
         </div>
         <div class="scan-context" id="scan-context" hidden></div>
+        <div class="historical-context" id="historical-context" hidden></div>
         <div class="opportunity-explanations" id="opportunity-explanations"></div>
         <div class="table-wrap">
           <table>

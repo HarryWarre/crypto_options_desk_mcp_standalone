@@ -1,5 +1,5 @@
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,6 +12,11 @@ from options_lib.volatility_surface import VolatilityObservation, build_volatili
 
 VALUATION_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 EXPIRY = datetime(2027, 1, 1, tzinfo=UTC)
+
+
+class _SurfaceThatMustNotBeQueried:
+    def quote(self, **kwargs: object) -> None:
+        raise AssertionError("expired pricing must not query the volatility surface")
 
 
 def test_black_scholes_call_returns_price_and_auditable_greeks() -> None:
@@ -204,6 +209,47 @@ def test_expiry_returns_intrinsic_without_fabricating_greeks() -> None:
     assert result.status == "expired"
     assert result.fair_price == 5.0
     assert result.intrinsic_value == 5.0
+    assert result.time_value == 0.0
+    assert result.time_to_expiry_years == 0.0
+    assert result.delta == 0.0
+    assert result.gamma == 0.0
+    assert result.theta == 0.0
+    assert result.vega == 0.0
+    assert result.rho == 0.0
+
+
+@pytest.mark.parametrize(
+    ("option_type", "spot", "strike", "expiry", "expected_intrinsic"),
+    [
+        ("call", 105.0, 100.0, VALUATION_TIME, 5.0),
+        ("put", 95.0, 100.0, VALUATION_TIME, 5.0),
+        ("call", 105.0, 100.0, VALUATION_TIME - timedelta(hours=1), 5.0),
+        ("put", 95.0, 100.0, VALUATION_TIME - timedelta(hours=1), 5.0),
+    ],
+)
+def test_surface_backed_expiry_returns_intrinsic_without_querying_surface(
+    option_type: str,
+    spot: float,
+    strike: float,
+    expiry: datetime,
+    expected_intrinsic: float,
+) -> None:
+    result = price_fair_value(
+        FairValueRequest(
+            option_type=option_type,
+            spot=spot,
+            strike=strike,
+            expiry=expiry,
+            valuation_time=VALUATION_TIME,
+            iv=None,
+            risk_free_rate=0.05,
+            surface=_SurfaceThatMustNotBeQueried(),
+        )
+    )
+
+    assert result.status == "expired"
+    assert result.fair_price == expected_intrinsic
+    assert result.intrinsic_value == expected_intrinsic
     assert result.time_value == 0.0
     assert result.time_to_expiry_years == 0.0
     assert result.delta == 0.0

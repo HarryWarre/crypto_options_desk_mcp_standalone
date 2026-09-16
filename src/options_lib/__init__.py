@@ -11,13 +11,20 @@ from .ev_validation import (
     ValidationConfig,
     validate_backtest,
 )
+from .historical_volatility import (
+    HistoricalVolatilityContext,
+    HistoricalVolatilityContexts,
+    HistoricalVolatilityStatus,
+)
 from .opportunity_scanner import (
     AssetScanFailure,
+    HistoricalContextScanResult,
     Opportunity,
     RejectedCandidate,
     ScanRequest,
     ScanResult,
     scan_opportunities,
+    scan_opportunities_with_historical_context,
 )
 from .portfolio_greeks import (
     OptionPositionGreeks,
@@ -58,7 +65,11 @@ __all__ = [
     'CostSensitivityPoint',
     'ExecutionAssumptions',
     'ExtrapolationError',
+    'HistoricalContextScanResult',
     'HistoricalTradeSample',
+    'HistoricalVolatilityContext',
+    'HistoricalVolatilityContexts',
+    'HistoricalVolatilityStatus',
     'InsufficientDataError',
     'MarketScenario',
     'Opportunity',
@@ -92,5 +103,6 @@ __all__ = [
     'evaluate_scenarios',
     'parse_bybit_option_symbol',
     'scan_opportunities',
+    'scan_opportunities_with_historical_context',
     'validate_backtest',
 ]

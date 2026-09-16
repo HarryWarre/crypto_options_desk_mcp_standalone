@@ -64,16 +64,17 @@ prices defined-risk long call/put candidates, and shows market-versus-model
 edge after configurable costs.
 
 The read-only API also exposes `GET /api/v1/surfaces/{asset}` for a surface
-summary and `POST /api/v1/scenarios` for price/IV/time P&L scenarios. Scenario
-reports label results as model-only or extrapolated when a complete observed
-surface is not available.
+summary and `POST /api/v1/scenarios` for price/IV/time P&L scenarios. The API
+keeps model-status metadata for programmatic consumers; the scanner UI focuses
+on candidates with positive model edge after costs.
 
 ```bash
 uvicorn options_app.api:create_app --factory --reload
 ```
 
-Open `http://127.0.0.1:8000/`. The screen deliberately labels every result as
-unvalidated until a held-out historical test passes; it has no order buttons.
+Open `http://127.0.0.1:8000/`. The screen focuses on candidates with positive
+model edge after costs and has no order buttons. Historical EV validation is
+available separately through `options_lib.ev_validation.validate_backtest`.
 The evidence helper can be used on timestamped outcomes with
 `options_lib.ev_validation.validate_backtest`.
 
@@ -85,6 +86,20 @@ prospectively and `JsonlOptionSnapshotArchive` to persist/replay them. Bybit's
 public ticker API is latest-only, so the project does not fabricate a
 historical full-chain snapshot from current data. See
 [`docs/option-history.md`](docs/option-history.md).
+
+During a scan, the Terminal prints `[OPTIONS]` progress lines for instrument
+discovery, ticker loading, market-data normalization, scanner execution, and
+the final result. Use `--log-level info` if your Uvicorn configuration hides
+informational logs.
+The same progress is shown in the UI's **Terminal tiến trình** panel while a
+scan is running.
+
+The API allows local frontend origins (`localhost` and `127.0.0.1`) by default.
+If the UI is hosted on another origin, configure it as a comma-separated list:
+
+```bash
+OPTIONS_APP_CORS_ORIGINS=https://your-frontend.example.com uvicorn options_app.api:create_app --factory
+```
 
 Smoke-test it:
 

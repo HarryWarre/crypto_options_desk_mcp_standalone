@@ -7,7 +7,7 @@ historical data, and other public information from Bybit.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -559,7 +559,10 @@ class BybitPublicClient(BaseClient):
 
         return [
             {
-                "time": ms_to_datetime(int(item["time"])),
+                # ``ms_to_datetime`` returns a naive UTC datetime for legacy
+                # callers; normalize this public history seam to an aware UTC
+                # timestamp before it reaches valuation context loading.
+                "time": ms_to_datetime(int(item["time"])).replace(tzinfo=UTC),
                 "value": float(item["value"]),
                 "period": period,
             }
@@ -607,23 +610,46 @@ class BybitPublicClient(BaseClient):
             period = 7
 
         if not self.use_cache:
-            return await self._fetch_volatility_range(
+            records = await self._fetch_volatility_range(
                 base_coin, period, start_time, end_time
             )
+        else:
+            # Bybit publishes this series hourly.  ``period`` is the lookback
+            # used to calculate each point, not an appropriate cache TTL.
+            freshness_seconds = timedelta(hours=1).total_seconds()
+            records = await self._get_with_cache(
+                cache_key=f"{base_coin}_{period}d_volatility",
+                filepath=get_cache_filepath(base_coin, f"{period}d", "volatility"),
+                time_col="time",
+                dedup_cols=["time", "period"],
+                start_time=start_time,
+                end_time=end_time,
+                current_time=current_time,
+                freshness_seconds=freshness_seconds,
+                fetch_fn=lambda s, e: self._fetch_volatility_range(base_coin, period, s, e),
+                extra_filter=lambda df: df[df["period"] == period],
+            )
 
-        freshness_seconds = timedelta(days=period).total_seconds()
-        return await self._get_with_cache(
-            cache_key=f"{base_coin}_{period}d_volatility",
-            filepath=get_cache_filepath(base_coin, f"{period}d", "volatility"),
-            time_col="time",
-            dedup_cols=["time", "period"],
-            start_time=start_time,
-            end_time=end_time,
-            current_time=current_time,
-            freshness_seconds=freshness_seconds,
-            fetch_fn=lambda s, e: self._fetch_volatility_range(base_coin, period, s, e),
-            extra_filter=lambda df: df[df["period"] == period],
-        )
+        return self._normalize_historical_volatility_records(records)
+
+    @staticmethod
+    def _normalize_historical_volatility_records(
+        records: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Expose cached and uncached history with the same UTC timestamp type."""
+
+        normalized = []
+        for record in records:
+            item = dict(record)
+            timestamp = item.get("time")
+            if isinstance(timestamp, datetime):
+                item["time"] = (
+                    timestamp.replace(tzinfo=UTC)
+                    if timestamp.tzinfo is None
+                    else timestamp.astimezone(UTC)
+                )
+            normalized.append(item)
+        return normalized
 
     # Sentiment endpoints
 

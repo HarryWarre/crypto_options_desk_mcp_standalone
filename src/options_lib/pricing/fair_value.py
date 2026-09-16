@@ -105,6 +105,70 @@ def price_fair_value(request: FairValueRequest) -> FairValueResult:
     _validate_number("risk_free_rate", request.risk_free_rate)
     _validate_number("dividend_yield", request.dividend_yield)
 
+    if (request.spot is None) == (request.forward is None):
+        raise PricingValidationError("exactly one of spot or forward must be supplied")
+
+    if request.spot is not None:
+        underlying = _validate_number("spot", request.spot, strictly_positive=True)
+        model = "black_scholes"
+    else:
+        underlying = _validate_number("forward", request.forward, strictly_positive=True)
+        if request.dividend_yield != 0.0:
+            raise PricingValidationError(
+                "dividend_yield must be zero when forward is supplied"
+            )
+        model = "black_76"
+
+    if expiry < valuation_time and request.iv is not None:
+        raise PricingValidationError("expiry must be on or after valuation_time")
+
+    time_to_expiry = max(0.0, (expiry - valuation_time).total_seconds() / SECONDS_PER_YEAR)
+    intrinsic = _intrinsic_value(
+        underlying,
+        request.strike,
+        option_type,
+        model=model,
+        time_to_expiry=time_to_expiry,
+        risk_free_rate=request.risk_free_rate,
+    )
+    market_mid = _market_mid(request)
+    market_iv = (
+        _validate_number("market_iv", request.market_iv, strictly_positive=True)
+        if request.market_iv is not None
+        else None
+    )
+
+    if time_to_expiry == 0.0:
+        # Expired contracts have no time value. Do not require or query an IV
+        # surface merely to return their intrinsic settlement value.
+        resolved_iv = (
+            _validate_number("iv", request.iv, strictly_positive=True)
+            if request.iv is not None
+            else 0.0
+        )
+        return FairValueResult(
+            model=model,
+            status="expired",
+            option_type=option_type,
+            fair_price=intrinsic,
+            intrinsic_value=intrinsic,
+            time_value=0.0,
+            delta=0.0,
+            gamma=0.0,
+            theta=0.0,
+            vega=0.0,
+            rho=0.0,
+            time_to_expiry_years=0.0,
+            valuation_time=valuation_time,
+            expiry=expiry,
+            underlying_value=underlying,
+            fair_iv=resolved_iv,
+                surface_status=None,
+            market_mid=market_mid,
+            iv_edge=(resolved_iv - market_iv) if market_iv is not None else None,
+            price_edge=(intrinsic - market_mid) if market_mid is not None else None,
+        )
+
     surface_status: str | None = None
     if request.iv is None:
         if request.surface is None:
@@ -128,63 +192,6 @@ def price_fair_value(request: FairValueRequest) -> FairValueResult:
         surface_status = str(getattr(surface_point, "status", "unknown"))
     else:
         resolved_iv = _validate_number("iv", request.iv, strictly_positive=True)
-
-    if (request.spot is None) == (request.forward is None):
-        raise PricingValidationError("exactly one of spot or forward must be supplied")
-
-    if request.spot is not None:
-        underlying = _validate_number("spot", request.spot, strictly_positive=True)
-        model = "black_scholes"
-    else:
-        underlying = _validate_number("forward", request.forward, strictly_positive=True)
-        if request.dividend_yield != 0.0:
-            raise PricingValidationError(
-                "dividend_yield must be zero when forward is supplied"
-            )
-        model = "black_76"
-
-    if expiry < valuation_time:
-        raise PricingValidationError("expiry must be on or after valuation_time")
-
-    time_to_expiry = (expiry - valuation_time).total_seconds() / SECONDS_PER_YEAR
-    intrinsic = _intrinsic_value(
-        underlying,
-        request.strike,
-        option_type,
-        model=model,
-        time_to_expiry=time_to_expiry,
-        risk_free_rate=request.risk_free_rate,
-    )
-    market_mid = _market_mid(request)
-    market_iv = (
-        _validate_number("market_iv", request.market_iv, strictly_positive=True)
-        if request.market_iv is not None
-        else None
-    )
-
-    if time_to_expiry == 0.0:
-        return FairValueResult(
-            model=model,
-            status="expired",
-            option_type=option_type,
-            fair_price=intrinsic,
-            intrinsic_value=intrinsic,
-            time_value=0.0,
-            delta=0.0,
-            gamma=0.0,
-            theta=0.0,
-            vega=0.0,
-            rho=0.0,
-            time_to_expiry_years=0.0,
-            valuation_time=valuation_time,
-            expiry=expiry,
-            underlying_value=underlying,
-            fair_iv=resolved_iv,
-            surface_status=surface_status,
-            market_mid=market_mid,
-            iv_edge=(resolved_iv - market_iv) if market_iv is not None else None,
-            price_edge=(intrinsic - market_mid) if market_mid is not None else None,
-        )
 
     if model == "black_scholes":
         fair_price, delta, gamma, theta, vega, rho = _black_scholes(

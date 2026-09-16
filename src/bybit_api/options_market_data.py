@@ -8,6 +8,7 @@ are converted into a validated, chronologically ordered option universe.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from typing import Any
 from .utils import ensure_utc_datetime, format_bybit_timestamp, now_utc
 
 PublicRequest = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
@@ -167,7 +170,14 @@ class BybitOptionMarketDataAdapter:
         quality issue while successful assets remain available.
         """
 
+        logger.info("[OPTIONS] Bybit instrument discovery started")
         catalog, instruments = await self._discover_instruments()
+        logger.info(
+            "[OPTIONS] Bybit instrument discovery completed assets=%d instruments=%d issues=%d",
+            len(catalog.assets),
+            sum(len(items) for items in instruments.values()),
+            len(catalog.issues),
+        )
         fixed_valuation_time = self._resolve_fixed_valuation_time(valuation_time)
         issues = list(catalog.issues)
 
@@ -200,6 +210,11 @@ class BybitOptionMarketDataAdapter:
             for asset in selected_assets
             if instruments.get(asset)
         ]
+        logger.info(
+            "[OPTIONS] Bybit ticker loading started assets=%s concurrency=%d",
+            ",".join(selected_assets) if selected_assets else "none",
+            self._max_concurrent_requests,
+        )
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         contracts: list[OptionContract] = []
@@ -220,6 +235,11 @@ class BybitOptionMarketDataAdapter:
             issues.extend(asset_issues)
 
         contracts.sort(key=lambda contract: (contract.expiry_at, contract.strike, contract.option_type, contract.symbol))
+        logger.info(
+            "[OPTIONS] Bybit ticker loading completed contracts=%d issues=%d",
+            len(contracts),
+            len(issues),
+        )
         as_of = fixed_valuation_time or ensure_utc_datetime(self._now_fn())
         return NormalizedOptionUniverse(
             assets=catalog.assets,
@@ -239,7 +259,7 @@ class BybitOptionMarketDataAdapter:
         cursor: str | None = None
         seen_cursors: set[str] = set()
 
-        for _ in range(self._max_instrument_pages):
+        for page_number in range(1, self._max_instrument_pages + 1):
             params: dict[str, Any] = {
                 "category": "option",
                 "baseCoin": "All",
@@ -248,10 +268,16 @@ class BybitOptionMarketDataAdapter:
             }
             if cursor:
                 params["cursor"] = cursor
+            logger.info(
+                "[OPTIONS] Bybit instruments request page=%d cursor=%s",
+                page_number,
+                "yes" if cursor else "no",
+            )
             try:
                 response = await self._request("/v5/market/instruments-info", params)
                 result = self._result_or_raise(response)
-            except Exception as exc:  # noqa: BLE001 - one failed discovery must not crash the scan
+            except Exception as exc:
+                logger.exception("[OPTIONS] Bybit instruments request failed page=%d", page_number)
                 issues.append(
                     OptionDataQualityIssue(
                         code="instrument_discovery_failed",
@@ -261,6 +287,12 @@ class BybitOptionMarketDataAdapter:
                 break
 
             items = result.get("list", [])
+            logger.info(
+                "[OPTIONS] Bybit instruments response page=%d records=%d next_page=%s",
+                page_number,
+                len(items) if isinstance(items, list) else 0,
+                "yes" if result.get("nextPageCursor") else "no",
+            )
             if not isinstance(items, list):
                 issues.append(
                     OptionDataQualityIssue(
@@ -340,11 +372,20 @@ class BybitOptionMarketDataAdapter:
     ) -> tuple[list[OptionContract], list[OptionDataQualityIssue]]:
         issues: list[OptionDataQualityIssue] = []
         async with semaphore:
-            response = await self._request(
-                "/v5/market/tickers",
-                {"category": "option", "baseCoin": asset},
+            logger.info(
+                "[OPTIONS] Bybit ticker request started asset=%s instruments=%d",
+                asset,
+                len(instruments),
             )
-        result = self._result_or_raise(response)
+            try:
+                response = await self._request(
+                    "/v5/market/tickers",
+                    {"category": "option", "baseCoin": asset},
+                )
+                result = self._result_or_raise(response)
+            except Exception:
+                logger.exception("[OPTIONS] Bybit ticker request failed asset=%s", asset)
+                raise
         quote_timestamp = format_bybit_timestamp(response.get("time"))
         if quote_timestamp is None:
             issues.append(
@@ -444,6 +485,12 @@ class BybitOptionMarketDataAdapter:
         # Keep this local set so a malformed response cannot accidentally add a
         # ticker for a symbol that was not part of the discovered universe.
         _ = instrument_symbols
+        logger.info(
+            "[OPTIONS] Bybit ticker request completed asset=%s contracts=%d issues=%d",
+            asset,
+            len(contracts),
+            len(issues),
+        )
         return contracts, issues
 
     def _normalize_instrument(
@@ -547,7 +594,12 @@ class BybitOptionMarketDataAdapter:
 
         expiry_at = format_bybit_timestamp(raw.get("deliveryTime"))
         if expiry_at is None:
-            expiry_at = symbol_expiry.replace(tzinfo=None)
+            expiry_at = symbol_expiry.replace(
+                hour=8,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
             issues.append(
                 OptionDataQualityIssue(
                     code="missing_delivery_time",
@@ -557,6 +609,10 @@ class BybitOptionMarketDataAdapter:
                     field="expiry",
                 )
             )
+        elif expiry_at.tzinfo is None:
+            expiry_at = expiry_at.replace(tzinfo=UTC)
+        else:
+            expiry_at = expiry_at.astimezone(UTC)
         if expiry_at.date() != symbol_expiry.date():
             return None, [
                 OptionDataQualityIssue(

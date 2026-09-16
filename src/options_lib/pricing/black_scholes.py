@@ -1,5 +1,6 @@
 """Professional options pricing and Greeks calculation using py-vollib."""
 
+import math
 import logging
 import py_vollib.black_scholes as bs
 import py_vollib.black_scholes.greeks.analytical as greeks
@@ -48,7 +49,9 @@ class ProfessionalOptionsEngine:
         Args:
             risk_free_rate: Risk-free interest rate (default 5%)
         """
-        self.risk_free_rate = risk_free_rate
+        self.risk_free_rate = self._validate_finite(
+            "risk_free_rate", risk_free_rate
+        )
     
     def parse_option_symbol(self, symbol: str) -> Optional[Dict]:
         """Parse Bybit option symbol format: BTC-30DEC24-70000-C"""
@@ -74,8 +77,19 @@ class ProfessionalOptionsEngine:
         Returns:
             Time to expiration in years
         """
+        self._validate_datetime("expiration_date", expiration_date)
         if current_date is None:
-            current_date = datetime.now()
+            current_date = datetime.now(tz=expiration_date.tzinfo)
+        else:
+            self._validate_datetime("current_date", current_date)
+
+        expiration_is_aware = expiration_date.utcoffset() is not None
+        current_is_aware = current_date.utcoffset() is not None
+        if expiration_is_aware != current_is_aware:
+            raise ValueError(
+                "expiration_date and current_date must both be timezone-naive "
+                "or both be timezone-aware"
+            )
             
         if expiration_date <= current_date:
             return 0.0
@@ -97,23 +111,52 @@ class ProfessionalOptionsEngine:
         Returns:
             OptionMetrics with all Greeks and pricing data
         """
-        # Convert option type to py-vollib format
-        flag = 'c' if spec.option_type.lower() in ['call', 'c'] else 'p'
-        
+        if not isinstance(spec, OptionSpec):
+            raise TypeError("spec must be an OptionSpec")
+
+        underlying_price = self._validate_finite(
+            "underlying_price", spec.underlying_price
+        )
+        strike = self._validate_finite("strike", spec.strike)
+        if underlying_price <= 0:
+            raise ValueError("underlying_price must be greater than zero")
+        if strike <= 0:
+            raise ValueError("strike must be greater than zero")
+
+        option_type = spec.option_type.lower() if isinstance(spec.option_type, str) else ""
+        if option_type in {"call", "c"}:
+            flag = "c"
+        elif option_type in {"put", "p"}:
+            flag = "p"
+        else:
+            raise ValueError("option_type must be one of: call, c, put, p")
+
+        risk_free_rate = self._validate_finite(
+            "risk_free_rate", spec.risk_free_rate
+        )
+        if spec.implied_volatility is None:
+            implied_volatility = None
+        else:
+            implied_volatility = self._validate_finite(
+                "implied_volatility", spec.implied_volatility
+            )
+            if implied_volatility <= 0:
+                raise ValueError("implied_volatility must be greater than zero")
+
         # Calculate time to expiration
         time_to_exp = self.calculate_time_to_expiration(spec.expiration_date, current_date)
         
         # Handle expired options
         if time_to_exp <= 0:
             intrinsic = self._calculate_intrinsic_value(
-                spec.underlying_price, spec.strike, flag
+                underlying_price, strike, flag
             )
             
             # For expired options, delta is 1 if ITM call or 0 otherwise
             if flag == 'c':
-                delta_val = 1.0 if spec.underlying_price > spec.strike else 0.0
+                delta_val = 1.0 if underlying_price > strike else 0.0
             else:
-                delta_val = -1.0 if spec.underlying_price < spec.strike else 0.0
+                delta_val = -1.0 if underlying_price < strike else 0.0
             
             return OptionMetrics(
                 theoretical_price=intrinsic,
@@ -124,28 +167,29 @@ class ProfessionalOptionsEngine:
                 time_value=0.0
             )
         
-        # Use provided IV or default
-        iv = spec.implied_volatility or 0.5  # Default 50% if not provided
-        
-        # Ensure IV is positive
-        iv = max(0.001, iv)  # Minimum 0.1% volatility
-        
+        if implied_volatility is None:
+            raise ValueError(
+                "implied_volatility is required for options that have not expired"
+            )
+
+        iv = implied_volatility
+
         try:
             # Calculate price using py-vollib Black-Scholes
             price = bs.black_scholes(
-                flag, spec.underlying_price, spec.strike, 
-                time_to_exp, spec.risk_free_rate, iv
+                flag, underlying_price, strike,
+                time_to_exp, risk_free_rate, iv
             )
             
             # Calculate Greeks using py-vollib
             delta_val = greeks.delta(
-                flag, spec.underlying_price, spec.strike,
-                time_to_exp, spec.risk_free_rate, iv
+                flag, underlying_price, strike,
+                time_to_exp, risk_free_rate, iv
             )
             
             gamma_val = greeks.gamma(
-                flag, spec.underlying_price, spec.strike,
-                time_to_exp, spec.risk_free_rate, iv
+                flag, underlying_price, strike,
+                time_to_exp, risk_free_rate, iv
             )
             
             # Theta per day — py-vollib's analytical.theta already returns
@@ -153,35 +197,49 @@ class ProfessionalOptionsEngine:
             # code double-divided by 365.25, making theta 365x too small
             # and collapsing theta P&L to near-zero in PnL attribution.
             theta_val = greeks.theta(
-                flag, spec.underlying_price, spec.strike,
-                time_to_exp, spec.risk_free_rate, iv
+                flag, underlying_price, strike,
+                time_to_exp, risk_free_rate, iv
             )
 
             # Vega per 1 percentage point of IV — py-vollib's analytical.vega
             # already returns dPrice per 0.01 change in sigma (i.e. per 1 pp).
             # The earlier /100 made vega 100x too small.
             vega_val = greeks.vega(
-                flag, spec.underlying_price, spec.strike,
-                time_to_exp, spec.risk_free_rate, iv
+                flag, underlying_price, strike,
+                time_to_exp, risk_free_rate, iv
             )
 
             # Rho per 1 percentage point of rate — py-vollib's analytical.rho
             # already returns dPrice per 0.01 change in r. The earlier /100
             # made rho 100x too small.
             rho_val = greeks.rho(
-                flag, spec.underlying_price, spec.strike,
-                time_to_exp, spec.risk_free_rate, iv
+                flag, underlying_price, strike,
+                time_to_exp, risk_free_rate, iv
             )
             
             # Calculate intrinsic and time value
             intrinsic = self._calculate_intrinsic_value(
-                spec.underlying_price, spec.strike, flag
+                underlying_price, strike, flag
             )
             time_value = max(0.0, price - intrinsic)
             
             # Validate results
-            if price != price:  # Check for NaN
-                raise ValueError("Price calculation returned NaN")
+            result_values = {
+                "price": price,
+                "delta": delta_val,
+                "gamma": gamma_val,
+                "theta": theta_val,
+                "vega": vega_val,
+                "rho": rho_val,
+            }
+            non_finite = [
+                name for name, value in result_values.items()
+                if not math.isfinite(value)
+            ]
+            if non_finite:
+                raise ValueError(
+                    "Pricing returned non-finite values: " + ", ".join(non_finite)
+                )
             
             return OptionMetrics(
                 theoretical_price=max(0.0, price),
@@ -195,20 +253,28 @@ class ProfessionalOptionsEngine:
                 time_value=max(0.0, time_value)
             )
             
-        except Exception as e:
-            logger.error(f"Error calculating metrics for {spec.symbol}: {e}")
-            # Return safe defaults with proper intrinsic value
-            intrinsic = self._calculate_intrinsic_value(
-                spec.underlying_price, spec.strike, flag
-            )
-            
-            return OptionMetrics(
-                theoretical_price=max(0.0, intrinsic),
-                delta=0.0, gamma=0.0, theta=0.0, vega=0.0, rho=0.0,
-                time_to_expiration=time_to_exp,
-                intrinsic_value=max(0.0, intrinsic),
-                time_value=0.0
-            )
+        except Exception:
+            logger.exception("Error calculating metrics for %s", spec.symbol)
+            raise
+
+    @staticmethod
+    def _validate_finite(name: str, value: float) -> float:
+        """Return a finite numeric value or raise a clear validation error."""
+        if isinstance(value, (str, bytes, bool)) or value is None:
+            raise ValueError(f"{name} must be a finite number")
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{name} must be a finite number") from exc
+        if not math.isfinite(numeric_value):
+            raise ValueError(f"{name} must be a finite number")
+        return numeric_value
+
+    @staticmethod
+    def _validate_datetime(name: str, value: datetime) -> None:
+        """Validate datetime inputs before arithmetic/comparison."""
+        if not isinstance(value, datetime):
+            raise ValueError(f"{name} must be a datetime")
     
     def _calculate_intrinsic_value(self, S: float, K: float, flag: str) -> float:
         """Calculate intrinsic value for call or put."""
@@ -217,4 +283,3 @@ class ProfessionalOptionsEngine:
         else:
             return max(0.0, K - S)
     
-

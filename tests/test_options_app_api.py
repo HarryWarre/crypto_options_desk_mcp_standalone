@@ -16,7 +16,11 @@ from bybit_api.options_market_data import (
     OptionDataQualityIssue,
 )
 from options_app.api import ScenarioRequest, create_app
-from options_lib.opportunity_scanner import Opportunity, ScanResult
+from options_lib.historical_volatility import (
+    HistoricalVolatilityContext,
+    HistoricalVolatilityContexts,
+)
+from options_lib.opportunity_scanner import Opportunity, ScanRequest, ScanResult
 
 VALUATION_TIME = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 DATA_TIME = datetime(2026, 9, 15, 11, 59, 30, tzinfo=UTC)
@@ -133,6 +137,50 @@ class FailingAdapter:
 
     async def load_universe(self, *args: Any, **kwargs: Any) -> NormalizedOptionUniverse:
         raise self.error
+
+
+class FakeHistoricalVolatilityLoader:
+    def __init__(
+        self,
+        contexts: tuple[HistoricalVolatilityContext, ...] = (),
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.contexts = contexts
+        self.error = error
+        self.calls: list[tuple[tuple[str, ...], datetime | None]] = []
+
+    async def load(
+        self,
+        assets: tuple[str, ...],
+        *,
+        as_of: datetime | None = None,
+    ) -> HistoricalVolatilityContexts:
+        self.calls.append((assets, as_of))
+        if self.error is not None:
+            raise self.error
+        return HistoricalVolatilityContexts(self.contexts)
+
+
+def historical_context(
+    asset: str,
+    *,
+    status: str = "available",
+    value: float | None = 0.42,
+    as_of: datetime | None = DATA_TIME,
+    message: str | None = None,
+) -> HistoricalVolatilityContext:
+    return HistoricalVolatilityContext(
+        asset=asset,
+        period_days=30,
+        available=status in {"available", "stale"},
+        status=status,  # type: ignore[arg-type]
+        historical_volatility=value if status in {"available", "stale"} else None,
+        as_of=as_of if status in {"available", "stale"} else None,
+        requested_at=VALUATION_TIME,
+        retrieved_at=VALUATION_TIME,
+        message=message,
+    )
 
 
 async def request(app, method: str, path: str, **kwargs: Any) -> httpx.Response:
@@ -290,7 +338,21 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
     )
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert {
+        key: body[key]
+        for key in (
+            "timestamp",
+            "data_timestamp",
+            "opportunities",
+            "rejections",
+            "asset_failures",
+            "issues",
+            "evidence_status",
+            "evidence_gate_status",
+            "execution_allowed",
+        )
+    } == {
         "timestamp": "2026-09-15T12:00:00Z",
         "data_timestamp": "2026-09-15T11:59:30Z",
         "opportunities": [],
@@ -309,10 +371,119 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
         "evidence_gate_status": "blocked_unvalidated",
         "execution_allowed": False,
     }
+    assert [context["asset"] for context in body["historical_volatility_contexts"]] == ["BTC", "ETH"]
+    assert all(context["status"] == "not_loaded" for context in body["historical_volatility_contexts"])
+    assert all(context["role"] == "anchor_quality_only" for context in body["historical_volatility_contexts"])
     assert adapter.load_calls == [(('BTC', 'ETH'), None)]
     assert scan_calls[0][1].assets == ("BTC", "ETH")
     assert scan_calls[0][1].strategies == ("long_put",)
     assert scan_calls[0][1].risk_free_rate == pytest.approx(0.075)
+
+
+@pytest.mark.asyncio
+async def test_scan_serializes_fresh_and_missing_historical_context_without_changing_scan() -> None:
+    loader = FakeHistoricalVolatilityLoader(
+        (
+            historical_context("BTC", value=0.42),
+            historical_context(
+                "ETH",
+                status="unavailable",
+                value=None,
+                as_of=None,
+                message="no valid 30d observation",
+            ),
+        )
+    )
+    scanner_calls: list[ScanRequest] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        scanner_calls.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(
+            adapter=FakeAdapter(),
+            scanner=fake_scanner,
+            historical_volatility_loader=loader,
+        ),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC", "ETH"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    contexts = response.json()["historical_volatility_contexts"]
+    assert contexts == [
+        {
+            "asset": "BTC",
+            "period_days": 30,
+            "available": True,
+            "status": "available",
+            "historical_volatility": 0.42,
+            "as_of": "2026-09-15T11:59:30Z",
+            "requested_at": "2026-09-15T12:00:00Z",
+            "retrieved_at": "2026-09-15T12:00:00Z",
+            "source": "/v5/market/historical-volatility",
+            "message": None,
+            "role": "anchor_quality_only",
+        },
+        {
+            "asset": "ETH",
+            "period_days": 30,
+            "available": False,
+            "status": "unavailable",
+            "historical_volatility": None,
+            "as_of": None,
+            "requested_at": "2026-09-15T12:00:00Z",
+            "retrieved_at": "2026-09-15T12:00:00Z",
+            "source": "/v5/market/historical-volatility",
+            "message": "no valid 30d observation",
+            "role": "anchor_quality_only",
+        },
+    ]
+    assert loader.calls == [(('BTC', 'ETH'), VALUATION_TIME)]
+    assert scanner_calls[0].assets == ("BTC", "ETH")
+
+
+@pytest.mark.asyncio
+async def test_scan_isolates_history_loader_error_and_never_fetches_mark_price_history() -> None:
+    loader = FakeHistoricalVolatilityLoader(error=RuntimeError("history unavailable"))
+    scanner_calls: list[bool] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        scanner_calls.append(True)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(
+            adapter=FakeAdapter(),
+            scanner=fake_scanner,
+            historical_volatility_loader=loader,
+        ),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC", "ETH"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    contexts = response.json()["historical_volatility_contexts"]
+    assert [context["status"] for context in contexts] == ["fetch_error", "fetch_error"]
+    assert scanner_calls == [True]
+    assert "mark-price-kline" not in response.text
 
 
 @pytest.mark.asyncio

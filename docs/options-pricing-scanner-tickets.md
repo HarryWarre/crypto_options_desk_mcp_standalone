@@ -4,12 +4,45 @@ Status: local draft. The configured issue tracker and its `ready-for-agent` labe
 
 Source spec: [options-pricing-scanner-spec.md](options-pricing-scanner-spec.md)
 
+Strategy-specific backlog: [options-scanner-strategy-tickets.md](options-scanner-strategy-tickets.md)
+
 ## Dependency order
 
 ```text
 OPS-001 → OPS-002 → OPS-003 → OPS-004 → OPS-005 → OPS-006 → OPS-007
                          ↘ OPS-008 (validation/backtest evidence)
+OPS-005 → OPS-010 (vertical spread scanner; STRAT-003…STRAT-006)
+OPS-005 → OPS-011 (iron condor/butterfly; STRAT-009/STRAT-011)
 ```
+
+## OPS-010 — Add vertical spreads to the opportunity scanner — implemented
+
+Outcome: the read-only scanner finds bull/bear call and put verticals, values both legs from executable bid/ask quotes and the fitted surface, and exposes bounded-risk metrics without creating naked short candidates.
+
+Acceptance criteria:
+
+- `bull_call_vertical`, `bear_call_vertical`, `bull_put_vertical`, and `bear_put_vertical` are accepted by domain, API, and UI.
+- Pairing requires the same asset, expiry, and option type, with distinct strikes and a protective long leg.
+- Results include both typed legs, executable net entry, fair value, cost-adjusted edge, max loss, max profit, aggregate Greeks, and read-only execution status.
+- Missing, invalid, illiquid, or unselected legs produce explicit rejection reasons.
+- Scenario requests preserve the existing `call_vertical`/`put_vertical` evaluator identifiers.
+- Detailed strategy tickets: [STRAT-003…STRAT-006](options-scanner-strategy-tickets.md).
+
+Checks: vertical baseline `103 passed` Python tests and `5 passed` Playwright tests; current regression `112 passed` Python tests and `6 passed` Playwright tests, targeted Ruff clean.
+
+## OPS-011 — Add Iron Condor and Iron Butterfly to the scanner — implemented
+
+Outcome: the read-only scanner enumerates and values four-leg Iron Condor and Iron Butterfly candidates, and the scenario evaluator reports bounded payoff metrics.
+
+Acceptance criteria:
+
+- Iron Condor requires lower put wing, short put, short call, and upper call wing with strictly ordered strikes.
+- Iron Butterfly requires lower put wing, equal-strike short put/call bodies, and upper call wing.
+- Results expose all four typed legs, executable net entry, model fair value, costs, max loss, max profit, breakevens, aggregate Greeks, and evidence status.
+- Missing wings, malformed legs, unprotected shorts, and invalid structures are rejected explicitly.
+- API/UI accept and display `iron_condor` and `iron_butterfly`; scenario requests preserve those identifiers.
+
+Checks: `112 passed` Python tests, `6 passed` Playwright tests, targeted Ruff clean.
 
 ## OPS-001 — Normalize multi-asset Bybit option contracts
 

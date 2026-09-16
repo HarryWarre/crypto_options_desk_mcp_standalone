@@ -7,6 +7,7 @@ const resultsBody = document.querySelector("#results-body");
 const secondaryResults = document.querySelector("#secondary-results");
 const resultsGuide = document.querySelector("#results-guide");
 const scanContext = document.querySelector("#scan-context");
+const historicalContext = document.querySelector("#historical-context");
 const opportunityExplanations = document.querySelector("#opportunity-explanations");
 const detailPanel = document.querySelector("#opportunity-detail");
 const detailSummary = document.querySelector("#detail-summary");
@@ -58,6 +59,11 @@ const STRATEGY_LABELS = Object.freeze({
   calendar_spread: "Calendar spread",
   butterfly: "Butterfly",
   broken_wing_butterfly: "Broken-wing butterfly",
+});
+
+const STRATEGY_GROUPS = Object.freeze({
+  call_vertical: ["bull_call_vertical", "bear_call_vertical"],
+  put_vertical: ["bull_put_vertical", "bear_put_vertical"],
 });
 
 function normalizedStrategy(strategy) {
@@ -137,14 +143,31 @@ function opportunitySymbol(item) {
 
 function opportunityExpiry(item) {
   const firstLeg = opportunityLegs(item)[0];
-  return firstDefined(item?.expiry_at, firstLeg?.expiry_at, firstLeg?.expiry);
+  return firstDefined(
+    item?.expiry_at,
+    item?.expiry,
+    item?.expiry_date,
+    item?.expiration_date,
+    firstLeg?.expiry_at,
+    firstLeg?.expiry,
+    firstLeg?.expiry_date,
+    firstLeg?.expiration_date,
+  );
 }
 
 function expiryLabel(item) {
   const rawExpiry = opportunityExpiry(item);
   if (!rawExpiry) return "—";
   const parsedExpiry = new Date(rawExpiry);
-  return Number.isNaN(parsedExpiry.getTime()) ? String(rawExpiry) : parsedExpiry.toLocaleString("vi-VN");
+  if (Number.isNaN(parsedExpiry.getTime())) return String(rawExpiry);
+  const date = parsedExpiry.toLocaleDateString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Asia/Ho_Chi_Minh",
+  });
+  const dte = Number(item?.dte);
+  return Number.isFinite(dte) ? `${date}\nCòn ${Math.max(0, Math.round(dte))} ngày` : date;
 }
 
 function renderInstrumentCell(row, item) {
@@ -788,6 +811,36 @@ function renderScanContext(context) {
   scanContext.hidden = false;
 }
 
+function historicalContextStatus(context) {
+  if (context.status === "available") return "đã có dữ liệu";
+  if (context.status === "stale") return "đã có dữ liệu nhưng đã cũ";
+  if (context.status === "fetch_error") return "lỗi tải dữ liệu";
+  if (context.status === "unavailable") return "không có dữ liệu hợp lệ";
+  return "chưa tải";
+}
+
+function renderHistoricalContext(contexts) {
+  historicalContext.replaceChildren();
+  const items = Array.isArray(contexts) ? contexts : [];
+  if (!items.length) {
+    historicalContext.hidden = true;
+    return;
+  }
+  const summary = document.createElement("div");
+  summary.className = "historical-context-summary";
+  summary.textContent = "Ngữ cảnh chất lượng: HV lịch sử 30 ngày chỉ là anchor/quality, không thay đổi IV hoặc giá định giá hiện tại; live scan không tải lịch sử mark-price.";
+  historicalContext.appendChild(summary);
+  const details = document.createElement("div");
+  details.className = "historical-context-items";
+  items.forEach((context) => {
+    const item = document.createElement("span");
+    item.textContent = `${context.asset || "—"}: ${historicalContextStatus(context)}${context.historical_volatility == null ? "" : ` · ${percent(context.historical_volatility)}`}`;
+    details.appendChild(item);
+  });
+  historicalContext.appendChild(details);
+  historicalContext.hidden = false;
+}
+
 async function getJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -864,6 +917,14 @@ function selectedTimeHorizon(value) {
   return ranges[value] || ranges.all;
 }
 
+function selectedStrategies(formData) {
+  return [...new Set(
+    formData.getAll("strategies").flatMap((strategy) => (
+      STRATEGY_GROUPS[strategy] || [strategy]
+    )),
+  )];
+}
+
 function simpleScanContext(strategy, horizon) {
   const strategies = {
     long_call: { market_view: "up", strategy_preference: "long_call" },
@@ -885,6 +946,7 @@ function renderResults(payload) {
   secondaryResults.replaceChildren();
   opportunityExplanations.replaceChildren();
   renderScanContext(payload.scan_context);
+  renderHistoricalContext(payload.historical_volatility_contexts);
   detailPanel.hidden = true;
   selectedOpportunity = null;
   const opportunities = payload.opportunities || [];
@@ -941,32 +1003,46 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = form.querySelector("button[type=submit]");
   const data = new FormData(form);
-  const useAdvancedStrategies = data.get("use_advanced_strategies") === "on";
-  const strategies = useAdvancedStrategies
-    ? data.getAll("strategies")
-    : [data.get("quick_strategy") || "long_call"];
+  const advancedFilters = document.querySelector("#advanced-filters");
+  const useAdvancedFilters = Boolean(advancedFilters?.open);
+  const strategies = selectedStrategies(data);
   const assets = data.getAll("assets");
   if (!assets.length) {
     setState("Hãy chọn ít nhất một tài sản để quét.", "error");
     return;
   }
+  if (!strategies.length) {
+    setState("Hãy chọn ít nhất một chiến lược để quét.", "error");
+    return;
+  }
   const horizon = selectedTimeHorizon(data.get("time_horizon"));
-  const simpleContext = simpleScanContext(data.get("quick_strategy"), data.get("time_horizon"));
+  const maxLoss = useAdvancedFilters
+    ? optionalNumber(data, "max_loss")
+    : optionalNumber(data, "quick_max_loss");
+  if (!useAdvancedFilters && maxLoss === null) {
+    setState("Hãy nhập mức lỗ tối đa cho mỗi ý tưởng.", "error");
+    return;
+  }
   const payload = {
-    risk_free_rate: useAdvancedStrategies
+    risk_free_rate: useAdvancedFilters
       ? optionalDecimal(data, "risk_free_rate_pct", 100) ?? 0.05
       : 0.05,
     assets, strategies,
-    min_dte: useAdvancedStrategies ? optionalNumber(data, "min_dte") : horizon.min_dte,
-    max_dte: useAdvancedStrategies ? optionalNumber(data, "max_dte") : horizon.max_dte,
-    min_iv_edge: useAdvancedStrategies
+    min_dte: useAdvancedFilters ? optionalNumber(data, "min_dte") : horizon.min_dte,
+    max_dte: useAdvancedFilters ? optionalNumber(data, "max_dte") : horizon.max_dte,
+    min_iv_edge: useAdvancedFilters
       ? optionalDecimal(data, "min_iv_edge", 100) || 0
-      : optionalDecimal(data, "quick_target_edge_pct", 100) || 0,
-    max_loss: useAdvancedStrategies ? optionalNumber(data, "max_loss") : optionalNumber(data, "quick_max_loss"),
+      : 0,
+    max_loss: maxLoss,
     include_unvalidated: true,
   };
-  if (!useAdvancedStrategies) Object.assign(payload, simpleContext);
-  if (useAdvancedStrategies) {
+  if (!useAdvancedFilters) {
+    Object.assign(payload, {
+      market_view: "custom",
+      time_horizon: { "0-7": "0_7", "7-30": "7_30", "30-90": "30_90" }[data.get("time_horizon")] || "7_30",
+    });
+  }
+  if (useAdvancedFilters) {
     Object.assign(payload, {
       min_delta: optionalNumber(data, "min_delta"),
       max_delta: optionalNumber(data, "max_delta"),

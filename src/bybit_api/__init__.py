@@ -31,6 +31,10 @@ from .option_mark_history import (
     OptionMarkPriceBar,
     fetch_option_mark_price_history,
 )
+from .option_volatility_history import (
+    BybitHistoricalVolatilityContextLoader,
+    HistoricalVolatilityFetcher,
+)
 from .options_market_data import (
     BybitOptionMarketDataAdapter,
     NormalizedOptionUniverse,
@@ -61,6 +65,7 @@ __all__ = [
     "Balance",
     "BybitClient",
     "BybitException",
+    "BybitHistoricalVolatilityContextLoader",
     "BybitOptionMarketDataAdapter",
     "BybitOptionSnapshotCollector",
     "BybitPrivateClient",
@@ -69,6 +74,7 @@ __all__ = [
     "HistoricalDataUnavailable",
     "HistoricalOptionQuote",
     "HistoricalOptionSnapshot",
+    "HistoricalVolatilityFetcher",
     "Instrument",
     "InstrumentSpec",
     "JsonlOptionSnapshotArchive",

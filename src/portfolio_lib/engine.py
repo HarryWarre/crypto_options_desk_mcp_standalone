@@ -7,6 +7,7 @@ and portfolio management. Exchange-agnostic business logic only.
 
 import json
 import logging
+import math
 import os
 import pandas as pd
 from datetime import datetime, timezone
@@ -303,18 +304,43 @@ class PortfolioEngine:
         """
         pnl_data = []
         greek_data = []
+
+        greek_positions = [position for position in portfolio.positions.values() if position.greeks]
+        requires_underlying_price = any(scenario.spot_change_pct != 0 for scenario in scenarios)
+        underlying_price = None
+        if greek_positions and requires_underlying_price:
+            raw_underlying_price = (portfolio.metadata or {}).get("underlying_price")
+            try:
+                underlying_price = float(raw_underlying_price)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "portfolio.metadata['underlying_price'] must be a positive finite number "
+                    "for scenarios with a non-zero spot change; current_price is the option "
+                    "premium and is not a valid fallback"
+                ) from None
+            if not math.isfinite(underlying_price) or underlying_price <= 0:
+                raise ValueError(
+                    "portfolio.metadata['underlying_price'] must be a positive finite number "
+                    "for scenarios with a non-zero spot change; current_price is the option "
+                    "premium and is not a valid fallback"
+                )
         
         for scenario in scenarios:
             scenario_pnl = 0.0
             scenario_greeks = {'delta': 0.0, 'gamma': 0.0, 'theta': 0.0, 'vega': 0.0}
             
             for position in portfolio.positions.values():
-                if not position.greeks or not position.current_price:
+                if not position.greeks:
                     continue
                 
                 # Calculate position PnL using Greeks approximation
-                spot_pnl = position.greeks.delta * position.quantity * scenario.spot_change_pct / 100
-                iv_pnl = position.greeks.vega * position.quantity * scenario.iv_change_pct / 100
+                absolute_spot_change = (
+                    underlying_price * scenario.spot_change_pct / 100
+                    if scenario.spot_change_pct != 0
+                    else 0.0
+                )
+                spot_pnl = position.greeks.delta * position.quantity * absolute_spot_change
+                iv_pnl = position.greeks.vega * position.quantity * scenario.iv_change_pct
                 time_pnl = position.greeks.theta * position.quantity * scenario.days_forward
                 
                 position_pnl = spot_pnl + iv_pnl + time_pnl

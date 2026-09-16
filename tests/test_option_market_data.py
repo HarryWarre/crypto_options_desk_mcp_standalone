@@ -169,7 +169,8 @@ async def test_load_universe_normalizes_contracts_and_sorts_real_expiry_dates():
     assert contract.asset == "BTC"
     assert contract.option_type == "Call"
     assert contract.strike == 78000.0
-    assert contract.expiry_at == datetime(2026, 9, 25, 8, 0, 0, tzinfo=UTC).replace(tzinfo=None)
+    assert contract.expiry_at == datetime(2026, 9, 25, 8, 0, 0, tzinfo=UTC)
+    assert contract.expiry_at.tzinfo is UTC
     assert contract.spot_price == 80000.0
     assert contract.mark_iv == 0.42
     assert contract.delta == 0.52
@@ -180,6 +181,33 @@ async def test_load_universe_normalizes_contracts_and_sorts_real_expiry_dates():
     assert contract.quote_currency == "USD"
     assert contract.settle_currency == "USDC"
     assert not universe.issues
+
+
+def test_normalize_instrument_falls_back_to_bybit_delivery_time_when_missing():
+    adapter = _adapter(FixturePublicRequest({}))
+    symbol = "BTC-25SEP26-78000-C"
+    raw = _instrument(symbol)
+    raw.pop("deliveryTime")
+
+    record, issues = adapter._normalize_instrument(raw)
+
+    assert record is not None
+    assert record.expiry_at == datetime(2026, 9, 25, 8, 0, 0, tzinfo=UTC)
+    assert record.expiry_at.tzinfo is UTC
+    assert [issue.code for issue in issues] == ["missing_delivery_time"]
+
+
+def test_normalize_instrument_preserves_delivery_time_as_aware_utc():
+    adapter = _adapter(FixturePublicRequest({}))
+    symbol = "BTC-25SEP26-78000-C"
+    raw = _instrument(symbol, expiry="2026-09-25T08:00:00+00:00")
+
+    record, issues = adapter._normalize_instrument(raw)
+
+    assert record is not None
+    assert record.expiry_at == datetime(2026, 9, 25, 8, 0, 0, tzinfo=UTC)
+    assert record.expiry_at.tzinfo is UTC
+    assert not issues
 
 
 @pytest.mark.asyncio
