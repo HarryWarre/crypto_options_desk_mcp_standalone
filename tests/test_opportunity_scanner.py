@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -82,6 +83,75 @@ def _surface_fixture() -> NormalizedOptionUniverse:
     return _universe(*contracts)
 
 
+def _vertical_surface_fixture() -> NormalizedOptionUniverse:
+    contracts = [
+        # Outer strikes keep every tested leg inside the fitted-surface range
+        # after the pair itself is excluded from the quote.
+        _contract("BTC", 80, option_type="Call", ask=0.6, bid=0.5),
+        _contract("BTC", 90, option_type="Call", ask=8.0, bid=7.5),
+        _contract("BTC", 100, option_type="Call", ask=3.0, bid=2.5),
+        _contract("BTC", 110, option_type="Call", ask=0.8, bid=0.6),
+        _contract("BTC", 120, option_type="Call", ask=0.1, bid=0.05),
+        _contract("BTC", 130, option_type="Call", ask=0.6, bid=0.5),
+        _contract("BTC", 80, option_type="Put", ask=0.6, bid=0.5),
+        _contract("BTC", 90, option_type="Put", ask=0.1, bid=0.05),
+        _contract("BTC", 100, option_type="Put", ask=2.0, bid=1.5),
+        _contract("BTC", 110, option_type="Put", ask=8.0, bid=7.5),
+        _contract("BTC", 120, option_type="Put", ask=14.0, bid=13.5),
+        _contract("BTC", 130, option_type="Put", ask=0.6, bid=0.5),
+    ]
+    return _universe(*contracts)
+
+
+def _iron_surface_fixture() -> NormalizedOptionUniverse:
+    contracts = []
+    for strike, put_ask, put_bid, call_ask, call_bid in (
+        (70, 0.2, 0.1, 30.0, 29.0),
+        (80, 0.5, 0.4, 20.0, 19.0),
+        (90, 2.0, 1.8, 12.0, 11.0),
+        (100, 5.0, 4.5, 5.0, 4.5),
+        (110, 12.0, 11.0, 2.0, 1.8),
+        (120, 20.0, 19.0, 0.5, 0.4),
+        (130, 30.0, 29.0, 0.2, 0.1),
+    ):
+        contracts.extend(
+            (
+                _contract("BTC", strike, option_type="Put", ask=put_ask, bid=put_bid),
+                _contract("BTC", strike, option_type="Call", ask=call_ask, bid=call_bid),
+            )
+        )
+    return _universe(*contracts)
+
+
+def _new_strategy_fixture() -> NormalizedOptionUniverse:
+    universe = _iron_surface_fixture()
+    contracts = []
+    for contract in universe.contracts:
+        if (contract.strike, contract.option_type.lower()) in {
+            (90, "put"),
+            (100, "call"),
+            (100, "put"),
+            (110, "call"),
+        }:
+            ask = (
+                0.001
+                if (contract.strike, contract.option_type.lower()) in {(90, "put"), (110, "call")}
+                else 1.0
+            )
+            bid = ask * 0.8
+            contracts.append(
+                replace(
+                    contract,
+                    bid_price=bid,
+                    ask_price=ask,
+                    mark_price=(bid + ask) / 2,
+                )
+            )
+        else:
+            contracts.append(contract)
+    return _universe(*contracts)
+
+
 def test_scan_supports_multiple_assets_and_ranks_after_costs() -> None:
     result = scan_opportunities(
         _surface_fixture(),
@@ -104,13 +174,17 @@ def test_scan_supports_multiple_assets_and_ranks_after_costs() -> None:
     assert candidate.executable_entry == pytest.approx(0.60)
     assert candidate.slippage_cost == pytest.approx(0.006)
     assert candidate.edge_after_costs == pytest.approx(
-        candidate.fair_price
-        - candidate.executable_entry
-        - candidate.total_cost
+        candidate.fair_price - candidate.executable_entry - candidate.total_cost
     )
     assert candidate.max_loss == pytest.approx(0.656)
     assert candidate.evidence_status == "insufficient_evidence"
-    assert candidate.expected_value_status == "not_validated"
+    assert candidate.expected_value_status == "model_estimate"
+    assert candidate.payoff_metrics_status == "estimated"
+    assert candidate.expected_value is not None
+    assert 0.0 <= candidate.win_probability <= 1.0
+    assert candidate.payoff_curve
+    assert candidate.payoff_metrics_assumptions is not None
+    assert candidate.payoff_metrics_assumptions.historical_outcomes_used is False
     assert candidate.execution_allowed is False
     assert candidate.exit_fee == pytest.approx(0.05)
     assert candidate.exit_slippage_cost == pytest.approx(0.005)
@@ -134,6 +208,21 @@ def test_candidate_is_excluded_from_its_fitted_surface_quote() -> None:
     assert candidate.fair_iv == pytest.approx(0.40)
     assert candidate.fair_iv != candidate.market_iv
     assert candidate.surface_status == "interpolated"
+
+
+def test_opportunity_delta_uses_model_valued_greeks() -> None:
+    result = scan_opportunities(
+        _surface_fixture(),
+        ScanRequest(risk_free_rate=0.0, assets=("BTC",), strategies=("long_call",)),
+    )
+
+    candidate = next(item for item in result.opportunities if item.strike == 100)
+
+    # The market candidate delta is 0.50, while the fitted 30% IV model gives
+    # the ATM call a delta of approximately 0.509904.
+    assert candidate.delta == pytest.approx(0.509904, abs=1e-6)
+    assert candidate.legs[0].delta == pytest.approx(candidate.delta)
+    assert candidate.delta != pytest.approx(0.50)
 
 
 def test_filters_produce_explicit_rejections_and_no_qualified_result() -> None:
@@ -277,6 +366,247 @@ def test_costs_and_max_loss_scale_by_quantity_and_contract_multiplier() -> None:
         + candidate.entry_slippage_cost
         + candidate.exit_slippage_cost
     )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    (
+        "bull_call_vertical",
+        "bear_call_vertical",
+        "bull_put_vertical",
+        "bear_put_vertical",
+    ),
+)
+def test_vertical_strategies_pair_executable_legs_and_bound_risk(strategy: str) -> None:
+    result = scan_opportunities(
+        _vertical_surface_fixture(),
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=(strategy,),
+        ),
+    )
+
+    assert result.opportunities
+    candidate = result.opportunities[0]
+    assert candidate.strategy == strategy
+    assert candidate.long_symbol is not None
+    assert candidate.short_symbol is not None
+    assert [leg.position for leg in candidate.legs] == [1, -1]
+    assert [leg.symbol for leg in candidate.legs] == [candidate.long_symbol, candidate.short_symbol]
+    assert all(leg.fair_iv > 0 for leg in candidate.legs)
+    assert candidate.long_strike != candidate.short_strike
+    assert candidate.symbol == f"{candidate.long_symbol}/{candidate.short_symbol}"
+    assert candidate.executable_entry == pytest.approx(candidate.ask_price)
+    assert candidate.max_loss >= 0
+    assert candidate.max_profit >= 0
+    assert candidate.edge_after_costs == pytest.approx(
+        candidate.fair_price - candidate.executable_entry - candidate.total_cost
+    )
+    assert candidate.payoff_metrics_status == "estimated"
+    assert candidate.expected_value_status == "model_estimate"
+    assert candidate.payoff_curve
+    assert candidate.expected_value is not None
+    assert candidate.win_probability is not None
+    assert candidate.risk_reward is not None
+    assert candidate.execution_allowed is False
+
+
+def test_vertical_costs_and_bounds_use_both_executable_legs() -> None:
+    universe = _vertical_surface_fixture()
+    result = scan_opportunities(
+        universe,
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("bull_call_vertical",),
+            fee_per_contract=0.05,
+            slippage_bps=100.0,
+            quantity=2.0,
+            contract_multiplier=10.0,
+        ),
+    )
+
+    candidate = next(
+        item
+        for item in result.opportunities
+        if item.long_symbol == "BTC-90-C" and item.short_symbol == "BTC-100-C"
+    )
+    by_symbol = {contract.symbol: contract for contract in universe.contracts}
+    long_leg = by_symbol[candidate.long_symbol]
+    short_leg = by_symbol[candidate.short_symbol]
+    scale = 20.0
+    entry = (long_leg.ask_price - short_leg.bid_price) * scale
+    entry_fee = 2.0 * 0.05 * scale
+    entry_slippage = (long_leg.ask_price + short_leg.bid_price) * 100.0 / 10_000.0 * scale
+    width = (short_leg.strike - long_leg.strike) * scale
+
+    assert candidate.executable_entry == pytest.approx(entry)
+    assert candidate.entry_fee == pytest.approx(entry_fee)
+    assert candidate.entry_slippage_cost == pytest.approx(entry_slippage)
+    assert candidate.max_loss == pytest.approx(entry + entry_fee + entry_slippage)
+    assert candidate.max_profit == pytest.approx(width - candidate.max_loss)
+    assert candidate.delta == pytest.approx(
+        (0.9993110527 - 0.5066030381) * scale,
+        abs=1e-6,
+    )
+    assert candidate.delta == pytest.approx(
+        candidate.legs[0].delta - candidate.legs[1].delta,
+        abs=1e-9,
+    )
+    assert candidate.delta != pytest.approx(long_leg.delta - short_leg.delta)
+
+
+def test_vertical_rejects_missing_and_invalid_legs_explicitly() -> None:
+    missing_puts = _universe(
+        _contract("BTC", 90, option_type="Call", ask=8.0, bid=7.5),
+        _contract("BTC", 100, option_type="Call", ask=3.0, bid=2.5),
+    )
+    missing_result = scan_opportunities(
+        missing_puts,
+        ScanRequest(risk_free_rate=0.0, strategies=("bull_put_vertical",)),
+    )
+    assert not missing_result.opportunities
+    assert any(
+        {"missing_long_leg", "missing_short_leg"}.issubset(item.reasons)
+        and "missing_option_type" in item.reasons
+        for item in missing_result.rejections
+    )
+
+    invalid_leg = _universe(
+        _contract("BTC", 90, option_type="Call", ask=0.0, bid=0.0),
+        _contract("BTC", 100, option_type="Call", ask=3.0, bid=2.5),
+        _contract("BTC", 90, option_type="Put", ask=0.1, bid=0.05),
+        _contract("BTC", 100, option_type="Put", ask=2.0, bid=1.5),
+    )
+    invalid_result = scan_opportunities(
+        invalid_leg,
+        ScanRequest(risk_free_rate=0.0, strategies=("bull_call_vertical",)),
+    )
+    assert any(
+        "invalid_long_leg" in item.reasons and "invalid_market_data" in item.reasons
+        for item in invalid_result.rejections
+    )
+
+
+@pytest.mark.parametrize("strategy", ("iron_condor", "iron_butterfly"))
+def test_iron_strategies_scan_four_legs_and_return_bounded_metrics(strategy: str) -> None:
+    result = scan_opportunities(
+        _iron_surface_fixture(),
+        ScanRequest(risk_free_rate=0.0, assets=("BTC",), strategies=(strategy,)),
+    )
+
+    assert result.opportunities
+    candidate = result.opportunities[0]
+    assert candidate.strategy == strategy
+    assert len(candidate.legs) == 4
+    assert [leg.position for leg in candidate.legs] == [1, -1, -1, 1]
+    assert len(candidate.breakevens) == 2
+    assert candidate.max_loss >= 0
+    assert candidate.max_profit >= 0
+    assert candidate.edge_after_costs == pytest.approx(
+        candidate.fair_price - candidate.executable_entry - candidate.total_cost
+    )
+    assert candidate.payoff_metrics_status == "estimated"
+    assert candidate.payoff_curve
+    assert candidate.risk_reward is not None
+    assert candidate.execution_allowed is False
+
+
+def test_iron_strategy_rejects_a_chain_without_protective_wings() -> None:
+    result = scan_opportunities(
+        _universe(
+            _contract("BTC", 90, option_type="Put", ask=2.0, bid=1.8),
+            _contract("BTC", 100, option_type="Put", ask=5.0, bid=4.5),
+            _contract("BTC", 100, option_type="Call", ask=5.0, bid=4.5),
+            _contract("BTC", 110, option_type="Call", ask=2.0, bid=1.8),
+        ),
+        ScanRequest(risk_free_rate=0.0, strategies=("iron_condor",)),
+    )
+
+    assert not result.opportunities
+    assert any("missing_put_wing" in item.reasons for item in result.rejections)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    (
+        "long_straddle",
+        "long_strangle",
+        "butterfly",
+        "broken_wing_butterfly",
+        "protective_put",
+        "covered_call",
+    ),
+)
+def test_new_same_expiry_and_overlay_strategies_return_typed_opportunities(strategy: str) -> None:
+    result = scan_opportunities(
+        _new_strategy_fixture(),
+        ScanRequest(risk_free_rate=0.0, assets=("BTC",), strategies=(strategy,)),
+    )
+
+    assert result.opportunities
+    candidate = result.opportunities[0]
+    assert candidate.strategy == strategy
+    assert candidate.legs
+    if strategy in {"protective_put", "covered_call"}:
+        assert candidate.requires_underlying_position is True
+        assert candidate.risk_note
+        assert candidate.market_iv > 0
+        assert candidate.fair_iv > 0
+        assert candidate.payoff_metrics_status == "unavailable"
+        assert candidate.expected_value is None
+    else:
+        assert len(candidate.legs) in {2, 4}
+        assert candidate.payoff_metrics_status == "estimated"
+        assert candidate.payoff_curve
+
+
+def test_calendar_spread_pairs_same_strike_across_expiries() -> None:
+    base = _new_strategy_fixture()
+    far_expiry = EXPIRY + timedelta(days=30)
+    far_contracts = tuple(
+        replace(
+            contract,
+            symbol=f"{contract.symbol}-FAR",
+            expiry_at=far_expiry,
+            expiry_code="25OCT26",
+        )
+        for contract in base.contracts
+    )
+    universe = _universe(*base.contracts, *far_contracts)
+
+    result = scan_opportunities(
+        universe,
+        ScanRequest(risk_free_rate=0.0, assets=("BTC",), strategies=("calendar_spread",)),
+    )
+
+    assert result.opportunities
+    candidate = result.opportunities[0]
+    assert candidate.strategy == "calendar_spread"
+    assert len(candidate.legs) == 2
+    assert candidate.legs[0].strike == candidate.legs[1].strike
+    assert candidate.legs[0].expiry_at < candidate.legs[1].expiry_at
+    assert [leg.position for leg in candidate.legs] == [-1, 1]
+    assert candidate.max_loss >= 0
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    (
+        "long_straddle",
+        "long_strangle",
+        "protective_put",
+        "covered_call",
+        "calendar_spread",
+        "butterfly",
+        "broken_wing_butterfly",
+    ),
+)
+def test_new_strategy_families_are_accepted_by_scan_request(strategy: str) -> None:
+    request = ScanRequest(risk_free_rate=0.0, strategies=(strategy,))
+
+    assert request.strategies == (strategy,)
 
 
 @pytest.mark.parametrize(
