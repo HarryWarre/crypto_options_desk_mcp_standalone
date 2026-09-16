@@ -90,6 +90,28 @@ _SIMPLE_HORIZONS = {
 _LOCAL_FRONTEND_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 _CORS_ORIGINS_ENV = "OPTIONS_APP_CORS_ORIGINS"
 _DEFAULT_SCAN_RISK_FREE_RATE = 0.05
+_DEFAULT_MIN_EXPECTED_VALUE = 0.0
+
+# The scanner gained EV metrics after the original HTTP contract.  Keep the
+# API tolerant of either spelling while the domain slices land independently.
+# In particular, none of these aliases point at ``iv_edge``: IV edge is a
+# surface-pricing signal, not an expected-value estimate.
+_OPPORTUNITY_METRIC_ALIASES = {
+    "expected_value": ("expected_value",),
+    "win_probability": ("win_probability", "probability_of_profit", "win_rate"),
+    "risk_reward": ("risk_reward", "risk_reward_ratio"),
+    "payoff_curve": ("payoff_curve",),
+    "methodology": (
+        "methodology",
+        "payoff_metrics_methodology",
+        "metrics_methodology",
+        "expected_value_methodology",
+    ),
+    "metrics_status": ("metrics_status", "payoff_metrics_status", "expected_value_status"),
+    "risk_reward_status": ("risk_reward_status",),
+    "assumptions": ("assumptions", "payoff_metrics_assumptions"),
+    "limitations": ("limitations", "payoff_metrics_limitations"),
+}
 
 
 class ScannerAdapter(Protocol):
@@ -124,21 +146,24 @@ class ScanFilters(BaseModel):
     assets: list[str] = Field(default_factory=list)
     market_view: Literal["up", "down", "sideways", "custom"] | None = None
     time_horizon: Literal["0_7", "7_30", "30_90"] | None = None
-    strategy_preference: Literal[
-        "long_call",
-        "long_put",
-        "bull_call_vertical",
-        "bear_put_vertical",
-        "iron_condor",
-        "iron_butterfly",
-        "long_straddle",
-        "long_strangle",
-        "protective_put",
-        "covered_call",
-        "calendar_spread",
-        "butterfly",
-        "broken_wing_butterfly",
-    ] | None = None
+    strategy_preference: (
+        Literal[
+            "long_call",
+            "long_put",
+            "bull_call_vertical",
+            "bear_put_vertical",
+            "iron_condor",
+            "iron_butterfly",
+            "long_straddle",
+            "long_strangle",
+            "protective_put",
+            "covered_call",
+            "calendar_spread",
+            "butterfly",
+            "broken_wing_butterfly",
+        ]
+        | None
+    ) = None
     min_dte: float | None = Field(default=None, ge=0)
     max_dte: float | None = Field(default=None, ge=0)
     min_delta: float | None = Field(default=None, ge=0, le=1)
@@ -148,6 +173,7 @@ class ScanFilters(BaseModel):
     max_spread_pct: float | None = Field(default=None, ge=0, le=1)
     min_iv_edge: float = 0
     min_edge_after_costs: float = 0
+    min_expected_value: float | None = Field(default=_DEFAULT_MIN_EXPECTED_VALUE, ge=0)
     max_loss: float | None = Field(default=None, ge=0)
     fee_per_contract: float = Field(default=0, ge=0)
     slippage_bps: float = Field(default=0, ge=0)
@@ -168,6 +194,7 @@ class ScanFilters(BaseModel):
         "max_spread_pct",
         "min_iv_edge",
         "min_edge_after_costs",
+        "min_expected_value",
         "max_loss",
         "fee_per_contract",
         "slippage_bps",
@@ -219,13 +246,24 @@ class ScanFilters(BaseModel):
                 raise ValueError("max_loss is required for a simple scan")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
-        if self.min_delta is not None and self.max_delta is not None and self.min_delta > self.max_delta:
+        if (
+            self.min_delta is not None
+            and self.max_delta is not None
+            and self.min_delta > self.max_delta
+        ):
             raise ValueError("min_delta cannot exceed max_delta")
         return self
 
     def to_scan_request(self) -> ScanRequest:
         values = self.model_dump(
-            exclude={"market_view", "time_horizon", "strategy_preference"}
+            exclude={
+                "market_view",
+                "time_horizon",
+                "strategy_preference",
+                # Older scanner versions have no EV filter.  The API applies
+                # it to their returned opportunities below instead.
+                "min_expected_value",
+            }
         )
         if self.market_view is not None:
             values["strategies"] = (
@@ -242,6 +280,8 @@ class ScanFilters(BaseModel):
                 values["max_dte"] = horizon_max
         values["assets"] = tuple(values["assets"])
         values["strategies"] = tuple(values["strategies"])
+        if "min_expected_value" in {field.name for field in fields(ScanRequest)}:
+            values["min_expected_value"] = self.min_expected_value
         return ScanRequest(**values)
 
 
@@ -388,10 +428,6 @@ class ScenarioRequest(BaseModel):
 
     def to_domain(self) -> tuple[StrategyDefinition, ScenarioSet]:
         strategy_type = self.strategy_type
-        if strategy_type in {"bull_call_vertical", "bear_call_vertical"}:
-            strategy_type = "call_vertical"
-        elif strategy_type in {"bull_put_vertical", "bear_put_vertical"}:
-            strategy_type = "put_vertical"
         strategy = StrategyDefinition(
             strategy_type=strategy_type,
             legs=tuple(leg.to_domain() for leg in self.legs),
@@ -439,7 +475,9 @@ def create_app(
         )
 
     @app.exception_handler(RequestValidationError)
-    async def handle_validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def handle_validation_error(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         details = [
             {
                 "loc": list(error.get("loc", ())),
@@ -557,14 +595,14 @@ def create_app(
         if not normalized_asset:
             raise ApiError(422, "validation_error", "asset cannot be empty")
         try:
-            universe = await _maybe_await(
-                market_adapter.load_universe(assets=(normalized_asset,))
-            )
+            universe = await _maybe_await(market_adapter.load_universe(assets=(normalized_asset,)))
         except Exception as exc:
             raise _upstream_error(exc) from exc
         contracts = universe.contracts_by_asset.get(normalized_asset, ())
         if not contracts:
-            raise ApiError(404, "asset_not_available", "No option quotes are available for this asset")
+            raise ApiError(
+                404, "asset_not_available", "No option quotes are available for this asset"
+            )
         observations = tuple(
             VolatilityObservation(
                 asset=contract.asset,
@@ -597,7 +635,9 @@ def create_app(
                     "observed_points": len(surface.observed_points),
                     "expiry_slices": surface.slices,
                     "warnings": surface.warnings,
-                    "issues": tuple(issue for issue in universe.issues if issue.asset == normalized_asset),
+                    "issues": tuple(
+                        issue for issue in universe.issues if issue.asset == normalized_asset
+                    ),
                 }
             )
         )
@@ -792,21 +832,37 @@ def _serialize_scan_result(
             _serialize_historical_context(context)
             for context in result.historical_volatility_contexts.contexts
         ]
+        opportunities = result.scan.opportunities
     else:
         payload = _serialize(result)
+        opportunities = result.opportunities
+    payload["opportunities"] = [
+        _serialize_opportunity(opportunity)
+        for opportunity in opportunities
+        if _passes_expected_value_filter(opportunity, filters.min_expected_value)
+    ]
+    applied_filters = {
+        "min_dte": scan_request.min_dte,
+        "max_dte": scan_request.max_dte,
+        "min_delta": scan_request.min_delta,
+        "max_delta": scan_request.max_delta,
+        "min_iv_edge": scan_request.min_iv_edge,
+        "max_spread_pct": scan_request.max_spread_pct,
+        "min_open_interest": scan_request.min_open_interest,
+        "min_volume_24h": scan_request.min_volume_24h,
+        "min_edge_after_costs": scan_request.min_edge_after_costs,
+        "min_expected_value": filters.min_expected_value,
+        "max_results": scan_request.max_results,
+    }
+    payload["scan_context"] = {
+        "applied_filters": applied_filters,
+        "expected_value_filter": {
+            "enabled": filters.min_expected_value is not None,
+            "minimum_expected_value": filters.min_expected_value,
+            "source": "opportunity.expected_value",
+        },
+    }
     if filters.market_view is not None and filters.time_horizon is not None:
-        applied_filters = {
-            "min_dte": scan_request.min_dte,
-            "max_dte": scan_request.max_dte,
-            "min_delta": scan_request.min_delta,
-            "max_delta": scan_request.max_delta,
-            "min_iv_edge": scan_request.min_iv_edge,
-            "max_spread_pct": scan_request.max_spread_pct,
-            "min_open_interest": scan_request.min_open_interest,
-            "min_volume_24h": scan_request.min_volume_24h,
-            "min_edge_after_costs": scan_request.min_edge_after_costs,
-            "max_results": scan_request.max_results,
-        }
         assumptions = {
             "risk_free_rate": scan_request.risk_free_rate,
             "fee_per_contract": scan_request.fee_per_contract,
@@ -829,19 +885,18 @@ def _serialize_scan_result(
             "7_30": "7–30 ngày",
             "30_90": "30–90 ngày",
         }[filters.time_horizon]
-        payload["scan_context"] = {
-            "market_view": filters.market_view,
-            "time_horizon": filters.time_horizon,
-            "strategy_preference": filters.strategy_preference,
-            "max_loss": scan_request.max_loss,
-            "strategies": list(scan_request.strategies),
-            "applied_filters": applied_filters,
-            "assumptions": assumptions,
-            "summary": (
-                f"Kỳ vọng {view_text} · {horizon_text} · "
-                f"lỗ tối đa {max_loss_text}"
-            ),
-        }
+        payload["scan_context"].update(
+            {
+                "market_view": filters.market_view,
+                "time_horizon": filters.time_horizon,
+                "strategy_preference": filters.strategy_preference,
+                "max_loss": scan_request.max_loss,
+                "strategies": list(scan_request.strategies),
+                "applied_filters": applied_filters,
+                "assumptions": assumptions,
+                "summary": (f"Kỳ vọng {view_text} · {horizon_text} · lỗ tối đa {max_loss_text}"),
+            }
+        )
     return payload
 
 
@@ -861,6 +916,51 @@ def _serialize_historical_context(context: HistoricalVolatilityContext) -> dict[
         "message": context.message,
         "role": "anchor_quality_only",
     }
+
+
+def _serialize_opportunity(opportunity: Any) -> dict[str, Any]:
+    """Serialize an opportunity with stable metrics and a UTC expiry instant."""
+
+    payload = _serialize(opportunity)
+    if not isinstance(payload, dict):
+        return {"value": payload}
+
+    expiry_at = _opportunity_value(opportunity, ("expiry_at", "expiry"))
+    if isinstance(expiry_at, datetime):
+        payload["expiry_at"] = _serialize(expiry_at)
+    elif isinstance(expiry_at, date):
+        # A date-only compatibility value is made explicit as midnight UTC;
+        # clients can rely on ``expiry_at`` always being a complete instant.
+        payload["expiry_at"] = f"{expiry_at.isoformat()}T00:00:00Z"
+
+    for output_name, aliases in _OPPORTUNITY_METRIC_ALIASES.items():
+        metric = _opportunity_value(opportunity, aliases)
+        if metric is not None:
+            payload[output_name] = _serialize(metric)
+        else:
+            payload.setdefault(output_name, None)
+    return payload
+
+
+def _passes_expected_value_filter(opportunity: Any, minimum: float | None) -> bool:
+    """Apply an EV gate only from an EV metric, never from IV/model edge."""
+
+    if minimum is None:
+        return True
+    expected_value = _opportunity_value(opportunity, ("expected_value",))
+    try:
+        value = float(expected_value)
+    except (TypeError, ValueError):
+        return False
+    return not isinstance(expected_value, bool) and math.isfinite(value) and value >= minimum
+
+
+def _opportunity_value(opportunity: Any, names: tuple[str, ...]) -> Any | None:
+    for name in names:
+        value = getattr(opportunity, name, None)
+        if value is not None:
+            return value
+    return None
 
 
 __all__ = [

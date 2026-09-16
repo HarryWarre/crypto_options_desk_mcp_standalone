@@ -17,6 +17,18 @@ const opportunity = {
   fair_price: 6138.3,
   edge_after_costs: 228.3,
   max_loss: 5910,
+  max_profit: null,
+  expected_value: 228.3,
+  win_probability: 0.54,
+  risk_reward: null,
+  breakevens: [79100],
+  methodology: "Payoff dùng giá vào/ra và chi phí của lần quét.",
+  payoff_curve: [
+    { underlying_price: 65000, pnl: -5910 },
+    { underlying_price: 73000, pnl: -5910 },
+    { underlying_price: 79100, pnl: 0 },
+    { underlying_price: 85000, pnl: 5900 },
+  ],
   volume_24h: 39,
   open_interest: 19.53,
   quote_timestamp: "2026-09-15T14:46:33Z",
@@ -91,6 +103,7 @@ async function mockApi(page) {
           min_dte: body.min_dte,
           max_dte: body.max_dte,
           min_iv_edge: body.min_iv_edge || 0,
+          min_expected_value: body.min_expected_value === null ? null : Number(body.min_expected_value || 0),
         },
       },
     };
@@ -107,19 +120,6 @@ async function mockApi(page) {
     });
   });
 
-  await page.route("**/api/v1/scenarios", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({
-      scenarios: [
-        { name: "up · Ngày 0", underlying_price: 76227.9, implied_volatility: 0.3891, elapsed_days: 0, pnl: 10, greeks: { delta: 0.5, gamma: 0.01, theta: -1, vega: 2, rho: 1 } },
-        { name: "up · Ngày 45", underlying_price: 80039.3, implied_volatility: 0.3891, elapsed_days: 45, pnl: 200, greeks: { delta: 0.7, gamma: 0.01, theta: -1, vega: 2, rho: 1 } },
-      ],
-      max_loss: 5910,
-      max_profit: null,
-      breakevens: [79100],
-    }),
-  }));
 }
 
 test.beforeEach(async ({ page }) => {
@@ -240,6 +240,7 @@ test("applies explicit Advanced overrides and shows them in the scan context", a
   await advancedFilters.getByLabel("Ngày tối thiểu").fill("10");
   await advancedFilters.getByLabel("Ngày tối đa").fill("20");
   await advancedFilters.getByLabel("Lãi suất mô hình (%/năm)").fill("7");
+  await advancedFilters.getByLabel("EV tối thiểu").fill("12.5");
   await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
 
   const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
@@ -249,9 +250,23 @@ test("applies explicit Advanced overrides and shows them in the scan context", a
     min_dte: 10,
     max_dte: 20,
     risk_free_rate: 0.07,
+    min_expected_value: 12.5,
   });
   await expect(page.locator("#scan-context")).toContainText("Lãi suất: 7.00%");
   await expect(page.locator("#scan-context")).toContainText("Trượt giá: 7 bps");
+  await expect(page.locator("#scan-context")).toContainText("EV tối thiểu: 12.50");
+});
+
+test("can disable the EV gate by clearing the advanced threshold", async ({ page }) => {
+  const advancedFilters = page.getByTestId("advanced-filters");
+  await advancedFilters.locator("summary").click();
+  await advancedFilters.locator('input[name="use_advanced_strategies"]').check();
+  await advancedFilters.getByLabel("EV tối thiểu").fill("");
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
+
+  const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/opportunities/scan/stream"));
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  expect((await request).postDataJSON().min_expected_value).toBeNull();
 });
 
 test("keeps scan controls within the viewport on desktop and mobile", async ({ page }) => {
@@ -288,20 +303,20 @@ test("shows an understandable error when the scan service fails", async ({ page 
   await expect(page.locator("#scan-terminal")).toContainText("Không thể hoàn tất lượt quét");
 });
 
-test("opens the candidate P&L detail from a quick-scan result", async ({ page }) => {
+test("renders API payoff curve and estimated outcome metrics from a quick-scan result", async ({ page }) => {
   await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
   await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
-  const scenarioRequest = page.waitForRequest((request) => request.url().includes("/api/v1/scenarios"));
-  await page.getByRole("button", { name: "Xem P&L" }).click();
-  expect((await scenarioRequest).postDataJSON().execution).toMatchObject({
-    fee_per_contract: 2.5,
-    slippage_bps: 7,
-    contract_multiplier: 1,
-  });
+  await page.getByRole("button", { name: "Xem payoff" }).click();
 
   await expect(page.locator("#opportunity-detail")).toBeVisible();
   await expect(page.locator("#pnl-chart")).toBeVisible();
-  await expect(page.locator("#pnl-chart-legend")).toContainText("Giá hiện tại");
+  await expect(page.locator("#pnl-chart")).toHaveAttribute("aria-label", /tại đáo hạn theo giá cơ sở/);
+  await expect(page.locator('#pnl-chart line[stroke="#ef8f8f"]')).toHaveCount(1);
+  await expect(page.locator("#pnl-chart-legend")).toContainText("P&L tại đáo hạn");
   await expect(page.locator("#detail-metrics")).toContainText("5910.00");
-  await expect(page.locator("#scenario-state")).toContainText("Đã dựng");
+  await expect(page.locator("#detail-metrics")).toContainText("EV ước tính");
+  await expect(page.locator("#detail-metrics")).toContainText("54.00%");
+  await expect(page.locator("#detail-metrics")).toContainText("Không có dữ liệu");
+  await expect(page.locator("#pnl-chart-assumptions")).toContainText("Phương pháp / giả định API");
+  await expect(page.locator("#scenario-state")).toContainText("4 điểm payoff");
 });

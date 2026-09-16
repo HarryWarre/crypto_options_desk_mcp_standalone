@@ -143,6 +143,10 @@
                   <input name="min_edge_after_costs" type="number" value="0" min="0" step="0.01">
                   <small class="field-help">Đây là chênh lệch giá mô hình, không phải lợi nhuận đảm bảo.</small>
                 </label>
+                <label>EV tối thiểu
+                  <input name="min_expected_value" type="number" value="0" step="0.01">
+                  <small class="field-help">Mặc định chỉ giữ EV ước tính không âm; đây không phải EV lịch sử đã kiểm định.</small>
+                </label>
                 <label>Phí mỗi chiều
                   <input name="fee_per_contract" type="number" value="0" min="0" step="0.01">
                 </label>
@@ -223,36 +227,35 @@
         <div class="panel-heading">
           <div>
             <p class="eyebrow">Bước 3</p>
-            <h2 id="detail-title">Chi tiết P&amp;L</h2>
-            <p class="muted" id="detail-summary">Chọn một cơ hội trong bảng để xem kịch bản.</p>
+            <h2 id="detail-title">Payoff tại đáo hạn</h2>
+            <p class="muted" id="detail-summary">Chọn một cơ hội trong bảng để xem payoff ước tính tại đáo hạn.</p>
           </div>
           <button type="button" class="secondary-button" id="close-detail">Đóng</button>
         </div>
         <div class="pnl-chart-heading">
           <div>
-            <h3>P&amp;L theo thời gian</h3>
-            <p class="muted">Biểu đồ tự động mô phỏng giá trị của chiến lược từ hôm nay đến ngày đáo hạn.</p>
+            <h3>Đường payoff tại đáo hạn</h3>
+            <p class="muted">Trục ngang là giá cơ sở tại đáo hạn; trục dọc là P&amp;L của cấu trúc đã chọn.</p>
           </div>
           <span class="badge" id="pnl-chart-status">Đang chờ dữ liệu</span>
         </div>
         <div class="chart-shell" id="pnl-chart-shell">
-          <svg id="pnl-chart" role="img" aria-label="Biểu đồ P&L theo thời gian" viewBox="0 0 960 430" preserveAspectRatio="xMidYMid meet"></svg>
+          <svg id="pnl-chart" role="img" aria-label="Biểu đồ payoff P&L tại đáo hạn theo giá cơ sở" viewBox="0 0 960 430" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="chart-tooltip" id="pnl-chart-tooltip" hidden></div>
         </div>
-        <div class="chart-legend" id="pnl-chart-legend" aria-label="Chú giải biểu đồ"></div>
+        <div class="chart-legend" id="pnl-chart-legend" aria-label="Chú giải biểu đồ">P&amp;L tại đáo hạn</div>
         <div class="chart-assumptions" id="pnl-chart-assumptions">
-          Biểu đồ tự động dùng các đường stress giá −10%, −5%, 0%, +5%, +10% so với hiện tại và giữ IV không đổi. Đây là mô phỏng tham khảo, không phải dự đoán đường giá.
+          Ước tính payoff dựa trên các điểm do API trả về, gồm giả định giá vào/ra và chi phí của lần quét. Đây không phải dự đoán giá hay lợi nhuận đảm bảo.
         </div>
-        <div class="state-message" id="scenario-state">Chọn một cơ hội để dựng biểu đồ P&amp;L.</div>
+        <div class="state-message" id="scenario-state">Chọn một cơ hội để xem payoff tại đáo hạn.</div>
         <div class="detail-metrics" id="detail-metrics"></div>
         <details class="scenario-data-details">
-          <summary>Xem dữ liệu P&amp;L chi tiết</summary>
+          <summary>Xem các điểm payoff tại đáo hạn</summary>
           <div class="table-wrap">
             <table class="scenario-table">
               <thead>
                 <tr>
-                  <th>Kịch bản</th><th>Giá cơ sở</th><th>IV</th><th>Ngày</th>
-                  <th>P&amp;L</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Rho</th>
+                  <th>Giá cơ sở tại đáo hạn</th><th>P&amp;L tại đáo hạn</th>
                 </tr>
               </thead>
               <tbody id="scenario-results-body"></tbody>

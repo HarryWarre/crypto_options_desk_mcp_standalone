@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from itertools import combinations
 from typing import Literal
@@ -26,7 +26,10 @@ from .historical_volatility import (
     HistoricalVolatilityContext,
     HistoricalVolatilityContexts,
 )
+from .payoff_metrics import METHODOLOGY as PAYOFF_METRICS_METHODOLOGY
+from .payoff_metrics import PayoffAssumptions, PayoffPoint, calculate_payoff_metrics
 from .pricing import FairValueRequest, PricingValidationError, price_fair_value
+from .scenario_engine import ExecutionAssumptions, OptionLeg, StrategyDefinition
 from .volatility_surface import (
     SurfaceConfig,
     VolatilityObservation,
@@ -111,7 +114,11 @@ class ScanRequest:
                     raise ValueError(f"{name} cannot be negative")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
-        if self.min_delta is not None and self.max_delta is not None and self.min_delta > self.max_delta:
+        if (
+            self.min_delta is not None
+            and self.max_delta is not None
+            and self.min_delta > self.max_delta
+        ):
             raise ValueError("min_delta cannot exceed max_delta")
         if self.max_delta is not None and self.max_delta > 1:
             raise ValueError("max_delta cannot exceed 1")
@@ -121,8 +128,12 @@ class ScanRequest:
             raise ValueError("max_results must be positive")
         if self.quantity <= 0 or self.contract_multiplier <= 0:
             raise ValueError("quantity and contract_multiplier must be positive")
-        normalized_assets = tuple(sorted({str(asset).strip().upper() for asset in self.assets if str(asset).strip()}))
-        normalized_strategies = tuple(dict.fromkeys(str(strategy).strip().lower() for strategy in self.strategies))
+        normalized_assets = tuple(
+            sorted({str(asset).strip().upper() for asset in self.assets if str(asset).strip()})
+        )
+        normalized_strategies = tuple(
+            dict.fromkeys(str(strategy).strip().lower() for strategy in self.strategies)
+        )
         unsupported = set(normalized_strategies) - set(_SUPPORTED_STRATEGIES)
         if unsupported:
             raise ValueError(
@@ -182,7 +193,7 @@ class Opportunity:
     open_interest: float
     quote_timestamp: datetime
     evidence_status: EvidenceStatus
-    expected_value_status: Literal["not_validated"] = "not_validated"
+    expected_value_status: str = "not_validated"
     edge_source: str = "fitted_surface_minus_executable_entry_after_costs"
     entry_fee: float = 0.0
     exit_fee: float = 0.0
@@ -199,6 +210,16 @@ class Opportunity:
     breakevens: tuple[float, ...] = ()
     requires_underlying_position: bool = False
     risk_note: str | None = None
+    payoff_curve: tuple[PayoffPoint, ...] = ()
+    expected_value: float | None = None
+    win_probability: float | None = None
+    risk_reward: float | None = None
+    payoff_metrics_status: str = "unavailable"
+    win_probability_status: str = "unavailable"
+    risk_reward_status: str = "unavailable"
+    payoff_metrics_methodology: str = PAYOFF_METRICS_METHODOLOGY
+    payoff_metrics_assumptions: PayoffAssumptions | None = None
+    payoff_metrics_limitations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -291,7 +312,12 @@ def scan_opportunities(
         asset_contracts = tuple(
             sorted(
                 contracts_by_asset.get(asset, ()),
-                key=lambda item: (_as_utc(item.expiry_at), item.strike, item.option_type, item.symbol),
+                key=lambda item: (
+                    _as_utc(item.expiry_at),
+                    item.strike,
+                    item.option_type,
+                    item.symbol,
+                ),
             )
         )
         asset_issues = tuple(issue for issue in universe.issues if issue.asset == asset)
@@ -304,7 +330,9 @@ def scan_opportunities(
                 ),
                 "asset_not_available",
             )
-            failures.append(AssetScanFailure(asset, code, _failure_message(asset, code, asset_issues)))
+            failures.append(
+                AssetScanFailure(asset, code, _failure_message(asset, code, asset_issues))
+            )
             continue
 
         if any(strategy in request.strategies for strategy in _SINGLE_LEG_STRATEGIES):
@@ -315,7 +343,11 @@ def scan_opportunities(
                     continue
                 try:
                     surface = build_volatility_surface(
-                        (_to_observation(contract) for contract in asset_contracts if contract.symbol != candidate.symbol),
+                        (
+                            _to_observation(contract)
+                            for contract in asset_contracts
+                            if contract.symbol != candidate.symbol
+                        ),
                         valuation_time=_as_utc(universe.valuation_time),
                         config=request.surface_config,
                     ).surface_for(asset)
@@ -357,7 +389,9 @@ def scan_opportunities(
                     messages.append(f"IV edge {iv_edge:.6f} is below {request.min_iv_edge:.6f}")
                 if edge <= request.min_edge_after_costs:
                     reasons.append("edge_after_costs_below_minimum")
-                    messages.append(f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}")
+                    messages.append(
+                        f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}"
+                    )
                 if request.max_loss is not None and max_loss > request.max_loss:
                     reasons.append("max_loss_exceeded")
                     messages.append(f"Maximum loss {max_loss:.6f} exceeds {request.max_loss:.6f}")
@@ -391,7 +425,9 @@ def scan_opportunities(
                         edge_after_costs=edge,
                         edge_pct=edge / max(entry, 1e-12),
                         max_loss=max_loss,
-                        max_profit=_single_leg_max_profit(candidate, entry_fee + entry_slippage, scale),
+                        max_profit=_single_leg_max_profit(
+                            candidate, entry_fee + entry_slippage, scale
+                        ),
                         delta=valued.delta,
                         volume_24h=candidate.volume_24h,
                         open_interest=candidate.open_interest,
@@ -459,7 +495,13 @@ def scan_opportunities(
                 rejections,
             )
 
-    opportunities.sort(key=lambda item: (-item.edge_after_costs, -item.iv_edge, item.asset, item.symbol))
+    opportunities = [
+        _with_payoff_metrics(opportunity, request, universe.valuation_time)
+        for opportunity in opportunities
+    ]
+    opportunities.sort(
+        key=lambda item: (-item.edge_after_costs, -item.iv_edge, item.asset, item.symbol)
+    )
     if request.max_results is not None:
         opportunities = opportunities[: request.max_results]
     return ScanResult(
@@ -469,10 +511,21 @@ def scan_opportunities(
             default=_as_utc(universe.valuation_time),
         ),
         opportunities=tuple(opportunities),
-        rejections=tuple(sorted(rejections, key=lambda item: (item.asset, _as_utc(item.expiry_at), item.strike, item.symbol))),
+        rejections=tuple(
+            sorted(
+                rejections,
+                key=lambda item: (item.asset, _as_utc(item.expiry_at), item.strike, item.symbol),
+            )
+        ),
         asset_failures=tuple(sorted(failures, key=lambda item: (item.asset, item.code))),
-        issues=tuple(sorted(universe.issues, key=lambda item: (item.asset or "", item.code, item.symbol or ""))),
-        evidence_gate_status="open_unvalidated_signals" if request.include_unvalidated else "blocked_unvalidated",
+        issues=tuple(
+            sorted(
+                universe.issues, key=lambda item: (item.asset or "", item.code, item.symbol or "")
+            )
+        ),
+        evidence_gate_status="open_unvalidated_signals"
+        if request.include_unvalidated
+        else "blocked_unvalidated",
         execution_allowed=False,
     )
 
@@ -510,6 +563,70 @@ def _selected_assets(
     discovered_assets = {asset.base_coin.upper() for asset in universe.assets}
     discovered_assets.update(contracts_by_asset)
     return request.assets or tuple(sorted(discovered_assets))
+
+
+def _with_payoff_metrics(
+    opportunity: Opportunity,
+    request: ScanRequest,
+    valuation_time: datetime,
+) -> Opportunity:
+    """Attach one consistently calculated payoff contract to any candidate."""
+
+    scenario_legs = (
+        ()
+        if opportunity.requires_underlying_position
+        else tuple(
+            OptionLeg(
+                symbol=leg.symbol,
+                option_type=leg.option_type,
+                strike=leg.strike,
+                expiry=leg.expiry_at,
+                valuation_time=_as_utc(valuation_time),
+                spot=leg.spot_price,
+                iv=leg.fair_iv,
+                risk_free_rate=request.risk_free_rate,
+                bid=leg.bid_price,
+                ask=leg.ask_price,
+                position=leg.position,
+            )
+            for leg in opportunity.legs
+        )
+    )
+    scenario_strategy = _scenario_strategy(opportunity.strategy)
+    metrics = calculate_payoff_metrics(
+        StrategyDefinition(
+            strategy_type=scenario_strategy,  # type: ignore[arg-type]
+            legs=scenario_legs,
+        ),
+        ExecutionAssumptions(
+            fee_per_contract=request.fee_per_contract,
+            slippage_bps=request.slippage_bps,
+            contract_multiplier=request.contract_multiplier,
+        ),
+        quantity=request.quantity,
+    )
+    return replace(
+        opportunity,
+        payoff_curve=metrics.payoff_curve,
+        expected_value=metrics.expected_value,
+        win_probability=metrics.win_probability,
+        risk_reward=metrics.risk_reward,
+        payoff_metrics_status=metrics.status,
+        expected_value_status=metrics.expected_value_status,
+        win_probability_status=metrics.win_probability_status,
+        risk_reward_status=metrics.risk_reward_status,
+        payoff_metrics_methodology=metrics.methodology,
+        payoff_metrics_assumptions=metrics.assumptions,
+        payoff_metrics_limitations=metrics.limitations,
+    )
+
+
+def _scenario_strategy(strategy: Strategy) -> str:
+    if strategy in {"bull_call_vertical", "bear_call_vertical"}:
+        return "call_vertical"
+    if strategy in {"bull_put_vertical", "bear_put_vertical"}:
+        return "put_vertical"
+    return strategy
 
 
 def _scan_verticals(
@@ -573,7 +690,9 @@ def _scan_verticals(
                 if leg_rejection:
                     reasons, messages = _prefixed_leg_reasons("leg", leg_rejection)
                     reasons.insert(0, "invalid_leg")
-                    messages.insert(0, "The only same-expiry leg failed market-data or filter validation")
+                    messages.insert(
+                        0, "The only same-expiry leg failed market-data or filter validation"
+                    )
                 else:
                     reasons = ["missing_long_leg", "missing_short_leg"]
                     messages = [
@@ -622,15 +741,11 @@ def _scan_verticals(
                     reasons: list[str] = []
                     messages: list[str] = []
                     if long_rejection:
-                        leg_reasons, leg_messages = _prefixed_leg_reasons(
-                            "long", long_rejection
-                        )
+                        leg_reasons, leg_messages = _prefixed_leg_reasons("long", long_rejection)
                         reasons.extend(leg_reasons)
                         messages.extend(leg_messages)
                     if short_rejection:
-                        leg_reasons, leg_messages = _prefixed_leg_reasons(
-                            "short", short_rejection
-                        )
+                        leg_reasons, leg_messages = _prefixed_leg_reasons("short", short_rejection)
                         reasons.extend(leg_reasons)
                         messages.extend(leg_messages)
                     rejections.append(
@@ -786,9 +901,7 @@ def _same_expiry_strategy_leg_sets(
                 for lower, middle, upper in combinations(option_legs, 3):
                     left_width = middle.strike - lower.strike
                     right_width = upper.strike - middle.strike
-                    if (
-                        strategy == "butterfly" and left_width == right_width
-                    ) or (
+                    if (strategy == "butterfly" and left_width == right_width) or (
                         strategy == "broken_wing_butterfly" and left_width != right_width
                     ):
                         yield lower, middle, middle, upper
@@ -830,7 +943,9 @@ def _scan_underlying_overlays(
                     strategy,
                     (representative,),
                     ("missing_option_type",),
-                    (f"No {expected_kind} contracts were available for {strategy.replace('_', ' ')}",),
+                    (
+                        f"No {expected_kind} contracts were available for {strategy.replace('_', ' ')}",
+                    ),
                 )
             )
         for contract in matching:
@@ -867,7 +982,11 @@ def _scan_overlay_candidate(
         return
     try:
         surface = build_volatility_surface(
-            (_to_observation(contract) for contract in asset_contracts if contract.symbol != candidate.symbol),
+            (
+                _to_observation(contract)
+                for contract in asset_contracts
+                if contract.symbol != candidate.symbol
+            ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
         ).surface_for(candidate.asset)
@@ -898,14 +1017,28 @@ def _scan_overlay_candidate(
     fair_price = fair_unit * scale
     entry_fee = request.fee_per_contract * scale
     exit_fee = request.fee_per_contract * scale
-    entry_slippage = abs(candidate.ask_price if position > 0 else candidate.bid_price) * request.slippage_bps / 10_000.0 * scale
-    exit_slippage = abs(candidate.bid_price if position > 0 else candidate.ask_price) * request.slippage_bps / 10_000.0 * scale
+    entry_slippage = (
+        abs(candidate.ask_price if position > 0 else candidate.bid_price)
+        * request.slippage_bps
+        / 10_000.0
+        * scale
+    )
+    exit_slippage = (
+        abs(candidate.bid_price if position > 0 else candidate.ask_price)
+        * request.slippage_bps
+        / 10_000.0
+        * scale
+    )
     total_cost = entry_fee + exit_fee + entry_slippage + exit_slippage
     edge = fair_price - entry - total_cost
     if strategy == "covered_call":
         edge = entry * -1 - valued.fair_price * scale - total_cost
-    max_loss = max(0.0, entry + entry_fee + entry_slippage) if strategy == "protective_put" else math.inf
-    max_profit = math.inf if strategy == "protective_put" else max(0.0, -entry - entry_fee - entry_slippage)
+    max_loss = (
+        max(0.0, entry + entry_fee + entry_slippage) if strategy == "protective_put" else math.inf
+    )
+    max_profit = (
+        math.inf if strategy == "protective_put" else max(0.0, -entry - entry_fee - entry_slippage)
+    )
     reasons: list[str] = []
     messages: list[str] = []
     iv_edge = valued.fair_iv - candidate.mark_iv
@@ -916,7 +1049,9 @@ def _scan_overlay_candidate(
         messages.append(f"IV edge {iv_edge:.6f} is below {request.min_iv_edge:.6f}")
     if edge <= request.min_edge_after_costs:
         reasons.append("edge_after_costs_below_minimum")
-        messages.append(f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}")
+        messages.append(
+            f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}"
+        )
     if request.max_loss is not None and max_loss > request.max_loss:
         reasons.append("max_loss_exceeded")
         messages.append(f"Maximum loss {max_loss:.6f} exceeds {request.max_loss:.6f}")
@@ -999,8 +1134,12 @@ def _scan_overlay_candidate(
 def _iron_condor_leg_sets(
     contracts: tuple[OptionContract, ...],
 ) -> Iterator[tuple[OptionContract, ...]]:
-    puts = tuple(sorted((item for item in contracts if _option_kind(item) == "put"), key=_contract_order))
-    calls = tuple(sorted((item for item in contracts if _option_kind(item) == "call"), key=_contract_order))
+    puts = tuple(
+        sorted((item for item in contracts if _option_kind(item) == "put"), key=_contract_order)
+    )
+    calls = tuple(
+        sorted((item for item in contracts if _option_kind(item) == "call"), key=_contract_order)
+    )
     for put_wing, short_put in combinations(puts, 2):
         for short_call, call_wing in combinations(calls, 2):
             if put_wing.strike < short_put.strike < short_call.strike < call_wing.strike:
@@ -1010,8 +1149,12 @@ def _iron_condor_leg_sets(
 def _iron_butterfly_leg_sets(
     contracts: tuple[OptionContract, ...],
 ) -> Iterator[tuple[OptionContract, ...]]:
-    puts = tuple(sorted((item for item in contracts if _option_kind(item) == "put"), key=_contract_order))
-    calls = tuple(sorted((item for item in contracts if _option_kind(item) == "call"), key=_contract_order))
+    puts = tuple(
+        sorted((item for item in contracts if _option_kind(item) == "put"), key=_contract_order)
+    )
+    calls = tuple(
+        sorted((item for item in contracts if _option_kind(item) == "call"), key=_contract_order)
+    )
     calls_by_strike = {item.strike: item for item in calls}
     puts_by_strike = {item.strike: item for item in puts}
     body_strikes = sorted(set(calls_by_strike) & set(puts_by_strike))
@@ -1035,10 +1178,7 @@ def _scan_multi_leg_candidate(
     opportunities: list[Opportunity],
     rejections: list[RejectedCandidate],
 ) -> None:
-    leg_rejections = [
-        _precheck(leg, request, valuation_time, check_strategy=False)
-        for leg in legs
-    ]
+    leg_rejections = [_precheck(leg, request, valuation_time, check_strategy=False) for leg in legs]
     if any(leg_rejections):
         reasons: list[str] = []
         messages: list[str] = []
@@ -1054,7 +1194,11 @@ def _scan_multi_leg_candidate(
     excluded = {leg.symbol for leg in legs}
     try:
         surface = build_volatility_surface(
-            (_to_observation(contract) for contract in asset_contracts if contract.symbol not in excluded),
+            (
+                _to_observation(contract)
+                for contract in asset_contracts
+                if contract.symbol not in excluded
+            ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
         ).surface_for(legs[0].asset)
@@ -1143,7 +1287,9 @@ def _scan_multi_leg_candidate(
         messages.append(f"IV edge {iv_edge:.6f} is below {request.min_iv_edge:.6f}")
     if edge <= request.min_edge_after_costs:
         reasons.append("edge_after_costs_below_minimum")
-        messages.append(f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}")
+        messages.append(
+            f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}"
+        )
     if request.max_loss is not None and max_loss > request.max_loss:
         reasons.append("max_loss_exceeded")
         messages.append(f"Maximum loss {max_loss:.6f} exceeds {request.max_loss:.6f}")
@@ -1252,8 +1398,7 @@ def _multi_leg_payoff_bounds(
     width = max(strikes[-1] - strikes[0], 1.0)
     points = [0.0, *strikes, strikes[-1] + width * 2.0]
     values = tuple(
-        _multi_leg_expiry_pnl(price, legs, positions, net_debit, scale)
-        for price in points
+        _multi_leg_expiry_pnl(price, legs, positions, net_debit, scale) for price in points
     )
     breakevens: list[float] = []
     for left, right, left_value, right_value in zip(points, points[1:], values, values[1:]):
@@ -1270,7 +1415,9 @@ def _multi_leg_payoff_bounds(
             if index == 0 or abs(value - sorted(breakevens)[index - 1]) > 1e-9
         )
     )
-    max_profit = math.inf if strategy in {"long_straddle", "long_strangle"} else max(0.0, max(values))
+    max_profit = (
+        math.inf if strategy in {"long_straddle", "long_strangle"} else max(0.0, max(values))
+    )
     return max(0.0, -min(values)), max_profit, unique_breakevens
 
 
@@ -1336,7 +1483,11 @@ def _scan_vertical_pair(
     try:
         excluded = {long_leg.symbol, short_leg.symbol}
         surface = build_volatility_surface(
-            (_to_observation(contract) for contract in asset_contracts if contract.symbol not in excluded),
+            (
+                _to_observation(contract)
+                for contract in asset_contracts
+                if contract.symbol not in excluded
+            ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
         ).surface_for(long_leg.asset)
@@ -1384,17 +1535,11 @@ def _scan_vertical_pair(
     entry_fee = request.fee_per_contract * 2.0 * scale
     exit_fee = request.fee_per_contract * 2.0 * scale
     entry_slippage = (
-        (long_leg.ask_price + short_leg.bid_price)
-        * request.slippage_bps
-        / 10_000.0
-        * scale
+        (long_leg.ask_price + short_leg.bid_price) * request.slippage_bps / 10_000.0 * scale
     )
     # Closing a vertical buys back the short at ask and sells the long at bid.
     exit_slippage = (
-        (long_leg.bid_price + short_leg.ask_price)
-        * request.slippage_bps
-        / 10_000.0
-        * scale
+        (long_leg.bid_price + short_leg.ask_price) * request.slippage_bps / 10_000.0 * scale
     )
     total_cost = entry_fee + exit_fee + entry_slippage + exit_slippage
     edge = fair_price * scale - entry - total_cost
@@ -1407,9 +1552,7 @@ def _scan_vertical_pair(
         entry_slippage,
         scale,
     )
-    iv_edge = (long_valued.fair_iv - short_valued.fair_iv) - (
-        long_leg.mark_iv - short_leg.mark_iv
-    )
+    iv_edge = (long_valued.fair_iv - short_valued.fair_iv) - (long_leg.mark_iv - short_leg.mark_iv)
     reasons: list[str] = []
     messages: list[str] = []
     if iv_edge < request.min_iv_edge:
@@ -1438,9 +1581,7 @@ def _scan_vertical_pair(
         )
         return
 
-    quote_timestamp = max(
-        _as_utc(long_leg.quote_timestamp), _as_utc(short_leg.quote_timestamp)
-    )
+    quote_timestamp = max(_as_utc(long_leg.quote_timestamp), _as_utc(short_leg.quote_timestamp))
     opportunities.append(
         Opportunity(
             asset=long_leg.asset,
@@ -1453,7 +1594,9 @@ def _scan_vertical_pair(
             spot_price=long_leg.spot_price,
             bid_price=(long_leg.bid_price - short_leg.ask_price) * scale,
             ask_price=(long_leg.ask_price - short_leg.bid_price) * scale,
-            market_mid=(long_leg.bid_price + long_leg.ask_price - short_leg.bid_price - short_leg.ask_price)
+            market_mid=(
+                long_leg.bid_price + long_leg.ask_price - short_leg.bid_price - short_leg.ask_price
+            )
             / 2.0
             * scale,
             market_iv=long_leg.mark_iv - short_leg.mark_iv,
@@ -1773,7 +1916,11 @@ def _as_utc(value: datetime | date) -> datetime:
 
 
 def _finite(name: str, value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
         raise ValueError(f"{name} must be a finite number")
     return float(value)
 

@@ -26,16 +26,7 @@ const clearTerminalButton = document.querySelector("#clear-terminal");
 
 let selectedOpportunity = null;
 let activeScanContext = null;
-let scenarioRequestId = 0;
-
 const SVG_NS = "http://www.w3.org/2000/svg";
-const PNL_PATHS = Object.freeze([
-  { key: "Giá -10%", label: "Giá -10%", move: -10, color: "#ef8f8f" },
-  { key: "Giá -5%", label: "Giá -5%", move: -5, color: "#f0bb87" },
-  { key: "Giá hiện tại", label: "Giá hiện tại", move: 0, color: "#62d4a4" },
-  { key: "Giá +5%", label: "Giá +5%", move: 5, color: "#8eb5ff" },
-  { key: "Giá +10%", label: "Giá +10%", move: 10, color: "#c79cff" },
-]);
 
 const STRATEGY_LABELS = Object.freeze({
   long_call: "Mua call",
@@ -193,18 +184,6 @@ function renderInstrumentCell(row, item) {
   row.appendChild(element);
 }
 
-function scenarioStrategyType(strategy) {
-  const normalized = normalizedStrategy(strategy);
-  if (["bull_call_vertical", "bear_call_vertical", "bull_call_spread", "bear_call_spread", "call_vertical"].includes(normalized)) {
-    return "call_vertical";
-  }
-  if (["bull_put_vertical", "bear_put_vertical", "bull_put_spread", "bear_put_spread", "put_vertical"].includes(normalized)) {
-    return "put_vertical";
-  }
-  if (["iron_condor", "iron_butterfly"].includes(normalized)) return normalized;
-  return normalized;
-}
-
 function normalizedOptionType(leg) {
   return String(firstDefined(leg?.option_type, leg?.type, "")).trim().toLowerCase();
 }
@@ -247,25 +226,6 @@ function inferredLegPosition(strategy, leg, legs) {
   return 1;
 }
 
-function scenarioLeg(item, leg, legs) {
-  return {
-    symbol: legSymbol(leg),
-    option_type: firstDefined(leg?.option_type, leg?.type, item?.option_type),
-    strike: legStrike(leg),
-    expiry: firstDefined(leg?.expiry, leg?.expiry_at, item?.expiry_at),
-    valuation_time: firstDefined(leg?.valuation_time, leg?.quote_timestamp, item?.quote_timestamp),
-    spot: firstDefined(leg?.spot, leg?.spot_price, item?.spot_price),
-    iv: firstDefined(leg?.iv, leg?.fair_iv, leg?.market_iv, item?.fair_iv),
-    risk_free_rate: firstDefined(
-      leg?.risk_free_rate,
-      activeScanContext?.assumptions?.risk_free_rate,
-      Number(form.elements.risk_free_rate_pct?.value || 5) / 100,
-    ),
-    bid: firstDefined(leg?.bid, leg?.bid_price, item?.bid_price),
-    ask: firstDefined(leg?.ask, leg?.ask_price, item?.ask_price),
-    position: inferredLegPosition(item?.strategy, leg, legs),
-  };
-}
 
 function setState(message, className = "") {
   resultState.textContent = message;
@@ -426,6 +386,9 @@ function renderOpportunityExplanation(item, index) {
     explanationFact("Tiền vào/ra ước tính", signedPriceLabel(executablePrice)),
     explanationFact("Mô hình định giá", signedPriceLabel(fairPrice)),
     explanationFact("Edge sau phí", Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "—", edge >= 0 ? "positive" : "negative"),
+    explanationFact("EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev))),
+    explanationFact("Xác suất có lãi", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit))),
+    explanationFact("RR", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio))),
     explanationFact("Lỗ tối đa", number(item?.max_loss, 2), "negative"),
   );
   card.appendChild(facts);
@@ -443,35 +406,6 @@ function renderOpportunityExplanation(item, index) {
   return card;
 }
 
-function scenarioHorizonDays(item) {
-  const dte = Number(item?.dte);
-  if (Number.isFinite(dte) && dte > 0) return dte;
-  const expiry = Date.parse(opportunityExpiry(item) || "");
-  const valuation = Date.parse(firstDefined(item?.quote_timestamp, new Date().toISOString()));
-  const derived = (expiry - valuation) / 86_400_000;
-  return Number.isFinite(derived) && derived > 0 ? derived : 1;
-}
-
-function scenarioTimePoints(item) {
-  const horizon = Math.max(0.25, scenarioHorizonDays(item));
-  const pointCount = Math.min(13, Math.max(2, Math.ceil(horizon) + 1));
-  return Array.from({ length: pointCount }, (_, index) => {
-    if (index === pointCount - 1) return horizon;
-    return Math.round((horizon * index / (pointCount - 1)) * 10) / 10;
-  });
-}
-
-function buildAutomaticScenarioSet(item) {
-  const timePoints = scenarioTimePoints(item);
-  const scenarios = PNL_PATHS.flatMap((path) => timePoints.map((elapsedDays) => ({
-    name: `${path.key} · Ngày ${number(elapsedDays, 1)}`,
-    underlying_move_pct: path.move,
-    iv_move: 0,
-    elapsed_days: elapsedDays,
-  })));
-  return { horizon: timePoints[timePoints.length - 1], paths: PNL_PATHS, timePoints, scenarios };
-}
-
 function svgNode(name, attributes = {}, text = undefined) {
   const node = document.createElementNS(SVG_NS, name);
   Object.entries(attributes).forEach(([attribute, value]) => node.setAttribute(attribute, String(value)));
@@ -486,72 +420,95 @@ function compactChartNumber(value) {
   return number(amount, 0);
 }
 
-function dayLabel(value) {
-  const amount = Number(value);
-  return Number.isInteger(amount) ? String(amount) : number(amount, 1);
+function payoffPoints(item) {
+  const curve = item?.payoff_curve;
+  const rawPoints = Array.isArray(curve) ? curve : firstDefined(curve?.points, item?.payoff_points, []);
+  if (!Array.isArray(rawPoints)) return [];
+  return rawPoints
+    .map((point) => ({
+      underlyingPrice: Number(firstDefined(point?.underlying_price, point?.underlying, point?.price, point?.x)),
+      pnl: Number(firstDefined(point?.pnl, point?.profit_loss, point?.payoff, point?.y)),
+    }))
+    .filter((point) => Number.isFinite(point.underlyingPrice) && Number.isFinite(point.pnl))
+    .sort((left, right) => left.underlyingPrice - right.underlyingPrice);
 }
 
-function showPnlTooltip(path, scenario, event) {
+function estimateProbability(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "Không có dữ liệu";
+  return `${(amount <= 1 ? amount * 100 : amount).toFixed(2)}%`;
+}
+
+function estimateRatio(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? `${number(amount, 2)} : 1` : "Không có dữ liệu";
+}
+
+function estimatedNumber(value, digits = 2) {
+  return Number.isFinite(Number(value)) ? number(value, digits) : "Không có dữ liệu";
+}
+
+function methodologyNote(item) {
+  const note = firstDefined(item?.methodology_note, item?.methodology, item?.assumption_note, item?.assumptions);
+  if (typeof note === "string" && note.trim()) return note;
+  if (note && typeof note === "object") return "API trả về các giả định có cấu trúc cho cơ hội này.";
+  return "API không cung cấp ghi chú phương pháp.";
+}
+
+function showPayoffTooltip(point, event) {
   if (!pnlChartTooltip || !pnlChartShell) return;
   const shellBounds = pnlChartShell.getBoundingClientRect();
   const left = Math.min(Math.max(event.clientX - shellBounds.left + 12, 8), Math.max(8, shellBounds.width - 180));
   const top = Math.min(Math.max(event.clientY - shellBounds.top - 62, 8), Math.max(8, shellBounds.height - 70));
-  pnlChartTooltip.textContent = `${path.label} · Ngày ${dayLabel(scenario.elapsed_days)}\nP&L: ${number(scenario.pnl, 2)}`;
+  pnlChartTooltip.textContent = `Giá cơ sở: ${number(point.underlyingPrice, 2)}\nP&L tại đáo hạn: ${number(point.pnl, 2)}`;
   pnlChartTooltip.style.left = `${left}px`;
   pnlChartTooltip.style.top = `${top}px`;
   pnlChartTooltip.hidden = false;
 }
 
-function addPnlChartLegend(groups) {
+function addPayoffLegend() {
   pnlChartLegend.replaceChildren();
-  groups.filter((group) => group.points.length).forEach((group) => {
-    const item = document.createElement("span");
-    item.className = "chart-legend-item";
-    const swatch = document.createElement("span");
-    swatch.className = "chart-legend-swatch";
-    swatch.style.backgroundColor = group.path.color;
-    const label = document.createElement("span");
-    label.textContent = group.path.label;
-    item.append(swatch, label);
-    pnlChartLegend.appendChild(item);
-  });
+  const item = document.createElement("span");
+  item.className = "chart-legend-item";
+  const swatch = document.createElement("span");
+  swatch.className = "chart-legend-swatch";
+  swatch.style.backgroundColor = "#62d4a4";
+  const label = document.createElement("span");
+  label.textContent = "P&L tại đáo hạn (ước tính)";
+  item.append(swatch, label);
+  pnlChartLegend.appendChild(item);
 }
 
-function renderPnlChart(report, spec) {
+function renderPayoffChart(item, points) {
   pnlChart.replaceChildren();
   pnlChartLegend.replaceChildren();
   pnlChartTooltip.hidden = true;
-  const scenarios = (report.scenarios || []).filter((scenario) => Number.isFinite(Number(scenario.pnl)));
-  if (!scenarios.length) {
+  if (!points.length) {
     pnlChartStatus.textContent = "Chưa có dữ liệu";
     return;
   }
-
-  const groups = spec.paths.map((path) => ({
-    path,
-    points: scenarios
-      .filter((scenario) => String(scenario.name || "").startsWith(`${path.key} ·`))
-      .sort((left, right) => Number(left.elapsed_days) - Number(right.elapsed_days)),
-  }));
-  if (!groups.some((group) => group.points.length)) groups[2].points = scenarios;
-  addPnlChartLegend(groups);
+  addPayoffLegend();
 
   const width = 960;
   const height = 430;
   const margin = { top: 24, right: 24, bottom: 58, left: 72 };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
-  const values = [0, ...scenarios.map((scenario) => Number(scenario.pnl))];
+  const values = [0, ...points.map((point) => point.pnl)];
   let minPnl = Math.min(...values);
   let maxPnl = Math.max(...values);
   const pnlSpan = Math.max(maxPnl - minPnl, 1);
   minPnl -= pnlSpan * 0.12;
   maxPnl += pnlSpan * 0.12;
-  const horizon = Math.max(spec.horizon, ...scenarios.map((scenario) => Number(scenario.elapsed_days) || 0), 0.25);
-  const x = (day) => margin.left + (Number(day) / horizon) * innerWidth;
+  let minPrice = Math.min(...points.map((point) => point.underlyingPrice));
+  let maxPrice = Math.max(...points.map((point) => point.underlyingPrice));
+  const priceSpan = Math.max(maxPrice - minPrice, 1);
+  minPrice -= priceSpan * 0.04;
+  maxPrice += priceSpan * 0.04;
+  const x = (price) => margin.left + ((Number(price) - minPrice) / (maxPrice - minPrice)) * innerWidth;
   const y = (pnl) => margin.top + ((maxPnl - Number(pnl)) / (maxPnl - minPnl)) * innerHeight;
 
-  pnlChart.setAttribute("aria-label", `Biểu đồ P&L theo thời gian, từ ngày 0 đến ngày ${dayLabel(horizon)}`);
+  pnlChart.setAttribute("aria-label", `Biểu đồ payoff P&L ước tính tại đáo hạn theo giá cơ sở, từ ${number(minPrice, 2)} đến ${number(maxPrice, 2)}`);
   pnlChart.appendChild(svgNode("rect", {
     x: margin.left,
     y: margin.top,
@@ -594,11 +551,9 @@ function renderPnlChart(report, spec) {
     }));
   }
 
-  const xTicks = spec.timePoints.length <= 7
-    ? spec.timePoints
-    : spec.timePoints.filter((_value, index) => index === 0 || index === spec.timePoints.length - 1 || index % 2 === 0);
-  xTicks.forEach((day) => {
-    const xPosition = x(day);
+  for (let index = 0; index <= 4; index += 1) {
+    const price = minPrice + ((maxPrice - minPrice) * index / 4);
+    const xPosition = x(price);
     pnlChart.appendChild(svgNode("line", {
       x1: xPosition,
       x2: xPosition,
@@ -613,58 +568,36 @@ function renderPnlChart(report, spec) {
       fill: "#9aabb8",
       "font-size": 12,
       "text-anchor": "middle",
-    }, day === 0 ? "Hôm nay" : `Ngày ${dayLabel(day)}`));
-  });
+    }, compactChartNumber(price)));
+  }
 
   pnlChart.append(
     svgNode("line", { x1: margin.left, x2: margin.left, y1: margin.top, y2: height - margin.bottom, stroke: "#526273" }),
     svgNode("line", { x1: margin.left, x2: width - margin.right, y1: height - margin.bottom, y2: height - margin.bottom, stroke: "#526273" }),
     svgNode("text", { x: 18, y: margin.top + innerHeight / 2, fill: "#9aabb8", "font-size": 12, transform: `rotate(-90 18 ${margin.top + innerHeight / 2})`, "text-anchor": "middle" }, "P&L"),
-    svgNode("text", { x: margin.left + innerWidth / 2, y: height - 10, fill: "#9aabb8", "font-size": 12, "text-anchor": "middle" }, "Thời gian trôi qua"),
+    svgNode("text", { x: margin.left + innerWidth / 2, y: height - 10, fill: "#9aabb8", "font-size": 12, "text-anchor": "middle" }, "Giá cơ sở tại đáo hạn"),
   );
-
-  const todayX = x(0);
-  const expiryX = x(horizon);
-  pnlChart.append(
-    svgNode("line", { x1: todayX, x2: todayX, y1: margin.top, y2: height - margin.bottom, stroke: "#62d4a4", "stroke-dasharray": "4 5" }),
-    svgNode("line", { x1: expiryX, x2: expiryX, y1: margin.top, y2: height - margin.bottom, stroke: "#f0bb87", "stroke-dasharray": "4 5" }),
-  );
-
-  groups.forEach((group) => {
-    if (!group.points.length) return;
-    const pathData = group.points.map((scenario, index) => {
-      const command = index === 0 ? "M" : "L";
-      return `${command} ${x(scenario.elapsed_days).toFixed(2)} ${y(scenario.pnl).toFixed(2)}`;
-    }).join(" ");
-    pnlChart.appendChild(svgNode("path", {
-      d: pathData,
-      fill: "none",
-      stroke: group.path.color,
-      "stroke-width": 2.5,
-      "stroke-linejoin": "round",
-      "stroke-linecap": "round",
+  const breakevens = Array.isArray(item?.breakevens) ? item.breakevens : [];
+  breakevens.filter((value) => Number.isFinite(Number(value))).forEach((breakeven) => {
+    const value = Number(breakeven);
+    if (value < minPrice || value > maxPrice) return;
+    pnlChart.appendChild(svgNode("line", {
+      x1: x(value), x2: x(value), y1: margin.top, y2: height - margin.bottom,
+      stroke: "#f0bb87", "stroke-dasharray": "4 5", "stroke-width": 1.5,
     }));
-    group.points.forEach((scenario) => {
-      const point = svgNode("circle", {
-        cx: x(scenario.elapsed_days),
-        cy: y(scenario.pnl),
-        r: 4,
-        fill: group.path.color,
-        stroke: "#0f151c",
-        "stroke-width": 1.5,
-        tabindex: 0,
-      });
-      point.addEventListener("pointerenter", (event) => showPnlTooltip(group.path, scenario, event));
-      point.addEventListener("pointerleave", () => { pnlChartTooltip.hidden = true; });
-      point.addEventListener("focus", () => {
-        pnlChartTooltip.textContent = `${group.path.label} · Ngày ${dayLabel(scenario.elapsed_days)}\nP&L: ${number(scenario.pnl, 2)}`;
-        pnlChartTooltip.hidden = false;
-      });
-      point.addEventListener("blur", () => { pnlChartTooltip.hidden = true; });
-      pnlChart.appendChild(point);
-    });
   });
-  pnlChartStatus.textContent = "Mô phỏng tự động";
+  const pathData = points.map((point, index) => `${index === 0 ? "M" : "L"} ${x(point.underlyingPrice).toFixed(2)} ${y(point.pnl).toFixed(2)}`).join(" ");
+  pnlChart.appendChild(svgNode("path", { d: pathData, fill: "none", stroke: "#62d4a4", "stroke-width": 2.5, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  points.forEach((point) => {
+    const node = svgNode("circle", { cx: x(point.underlyingPrice), cy: y(point.pnl), r: 4, fill: "#62d4a4", stroke: "#0f151c", "stroke-width": 1.5, tabindex: 0 });
+    node.setAttribute("aria-label", `Giá cơ sở ${number(point.underlyingPrice, 2)}; P&L tại đáo hạn ${number(point.pnl, 2)}`);
+    node.addEventListener("pointerenter", (event) => showPayoffTooltip(point, event));
+    node.addEventListener("pointerleave", () => { pnlChartTooltip.hidden = true; });
+    node.addEventListener("focus", () => { pnlChartTooltip.textContent = `Giá cơ sở: ${number(point.underlyingPrice, 2)}\nP&L tại đáo hạn: ${number(point.pnl, 2)}`; pnlChartTooltip.hidden = false; });
+    node.addEventListener("blur", () => { pnlChartTooltip.hidden = true; });
+    pnlChart.appendChild(node);
+  });
+  pnlChartStatus.textContent = "Payoff từ API";
 }
 
 function setScenarioState(message, className = "") {
@@ -685,34 +618,31 @@ function metric(label, value, className = "") {
   return item;
 }
 
-function renderScenarioReport(report, spec) {
-  renderPnlChart(report, spec);
+function renderPayoffDetail(item) {
+  const points = payoffPoints(item);
+  renderPayoffChart(item, points);
   scenarioResultsBody.replaceChildren();
   detailMetrics.replaceChildren();
   detailMetrics.append(
-    metric("Lỗ tối đa", number(report.max_loss, 2), "negative"),
-    metric("Lãi tối đa", number(report.max_profit, 2), "positive"),
-    metric("Điểm hòa vốn", (report.breakevens || []).map((value) => number(value, 2)).join(", ") || "—"),
+    metric("Ngày đáo hạn", opportunityExpiry(item) ? expiryLabel(item) : "Không có dữ liệu"),
+    metric("EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev))),
+    metric("Xác suất có lãi (ước tính)", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit))),
+    metric("RR (ước tính)", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio))),
+    metric("Lỗ tối đa", estimatedNumber(item?.max_loss), "negative"),
+    metric("Lãi tối đa", estimatedNumber(item?.max_profit), "positive"),
+    metric("Điểm hòa vốn", (Array.isArray(item?.breakevens) ? item.breakevens : []).map((value) => number(value, 2)).join(", ") || "Không có dữ liệu"),
   );
-  (report.scenarios || []).forEach((scenario) => {
+  points.forEach((point) => {
     const row = document.createElement("tr");
-    const greeks = scenario.greeks || {};
-    cell(row, scenario.name || "Kịch bản");
-    cell(row, number(scenario.underlying_price, 2));
-    cell(row, percent(scenario.implied_volatility));
-    cell(row, number(scenario.elapsed_days, 1));
-    cell(row, number(scenario.pnl, 2), scenario.pnl >= 0 ? "positive" : "negative");
-    cell(row, number(greeks.delta, 4));
-    cell(row, number(greeks.gamma, 4));
-    cell(row, number(greeks.theta, 4));
-    cell(row, number(greeks.vega, 4));
-    cell(row, number(greeks.rho, 4));
+    cell(row, number(point.underlyingPrice, 2));
+    cell(row, number(point.pnl, 2), point.pnl >= 0 ? "positive" : "negative");
     scenarioResultsBody.appendChild(row);
   });
-  if (report.scenarios && report.scenarios.length) {
-    setScenarioState(`Đã dựng ${report.scenarios.length} điểm mô phỏng từ hôm nay đến ngày đáo hạn.`);
+  pnlChartAssumptions.textContent = `Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất có lãi và RR đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
+  if (points.length) {
+    setScenarioState(`Hiển thị ${points.length} điểm payoff tại đáo hạn do API trả về.`);
   } else {
-    setScenarioState("API không trả về kịch bản nào.", "error");
+    setScenarioState("API chưa trả về payoff_curve cho cơ hội này; các giá trị không có được ghi rõ là không có dữ liệu.", "error");
   }
 }
 
@@ -730,34 +660,9 @@ async function showOpportunityDetail(item) {
   pnlChartLegend.replaceChildren();
   pnlChartTooltip.hidden = true;
   pnlChartStatus.textContent = "Đang dựng biểu đồ";
-  setScenarioState("Đang tự động mô phỏng P&L theo thời gian…");
+  setScenarioState("Đang đọc payoff tại đáo hạn từ kết quả quét…");
   detailPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-
-  const requestId = ++scenarioRequestId;
-  const spec = buildAutomaticScenarioSet(item);
-  pnlChartAssumptions.textContent = `Mô phỏng tự động từ ngày 0 đến ngày ${dayLabel(spec.horizon)}: giá cơ sở được stress ở −10%, −5%, 0%, +5%, +10% so với hiện tại và IV giữ nguyên. Đây là mô phỏng tham khảo, không phải dự đoán đường giá.`;
-  try {
-    const report = await getJson("/api/v1/scenarios", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        strategy_type: scenarioStrategyType(item.strategy),
-        legs: legs.map((leg) => scenarioLeg(item, leg, legs)),
-        scenarios: spec.scenarios,
-        execution: {
-          fee_per_contract: Number(activeScanContext?.assumptions?.fee_per_contract ?? form.elements.fee_per_contract.value),
-          slippage_bps: Number(activeScanContext?.assumptions?.slippage_bps ?? form.elements.slippage_bps.value),
-          contract_multiplier: Number(activeScanContext?.assumptions?.contract_multiplier ?? form.elements.contract_multiplier.value),
-          exit_price_source: "model",
-        },
-      }),
-    });
-    if (requestId === scenarioRequestId && selectedOpportunity === item) renderScenarioReport(report, spec);
-  } catch (error) {
-    if (requestId !== scenarioRequestId || selectedOpportunity !== item) return;
-    pnlChartStatus.textContent = "Không có dữ liệu";
-    setScenarioState(error.message, "error");
-  }
+  renderPayoffDetail(item);
 }
 
 function renderAssets(payload) {
@@ -807,7 +712,10 @@ function renderScanContext(context) {
   const edgeText = Number(appliedFilters.min_iv_edge) > 0
     ? ` · Edge IV tối thiểu: ${percent(appliedFilters.min_iv_edge)}`
     : "";
-  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${edgeText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
+  const expectedValueText = appliedFilters.min_expected_value === null
+    ? " · EV: không lọc"
+    : ` · EV tối thiểu: ${number(appliedFilters.min_expected_value, 2)}`;
+  scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${edgeText}${expectedValueText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
   scanContext.hidden = false;
 }
 
@@ -969,7 +877,7 @@ function renderResults(payload) {
     const detailButton = document.createElement("button");
     detailButton.type = "button";
     detailButton.className = "secondary-button compact-button";
-    detailButton.textContent = "Xem P&L";
+    detailButton.textContent = "Xem payoff";
     detailButton.addEventListener("click", () => showOpportunityDetail(item));
     actionCell.appendChild(detailButton);
     row.appendChild(actionCell);
@@ -1050,6 +958,7 @@ form.addEventListener("submit", async (event) => {
       min_open_interest: Number(data.get("min_open_interest")),
       max_spread_pct: optionalDecimal(data, "max_spread_pct", 100),
       min_edge_after_costs: Number(data.get("min_edge_after_costs")),
+      min_expected_value: optionalNumber(data, "min_expected_value"),
       max_results: optionalNumber(data, "max_results"),
       fee_per_contract: Number(data.get("fee_per_contract")),
       slippage_bps: Number(data.get("slippage_bps")),
@@ -1074,7 +983,6 @@ form.addEventListener("submit", async (event) => {
 clearTerminalButton.addEventListener("click", clearTerminal);
 
 closeDetailButton.addEventListener("click", () => {
-  scenarioRequestId += 1;
   detailPanel.hidden = true;
   selectedOpportunity = null;
 });

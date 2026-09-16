@@ -133,7 +133,11 @@ def _new_strategy_fixture() -> NormalizedOptionUniverse:
             (100, "put"),
             (110, "call"),
         }:
-            ask = 0.001 if (contract.strike, contract.option_type.lower()) in {(90, "put"), (110, "call")} else 1.0
+            ask = (
+                0.001
+                if (contract.strike, contract.option_type.lower()) in {(90, "put"), (110, "call")}
+                else 1.0
+            )
             bid = ask * 0.8
             contracts.append(
                 replace(
@@ -170,13 +174,17 @@ def test_scan_supports_multiple_assets_and_ranks_after_costs() -> None:
     assert candidate.executable_entry == pytest.approx(0.60)
     assert candidate.slippage_cost == pytest.approx(0.006)
     assert candidate.edge_after_costs == pytest.approx(
-        candidate.fair_price
-        - candidate.executable_entry
-        - candidate.total_cost
+        candidate.fair_price - candidate.executable_entry - candidate.total_cost
     )
     assert candidate.max_loss == pytest.approx(0.656)
     assert candidate.evidence_status == "insufficient_evidence"
-    assert candidate.expected_value_status == "not_validated"
+    assert candidate.expected_value_status == "model_estimate"
+    assert candidate.payoff_metrics_status == "estimated"
+    assert candidate.expected_value is not None
+    assert 0.0 <= candidate.win_probability <= 1.0
+    assert candidate.payoff_curve
+    assert candidate.payoff_metrics_assumptions is not None
+    assert candidate.payoff_metrics_assumptions.historical_outcomes_used is False
     assert candidate.execution_allowed is False
     assert candidate.exit_fee == pytest.approx(0.05)
     assert candidate.exit_slippage_cost == pytest.approx(0.005)
@@ -395,6 +403,12 @@ def test_vertical_strategies_pair_executable_legs_and_bound_risk(strategy: str) 
     assert candidate.edge_after_costs == pytest.approx(
         candidate.fair_price - candidate.executable_entry - candidate.total_cost
     )
+    assert candidate.payoff_metrics_status == "estimated"
+    assert candidate.expected_value_status == "model_estimate"
+    assert candidate.payoff_curve
+    assert candidate.expected_value is not None
+    assert candidate.win_probability is not None
+    assert candidate.risk_reward is not None
     assert candidate.execution_allowed is False
 
 
@@ -493,6 +507,9 @@ def test_iron_strategies_scan_four_legs_and_return_bounded_metrics(strategy: str
     assert candidate.edge_after_costs == pytest.approx(
         candidate.fair_price - candidate.executable_entry - candidate.total_cost
     )
+    assert candidate.payoff_metrics_status == "estimated"
+    assert candidate.payoff_curve
+    assert candidate.risk_reward is not None
     assert candidate.execution_allowed is False
 
 
@@ -511,7 +528,17 @@ def test_iron_strategy_rejects_a_chain_without_protective_wings() -> None:
     assert any("missing_put_wing" in item.reasons for item in result.rejections)
 
 
-@pytest.mark.parametrize("strategy", ("long_straddle", "long_strangle", "butterfly", "broken_wing_butterfly", "protective_put", "covered_call"))
+@pytest.mark.parametrize(
+    "strategy",
+    (
+        "long_straddle",
+        "long_strangle",
+        "butterfly",
+        "broken_wing_butterfly",
+        "protective_put",
+        "covered_call",
+    ),
+)
 def test_new_same_expiry_and_overlay_strategies_return_typed_opportunities(strategy: str) -> None:
     result = scan_opportunities(
         _new_strategy_fixture(),
@@ -527,8 +554,12 @@ def test_new_same_expiry_and_overlay_strategies_return_typed_opportunities(strat
         assert candidate.risk_note
         assert candidate.market_iv > 0
         assert candidate.fair_iv > 0
+        assert candidate.payoff_metrics_status == "unavailable"
+        assert candidate.expected_value is None
     else:
         assert len(candidate.legs) in {2, 4}
+        assert candidate.payoff_metrics_status == "estimated"
+        assert candidate.payoff_curve
 
 
 def test_calendar_spread_pairs_same_strike_across_expiries() -> None:
