@@ -100,7 +100,7 @@ const syntheticOpportunity = {
 };
 
 async function mockApi(page) {
-  await page.addInitScript(() => {
+  await page.addInitScript((liveOpportunity) => {
     class MockWebSocket extends EventTarget {
       static OPEN = 1;
 
@@ -115,7 +115,36 @@ async function mockApi(page) {
       }
 
       send(payload) {
-        window.__monitoringRequest = JSON.parse(payload);
+        const request = JSON.parse(payload);
+        if (this.url.includes("/api/v1/opportunities/stream")) {
+          window.__liveRequest = request;
+          setTimeout(() => {
+            this.dispatchEvent(new MessageEvent("message", {
+              data: JSON.stringify({ type: "stream_status", status: "starting" }),
+            }));
+            this.dispatchEvent(new MessageEvent("message", {
+              data: JSON.stringify({ type: "log", message: "[OPTIONS] live snapshot ready" }),
+            }));
+            this.dispatchEvent(new MessageEvent("message", {
+              data: JSON.stringify({
+                type: "snapshot",
+                payload: {
+                  timestamp: "2026-09-15T14:46:33Z",
+                  data_timestamp: "2026-09-15T14:46:33Z",
+                  valuation_mode: "executable",
+                  opportunities: [liveOpportunity],
+                  rejections: [],
+                  asset_failures: [],
+                  issues: [],
+                  scan_context: {},
+                },
+                execution_allowed: false,
+              }),
+            }));
+          }, 0);
+          return;
+        }
+        window.__monitoringRequest = request;
         setTimeout(() => {
           this.dispatchEvent(new MessageEvent("message", {
             data: JSON.stringify({ type: "stream_status", status: "connected" }),
@@ -158,7 +187,7 @@ async function mockApi(page) {
     }
 
     window.WebSocket = MockWebSocket;
-  });
+  }, opportunity);
 
   await page.route("**/api/v1/assets", (route) => route.fulfill({
     status: 200,
@@ -293,6 +322,25 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByLabel("IV edge tối thiểu")).not.toBeVisible();
   await expect(page.getByLabel("Delta tối thiểu")).not.toBeVisible();
   await expect(page.getByLabel("Phí mỗi chiều")).not.toBeVisible();
+});
+
+test("connects the live options feed and updates the desk dashboard", async ({ page }) => {
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("100");
+  await page.getByRole("button", { name: "Bật live feed" }).click();
+
+  await expect(page.locator("#live-connection")).toContainText("Live feed · 1 signal");
+  await expect(page.locator("#live-session-state")).toHaveText("LIVE");
+  await expect(page.locator("#live-stat-spot")).toHaveText("76.2k");
+  await expect(page.locator("#live-stat-opportunities")).toHaveText("1");
+  await expect(page.locator("#market-strip")).toContainText("BTC");
+  await expect(page.locator("#live-opportunity-body")).toContainText("Mua call");
+  await expect(page.locator("#live-feed")).toContainText("Mua call");
+  await expect(page.locator("#signal-chart")).toContainText("+");
+  await expect(page.locator("#live-toggle")).toHaveText("Dừng live feed");
+  expect(await page.evaluate(() => window.__liveRequest.max_loss)).toBe(100);
+
+  await page.getByRole("button", { name: "Dừng live feed" }).click();
+  await expect(page.locator("#live-connection")).toContainText("Live feed đang tắt");
 });
 
 test("shows strategy checkbox cards and keeps all strategy choices available", async ({ page }) => {

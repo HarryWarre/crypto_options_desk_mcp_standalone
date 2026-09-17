@@ -26,6 +26,14 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert '<script src="/static/app.js?v=20260917-4" defer></script>' in response.text
     assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-4">' in response.text
     assert 'id="service-status"' in response.text
+    assert 'id="live-desk-title"' in response.text
+    assert 'id="live-toggle"' in response.text
+    assert 'id="live-connection"' in response.text
+    assert 'id="live-stat-opportunities"' in response.text
+    assert 'id="market-strip"' in response.text
+    assert 'id="live-opportunity-body"' in response.text
+    assert 'id="signal-chart"' in response.text
+    assert 'id="live-feed"' in response.text
     assert 'class="app-shell"' in response.text
     assert 'aria-label="Điều hướng workspace"' in response.text
     assert 'data-workspace-link href="#scanner"' in response.text
@@ -99,6 +107,9 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "syncWorkspaceFromHash" in javascript.text
     assert 'window.addEventListener("hashchange"' in javascript.text
     assert "/api/v1/opportunities/scan/stream" in javascript.text
+    assert "/api/v1/opportunities/stream" in javascript.text
+    assert "connectLiveFeed" in javascript.text
+    assert "renderLiveSnapshot" in javascript.text
     assert "legs" in javascript.text
     for field in ("symbol", "option_type", "strike", "expiry_at", "position"):
         assert field in javascript.text
@@ -163,6 +174,12 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert ".chart-assumptions" in stylesheet.text
     assert ".valuation-mode-card" in stylesheet.text
     assert ".valuation-mode-notice" in stylesheet.text
+    assert ".live-desk" in stylesheet.text
+    assert ".desk-stat-grid" in stylesheet.text
+    assert ".market-strip" in stylesheet.text
+    assert ".live-opportunity-table" in stylesheet.text
+    assert ".signal-chart" in stylesheet.text
+    assert ".live-feed" in stylesheet.text
 
 
 def test_static_directory_contains_only_the_expected_ui_files() -> None:

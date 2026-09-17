@@ -102,6 +102,7 @@ _CORS_ORIGINS_ENV = "OPTIONS_APP_CORS_ORIGINS"
 _BACKTEST_ARCHIVE_ENV = "OPTIONS_BACKTEST_ARCHIVE"
 _DEFAULT_SCAN_RISK_FREE_RATE = 0.05
 _DEFAULT_MIN_EXPECTED_VALUE = 0.0
+_LIVE_SCAN_INTERVAL_SECONDS = 8.0
 
 # The scanner gained EV metrics after the original HTTP contract.  Keep the
 # API tolerant of either spelling while the domain slices land independently.
@@ -619,8 +620,12 @@ def create_app(
     backtest_runner: Callable[[BacktestRequest], Any] | None = None,
     monitoring_runner: Callable[[PositionMonitoringRequest], Any] | None = None,
     monitoring_stream_factory: Callable[[PositionMonitoringRequest], Any] | None = None,
+    live_scan_interval_seconds: float = _LIVE_SCAN_INTERVAL_SECONDS,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
+
+    if not math.isfinite(live_scan_interval_seconds) or live_scan_interval_seconds < 0:
+        raise ValueError("live_scan_interval_seconds must be a finite non-negative number")
 
     if adapter is None:
         public_client = BybitPublicClient()
@@ -767,6 +772,81 @@ def create_app(
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.websocket("/api/v1/opportunities/stream")
+    async def live_opportunity_stream(websocket: WebSocket) -> None:
+        """Stream timestamped scanner snapshots to the live desk.
+
+        The browser never talks to Bybit directly.  Each bounded refresh uses
+        the same adapter and ranking path as the one-shot scanner, which keeps
+        the live view auditable and avoids creating a second pricing contract.
+        """
+
+        await websocket.accept()
+        try:
+            filters = ScanFilters.model_validate(await websocket.receive_json())
+            scan_request = filters.to_scan_request()
+            await websocket.send_json(
+                {
+                    "type": "stream_status",
+                    "status": "starting",
+                    "interval_seconds": live_scan_interval_seconds,
+                    "execution_allowed": False,
+                }
+            )
+
+            while True:
+                async def on_progress(message: str) -> None:
+                    await websocket.send_json({"type": "log", "message": message})
+
+                snapshot = await _execute_scan(
+                    scan_request,
+                    market_adapter,
+                    scanner,
+                    historical_volatility_loader=history_loader,
+                    on_progress=on_progress,
+                )
+                await websocket.send_json(
+                    {
+                        "type": "snapshot",
+                        "payload": _serialize_scan_result(snapshot, filters, scan_request),
+                        "execution_allowed": False,
+                    }
+                )
+                await websocket.send_json(
+                    {
+                        "type": "stream_status",
+                        "status": "connected",
+                        "interval_seconds": live_scan_interval_seconds,
+                        "execution_allowed": False,
+                    }
+                )
+                await asyncio.sleep(live_scan_interval_seconds)
+        except WebSocketDisconnect:
+            return
+        except (TypeError, ValueError) as exc:
+            await websocket.send_json(
+                {"type": "error", "code": "live_scan_invalid", "message": str(exc)}
+            )
+            await websocket.close(code=1008)
+        except ApiError as exc:
+            await websocket.send_json(
+                {"type": "error", "code": exc.code, "message": exc.message}
+            )
+            await websocket.close(code=1011)
+        except Exception:
+            logger.exception("[OPTIONS] live opportunity stream failed")
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "live_scan_failed",
+                        "message": "Live opportunity stream failed",
+                    }
+                )
+                await websocket.close(code=1011)
+            except Exception:
+                logger.debug("Could not send the live opportunity error envelope", exc_info=True)
 
     @app.get("/api/v1/surfaces/{asset}")
     async def surface_summary(asset: str) -> JSONResponse:
