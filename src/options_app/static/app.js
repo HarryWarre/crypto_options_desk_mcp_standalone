@@ -34,6 +34,14 @@ const backtestTradesBody = document.querySelector("#backtest-trades-body");
 const backtestProfitField = document.querySelector("#backtest-profit-field");
 const backtestStopField = document.querySelector("#backtest-stop-field");
 const backtestDteField = document.querySelector("#backtest-dte-field");
+const monitoringForm = document.querySelector("#monitoring-form");
+const monitoringBaseCoin = document.querySelector("#monitoring-base-coin");
+const monitoringPositionType = document.querySelector("#monitoring-position-type");
+const monitoringState = document.querySelector("#monitoring-state");
+const monitoringMetrics = document.querySelector("#monitoring-metrics");
+const monitoringDecisionGuide = document.querySelector("#monitoring-decision-guide");
+const monitoringDecisionsBody = document.querySelector("#monitoring-decisions-body");
+const monitoringEmptyState = document.querySelector("#monitoring-empty-state");
 const workspaceLinks = [...document.querySelectorAll("[data-workspace-link]")];
 const workspaceViews = [...document.querySelectorAll("[data-workspace-view]")];
 const moduleEyebrow = document.querySelector("#module-eyebrow");
@@ -54,6 +62,11 @@ const WORKSPACE_META = Object.freeze({
     eyebrow: "Nghiên cứu quyền chọn / Backtest",
     title: "Historical Options Backtest",
     description: "Replay tín hiệu trên archive snapshot để kiểm tra chất lượng và rủi ro.",
+  },
+  monitoring: {
+    eyebrow: "Theo dõi vị thế / Risk & exit review",
+    title: "Position Monitoring",
+    description: "Kiểm tra lệnh đã mở và nhận quyết định CLOSE, HOLD hoặc REVIEW trước khi đóng thủ công.",
   },
 });
 
@@ -900,6 +913,73 @@ function renderBacktestResult(payload) {
   setBacktestState(`Đã hoàn tất: ${(payload.trades || []).length} trade · train ${train.trade_count || 0} · holdout ${holdout.trade_count || 0}${unresolved ? ` · ${unresolved} tín hiệu chưa thể đóng` : ""}.`);
 }
 
+function setMonitoringState(message, className = "") {
+  monitoringState.textContent = message;
+  monitoringState.className = `state-message ${className}`.trim();
+}
+
+function monitoringDecisionLabel(action) {
+  return {
+    close: "CLOSE · Cần đóng thủ công",
+    hold: "HOLD · Tiếp tục theo dõi",
+    review: "REVIEW · Cần kiểm tra",
+  }[String(action || "review").toLowerCase()] || "REVIEW · Cần kiểm tra";
+}
+
+function renderMonitoringResult(payload) {
+  if (payload?.success === false) throw new Error(payload.error || "Không thể theo dõi vị thế");
+
+  const report = payload?.data || {};
+  const positions = report.positions || [];
+  const decisions = report.decisions || [];
+  const positionBySymbol = new Map(positions.map((position) => [position.symbol, position]));
+  const summary = report.summary || {};
+
+  monitoringMetrics.replaceChildren();
+  [
+    ["Vị thế đang mở", positions.length],
+    ["CLOSE", summary.close || 0],
+    ["HOLD", summary.hold || 0],
+    ["REVIEW", summary.review || 0],
+    ["Reconciliation", report.reconciliation_status || "—"],
+  ].forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "metric";
+    const caption = document.createElement("span");
+    caption.className = "muted";
+    caption.textContent = label;
+    const strong = document.createElement("strong");
+    strong.textContent = String(value);
+    item.append(caption, strong);
+    monitoringMetrics.appendChild(item);
+  });
+
+  monitoringDecisionsBody.replaceChildren();
+  decisions.forEach((decision) => {
+    const position = positionBySymbol.get(decision.symbol) || {};
+    const row = document.createElement("tr");
+    cell(row, decision.symbol || "—", "symbol");
+    cell(row, position.side || "—");
+    cell(row, number(position.quantity, 4));
+    cell(row, `${number(position.avg_entry_price, 4)} / ${number(position.mark_price, 4)}`);
+    cell(row, number(position.unrealized_pnl, 4), Number(position.unrealized_pnl) >= 0 ? "positive" : "negative");
+    const actionCell = document.createElement("td");
+    actionCell.className = `decision-${String(decision.action || "review").toLowerCase()}`;
+    actionCell.textContent = monitoringDecisionLabel(decision.action);
+    row.appendChild(actionCell);
+    cell(row, (decision.reasons || []).join(" · ") || "—");
+    monitoringDecisionsBody.appendChild(row);
+  });
+
+  monitoringEmptyState.hidden = decisions.length > 0;
+  monitoringDecisionGuide.hidden = false;
+  const issueText = (report.issues || []).length ? ` · Issues: ${report.issues.join("; ")}` : "";
+  const persistenceText = payload.persistence?.status === "saved" ? " · Snapshot đã lưu" : "";
+  setMonitoringState(
+    `Đã cập nhật ${new Date(report.captured_at || Date.now()).toLocaleString("vi-VN")} · ${decisions.length} quyết định${issueText}${persistenceText}.`,
+  );
+}
+
 function renderScanContext(context) {
   scanContext.replaceChildren();
   if (!context) {
@@ -1264,6 +1344,47 @@ form.addEventListener("submit", async (event) => {
 
 backtestExitPolicy.addEventListener("change", updateBacktestExitFields);
 updateBacktestExitFields();
+
+monitoringForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = new FormData(monitoringForm);
+  const baseCoin = String(data.get("base_coin") || "").trim().toUpperCase();
+  if (!baseCoin) {
+    setMonitoringState("Hãy nhập base coin hoặc ALL.", "error");
+    return;
+  }
+
+  const symbol = String(data.get("symbol") || "").trim();
+  const policy = symbol
+    ? {
+        symbol,
+        thesis_status: data.get("thesis_status") || "unknown",
+        stop_loss_price: optionalNumber(data, "stop_loss_price"),
+        take_profit_price: optionalNumber(data, "take_profit_price"),
+        max_holding_hours: optionalNumber(data, "max_holding_hours"),
+      }
+    : null;
+  const button = document.querySelector("#monitoring-submit");
+  button.disabled = true;
+  setMonitoringState("Đang đọc vị thế, lệnh mở và lịch sử khớp ở chế độ read-only…");
+  try {
+    const payload = await getJson("/api/v1/positions/monitor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_coin: baseCoin,
+        position_type: data.get("position_type") || "all",
+        policies: policy ? [policy] : [],
+        persist: true,
+      }),
+    });
+    renderMonitoringResult(payload);
+  } catch (error) {
+    setMonitoringState(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 
 backtestForm.addEventListener("submit", async (event) => {
   event.preventDefault();

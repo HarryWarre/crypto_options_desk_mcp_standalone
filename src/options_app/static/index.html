@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260917-2">
-    <script src="/static/app.js?v=20260917-2" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260917-3">
+    <script src="/static/app.js?v=20260917-3" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -30,6 +30,11 @@
             <span class="module-icon" aria-hidden="true">↗</span>
             <span class="module-copy"><strong>Backtest</strong><small>Historical replay</small></span>
             <span class="module-status">02</span>
+          </a>
+          <a class="module-link" data-workspace-link href="#monitoring" aria-label="Position Monitoring">
+            <span class="module-icon" aria-hidden="true">◒</span>
+            <span class="module-copy"><strong>Position Monitoring</strong><small>Risk &amp; exit review</small></span>
+            <span class="module-status">03</span>
           </a>
         </nav>
 
@@ -415,6 +420,81 @@
                   <tbody id="backtest-trades-body"></tbody>
                 </table>
               </div>
+            </section>
+          </div>
+
+          <div class="workspace-view" id="position-monitoring-view" data-workspace-view="monitoring" hidden>
+            <section class="panel monitoring-panel" aria-labelledby="monitoring-title">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Position monitoring / Manual execution</p>
+                  <h2 id="monitoring-title">Theo dõi lệnh đang mở</h2>
+                  <p class="muted">Đọc vị thế, lệnh mở và lịch sử khớp gần đây để đánh giá rủi ro sau khi bạn đã vào lệnh thủ công.</p>
+                </div>
+                <span class="badge">Read-only · Manual close</span>
+              </div>
+
+              <div class="monitoring-safety-note">
+                <strong>Không tự gửi lệnh.</strong>
+                <span>Engine chỉ trả về <code>CLOSE</code>, <code>HOLD</code> hoặc <code>REVIEW</code>. Nếu có <code>CLOSE</code>, bạn vẫn phải kiểm tra và đóng lệnh thủ công.</span>
+              </div>
+
+              <form id="monitoring-form" class="monitoring-form">
+                <div class="form-grid">
+                  <label>Base coin
+                    <input id="monitoring-base-coin" name="base_coin" value="BTC" minlength="1" required>
+                    <small class="field-help">Nhập BTC, ETH… hoặc ALL.</small>
+                  </label>
+                  <label>Loại vị thế
+                    <select id="monitoring-position-type" name="position_type">
+                      <option value="all">Tất cả</option>
+                      <option value="option">Options</option>
+                      <option value="linear">Linear</option>
+                      <option value="inverse">Inverse</option>
+                    </select>
+                  </label>
+                  <label>Symbol policy (tuỳ chọn)
+                    <input id="monitoring-symbol" name="symbol" placeholder="Ví dụ BTC-30SEP26-70000-C">
+                    <small class="field-help">Bỏ trống để kiểm tra vị thế nhưng đánh dấu REVIEW nếu chưa có policy.</small>
+                  </label>
+                  <label>Thesis
+                    <select id="monitoring-thesis-status" name="thesis_status">
+                      <option value="unknown">Chưa đánh giá</option>
+                      <option value="valid">Còn đúng</option>
+                      <option value="invalid">Đã sai</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-grid monitoring-policy-fields">
+                  <label>Stop-loss price
+                    <input id="monitoring-stop-loss" name="stop_loss_price" type="number" min="0" step="any" placeholder="Không đặt">
+                  </label>
+                  <label>Take-profit price
+                    <input id="monitoring-take-profit" name="take_profit_price" type="number" min="0" step="any" placeholder="Không đặt">
+                  </label>
+                  <label>Thời gian giữ tối đa (giờ)
+                    <input id="monitoring-max-hours" name="max_holding_hours" type="number" min="0" step="any" placeholder="Không giới hạn">
+                  </label>
+                  <div class="monitoring-submit-field">
+                    <button type="submit" class="primary-button" id="monitoring-submit">Cập nhật theo dõi</button>
+                  </div>
+                </div>
+              </form>
+
+              <div class="state-message" id="monitoring-state" role="status">Chưa chạy. Position monitor đang ở chế độ read-only và không tự đóng lệnh.</div>
+              <div class="detail-metrics monitoring-metrics" id="monitoring-metrics"></div>
+              <div class="monitoring-decision-guide" id="monitoring-decision-guide">
+                <strong>Đọc quyết định</strong>
+                <span><b>CLOSE</b> = rule cứng đã chạm; <b>HOLD</b> = chưa có trigger; <b>REVIEW</b> = thiếu dữ liệu hoặc policy, cần kiểm tra trước khi hành động.</span>
+              </div>
+
+              <div class="table-wrap">
+                <table class="monitoring-table">
+                  <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry / Mark</th><th>Unrealized P&amp;L</th><th>Decision</th><th>Reasons</th></tr></thead>
+                  <tbody id="monitoring-decisions-body"></tbody>
+                </table>
+              </div>
+              <div class="state-message" id="monitoring-empty-state">Chưa có snapshot. Nhấn “Cập nhật theo dõi” để đọc vị thế hiện tại.</div>
             </section>
           </div>
         </main>

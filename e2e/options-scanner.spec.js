@@ -175,6 +175,39 @@ async function mockApi(page) {
     });
   });
 
+  await page.route("**/api/v1/positions/monitor", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        analysis_type: "position_monitoring",
+        data: {
+          captured_at: "2026-09-15T14:46:33Z",
+          source: "bybit-rest",
+          reconciliation_status: "complete",
+          issues: [],
+          positions: [{
+            symbol: "BTCUSDT",
+            side: "long",
+            quantity: 1,
+            avg_entry_price: 65000,
+            mark_price: 70000,
+            unrealized_pnl: 5000,
+          }],
+          decisions: [{
+            symbol: "BTCUSDT",
+            action: "close",
+            severity: "high",
+            reasons: ["take_profit_price_triggered"],
+          }],
+          summary: { close: 1, hold: 0, review: 0 },
+        },
+        persistence: { enabled: true, status: "saved" },
+      }),
+    });
+  });
+
 }
 
 test.beforeEach(async ({ page }) => {
@@ -430,6 +463,43 @@ test("starts in the scanner workspace with a professional module sidebar", async
   await expect(page.locator("#backtest-view")).not.toBeVisible();
   await expect(sidebar).toContainText("Sắp ra mắt");
   await expect(sidebar.locator('[aria-disabled="true"]')).toHaveCount(2);
+});
+
+test("exposes position monitoring from the module sidebar", async ({ page }) => {
+  const sidebar = page.getByRole("complementary", { name: "Điều hướng workspace" });
+  const monitoringLink = sidebar.getByRole("link", { name: "Position Monitoring" });
+
+  await expect(monitoringLink).toBeVisible();
+  await expect(monitoringLink).toHaveAttribute("href", "#monitoring");
+
+  await monitoringLink.click();
+
+  await expect(page).toHaveURL(/#monitoring$/);
+  await expect(monitoringLink).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#position-monitoring-view")).toBeVisible();
+  await expect(page.locator("#scanner-view")).not.toBeVisible();
+  await expect(page.locator("#monitoring-state")).toContainText("read-only");
+});
+
+test("runs a read-only position check and renders the exit decision", async ({ page }) => {
+  const sidebar = page.getByRole("complementary", { name: "Điều hướng workspace" });
+  await sidebar.getByRole("link", { name: "Position Monitoring" }).click();
+  await page.getByLabel("Symbol policy (tuỳ chọn)").fill("BTCUSDT");
+  await page.getByLabel("Take-profit price").fill("70000");
+
+  const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/positions/monitor"));
+  await page.getByRole("button", { name: "Cập nhật theo dõi" }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    base_coin: "BTC",
+    position_type: "all",
+    policies: [{ symbol: "BTCUSDT", take_profit_price: 70000 }],
+    persist: true,
+  });
+
+  await expect(page.locator("#monitoring-state")).toContainText("Đã cập nhật");
+  await expect(page.locator("#monitoring-metrics")).toContainText("CLOSE");
+  await expect(page.locator("#monitoring-decisions-body")).toContainText("CLOSE · Cần đóng thủ công");
+  await expect(page.locator("#monitoring-decisions-body")).toContainText("take_profit_price_triggered");
 });
 
 test("switches between scanner and backtest without stacking workspaces", async ({ page }) => {
