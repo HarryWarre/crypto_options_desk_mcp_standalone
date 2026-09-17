@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260917-3">
-    <script src="/static/app.js?v=20260917-3" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260917-4">
+    <script src="/static/app.js?v=20260917-4" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -442,8 +442,13 @@
               <form id="monitoring-form" class="monitoring-form">
                 <div class="form-grid">
                   <label>Base coin
-                    <input id="monitoring-base-coin" name="base_coin" value="BTC" minlength="1" required>
-                    <small class="field-help">Nhập BTC, ETH… hoặc ALL.</small>
+                    <select id="monitoring-base-coin" name="base_coin" required>
+                      <option value="ALL">Tất cả tài sản</option>
+                      <option value="BTC" selected>BTC</option>
+                      <option value="ETH">ETH</option>
+                      <option value="SOL">SOL</option>
+                    </select>
+                    <small class="field-help">Danh sách được lấy từ tài sản đang giao dịch.</small>
                   </label>
                   <label>Loại vị thế
                     <select id="monitoring-position-type" name="position_type">
@@ -453,31 +458,45 @@
                       <option value="inverse">Inverse</option>
                     </select>
                   </label>
-                  <label>Symbol policy (tuỳ chọn)
-                    <input id="monitoring-symbol" name="symbol" placeholder="Ví dụ BTC-30SEP26-70000-C">
-                    <small class="field-help">Bỏ trống để kiểm tra vị thế nhưng đánh dấu REVIEW nếu chưa có policy.</small>
-                  </label>
-                  <label>Thesis
-                    <select id="monitoring-thesis-status" name="thesis_status">
-                      <option value="unknown">Chưa đánh giá</option>
-                      <option value="valid">Còn đúng</option>
-                      <option value="invalid">Đã sai</option>
+                  <label>Vị thế cần áp policy
+                    <select id="monitoring-symbol" name="symbol">
+                      <option value="">Tất cả vị thế · REVIEW nếu chưa có policy</option>
                     </select>
+                    <small class="field-help">Symbol được tự lấy từ snapshot, không cần nhập.</small>
+                  </label>
+                  <label>Policy nhanh
+                    <select id="monitoring-policy-profile" name="policy_profile">
+                      <option value="review">Chỉ quan sát · an toàn nhất</option>
+                      <option value="day_trade">Intraday · tối đa 24 giờ</option>
+                      <option value="swing">Swing · tối đa 7 ngày</option>
+                    </select>
+                    <small class="field-help">Preset chỉ đặt giới hạn thời gian; ngưỡng giá có thể tinh chỉnh bên dưới.</small>
                   </label>
                 </div>
-                <div class="form-grid monitoring-policy-fields">
-                  <label>Stop-loss price
-                    <input id="monitoring-stop-loss" name="stop_loss_price" type="number" min="0" step="any" placeholder="Không đặt">
-                  </label>
-                  <label>Take-profit price
-                    <input id="monitoring-take-profit" name="take_profit_price" type="number" min="0" step="any" placeholder="Không đặt">
-                  </label>
-                  <label>Thời gian giữ tối đa (giờ)
-                    <input id="monitoring-max-hours" name="max_holding_hours" type="number" min="0" step="any" placeholder="Không giới hạn">
-                  </label>
-                  <div class="monitoring-submit-field">
-                    <button type="submit" class="primary-button" id="monitoring-submit">Cập nhật theo dõi</button>
+                <details class="monitoring-advanced-policy">
+                  <summary>Tinh chỉnh policy theo giá (tuỳ chọn)</summary>
+                  <div class="form-grid monitoring-policy-fields">
+                    <label>Stop-loss price
+                      <input id="monitoring-stop-loss" name="stop_loss_price" type="number" min="0" step="any" placeholder="Không đặt">
+                    </label>
+                    <label>Take-profit price
+                      <input id="monitoring-take-profit" name="take_profit_price" type="number" min="0" step="any" placeholder="Không đặt">
+                    </label>
+                    <label>Thời gian giữ tối đa (giờ)
+                      <input id="monitoring-max-hours" name="max_holding_hours" type="number" min="0" step="any" placeholder="Theo preset">
+                    </label>
+                    <label>Thesis
+                      <select id="monitoring-thesis-status" name="thesis_status">
+                        <option value="unknown">Chưa đánh giá</option>
+                        <option value="valid">Còn đúng</option>
+                        <option value="invalid">Đã sai</option>
+                      </select>
+                    </label>
                   </div>
+                </details>
+                <div class="form-options monitoring-actions">
+                  <p class="scan-note">Khi mất kết nối hoặc chưa reconcile, hệ thống hiển thị REVIEW thay vì suy diễn HOLD.</p>
+                  <button type="submit" class="primary-button" id="monitoring-submit">Cập nhật theo dõi</button>
                 </div>
               </form>
 

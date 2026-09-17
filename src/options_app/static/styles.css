@@ -87,8 +87,11 @@ button { border: 0; border-radius: 9px; cursor: pointer; font: inherit; padding:
 .monitoring-safety-note code { color: #a8f3c8; font: 700 .78rem ui-monospace, SFMono-Regular, Menlo, monospace; }
 .monitoring-form .form-grid { margin-top: 0; margin-bottom: 12px; }
 .monitoring-policy-fields { align-items: end; }
-.monitoring-submit-field { align-self: end; }
-.monitoring-submit-field .primary-button { width: 100%; }
+.monitoring-advanced-policy { border: 1px solid var(--line); border-radius: 10px; margin: 4px 0 12px; }
+.monitoring-advanced-policy summary { color: var(--accent-2); cursor: pointer; font-size: .82rem; padding: 10px 12px; }
+.monitoring-advanced-policy .form-grid { border-top: 1px solid var(--line); padding: 12px; }
+.monitoring-actions { margin-top: 0; }
+.monitoring-actions .primary-button { min-width: 155px; }
 .monitoring-metrics { grid-template-columns: repeat(5, minmax(110px, 1fr)); margin-top: 16px; }
 .monitoring-decision-guide { background: #202b26; border: 1px solid #486957; border-radius: 10px; color: var(--muted); display: grid; gap: 4px; margin: 0 0 16px; padding: 11px 13px; }
 .monitoring-decision-guide strong { color: var(--accent); }

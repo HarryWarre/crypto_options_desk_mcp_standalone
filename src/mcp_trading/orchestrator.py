@@ -23,6 +23,7 @@ from position_monitoring import (
     ExitPolicy,
     JsonlSnapshotHistory,
     PositionTracker,
+    SQLiteSnapshotHistory,
     SnapshotHistoryError,
     compare_snapshot_records,
     snapshot_record,
@@ -93,12 +94,16 @@ class MCPOrchestrator:
         self.position_tracker = PositionTracker(
             BybitPositionSnapshotAdapter(self.api)
         )
-        self.position_snapshot_history = JsonlSnapshotHistory(
-            os.getenv(
-                "POSITION_MONITORING_SNAPSHOT_FILE",
-                "data/position_monitoring/snapshots.jsonl",
+        legacy_history_path = os.getenv("POSITION_MONITORING_SNAPSHOT_FILE", "").strip()
+        if legacy_history_path:
+            self.position_snapshot_history = JsonlSnapshotHistory(legacy_history_path)
+        else:
+            self.position_snapshot_history = SQLiteSnapshotHistory(
+                os.getenv(
+                    "POSITION_MONITORING_DATABASE",
+                    "data/position_monitoring/monitoring.sqlite3",
+                )
             )
-        )
 
         self.flow_config = OptionsFlowConfig(
             volume_threshold=3.0,

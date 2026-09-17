@@ -36,6 +36,9 @@ Manual Close Instruction
 | PM-003 | MCP `monitor_positions` tool with policy input and serialized decisions | done | `feat/position-monitoring` |
 | PM-004 | Timestamped snapshot persistence, history, and monitoring workspace | done | `feat/position-monitoring` → `main` |
 | PM-005 | Optional close-order adapter with explicit confirmation and kill switch | deferred | `feat/position-monitoring` → later review |
+| PM-006 | SQLite monitoring snapshot/decision persistence | done | `feat/position-monitoring-live` |
+| PM-007 | Bybit private WebSocket stream, reducer, reconnect, and REST reconciliation | done | `feat/position-monitoring-live` |
+| PM-008 | Low-friction live monitoring workspace with dropdowns and decision queue | done | `feat/position-monitoring-live` |
 
 ## PM-001 acceptance criteria
 
@@ -99,6 +102,40 @@ Manual Close Instruction
 
 The thresholds are per-position policy inputs. They are not universal trading
 rules and are not inferred from the scanner's signal.
+
+## Live monitoring follow-up
+
+PM-006 through PM-008 keep the same safety contract while reducing manual
+interaction: the server authenticates the Bybit private stream, the UI uses
+dropdowns populated from observed positions, and SQLite records each complete
+monitoring snapshot. The stream is never an order-entry channel.
+
+### PM-006 acceptance criteria
+
+- [x] Store complete monitoring reports in a local SQLite database with a
+      unique snapshot identifier and captured-at index.
+- [x] Preserve raw private-stream events with stable deduplication keys for
+      audit and reconnect diagnostics.
+- [x] Keep the existing JSONL history adapter available for compatibility.
+
+### PM-007 acceptance criteria
+
+- [x] Authenticate and subscribe to Bybit private `position`, `order`, and
+      `execution` topics over the server-owned WebSocket connection.
+- [x] Bootstrap with REST, reduce position/order/execution deltas, and treat
+      reconnects as a REST reconciliation boundary.
+- [x] Send application heartbeats, reconnect after transport failure, and
+      deduplicate execution events by `execId`.
+- [x] Keep the stream read-only; it has no close-order or order-entry path.
+
+### PM-008 acceptance criteria
+
+- [x] Expose Position Monitoring in the sidebar and make the primary choices
+      dropdowns: asset, category, observed symbol, and policy preset.
+- [x] Render live `CLOSE`, `HOLD`, and `REVIEW` decisions with reason and
+      evidence while clearly stating that any close remains manual.
+- [x] Keep advanced thresholds collapsed so the common path is one action and
+      does not require typing symbol/category values.
 
 ## Research
 

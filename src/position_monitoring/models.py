@@ -148,6 +148,7 @@ class TrackedPosition:
     position_value: float | None = None
     liquidation_price: float | None = None
     leverage: float | None = None
+    position_idx: int | None = None
     observed_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
     source: str = "unknown"
 
@@ -191,6 +192,7 @@ class TrackedPosition:
             position_value=position.position_value,
             liquidation_price=position.liquidation_price,
             leverage=position.leverage,
+            position_idx=getattr(position, "position_idx", None),
             observed_at=observed_at,
             source=source,
         )
@@ -208,6 +210,7 @@ class TrackedPosition:
             "position_value": self.position_value,
             "liquidation_price": self.liquidation_price,
             "leverage": self.leverage,
+            "position_idx": self.position_idx,
             "observed_at": self.observed_at.isoformat(),
             "source": self.source,
         }
@@ -235,6 +238,7 @@ class TrackedOrder:
     reduce_only: bool = False
     close_on_trigger: bool = False
     updated_at: datetime | None = None
+    execution_id: str | None = None
 
     @classmethod
     def from_exchange(cls, raw: Mapping[str, Any], *, category: str) -> TrackedOrder:
@@ -291,6 +295,7 @@ class TrackedOrder:
             reduce_only=boolean("reduceOnly", "reduce_only"),
             close_on_trigger=boolean("closeOnTrigger", "close_on_trigger"),
             updated_at=timestamp("updatedTime", "updateTime", "updated_at"),
+            execution_id=str(raw.get("execId") or raw.get("execution_id") or "").strip() or None,
         )
 
     def to_dict(self) -> dict[str, Any]:
