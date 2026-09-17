@@ -1,7 +1,7 @@
 # UI-004 — Simplify UI & Remove Redundant AI Warnings
 
-Status: in-progress
-Branch: `feat/simplify-ui-clean-warnings`
+Status: merged
+Branch: `main`
 
 ## Problem
 
@@ -40,8 +40,8 @@ Eliminate unnecessary cautionary disclaimers and defensive callout boxes across 
 
 ## Acceptance Criteria
 
-- [ ] Redundant defensive banners (`.quality-note`, `.monitoring-safety-note`, `.results-guide`, `.chart-assumptions`) are removed.
-- [ ] Field descriptions are concise and informative without legalistic disclaimers.
-- [ ] Payoff chart renders cleanly without redundant assumption disclaimers.
-- [ ] State messages and table labels are professional and compact.
-- [ ] All unit and integration tests pass.
+- [x] Redundant defensive banners (`.quality-note`, `.monitoring-safety-note`, `.results-guide`, `.chart-assumptions`) are removed.
+- [x] Field descriptions are concise and informative without legalistic disclaimers.
+- [x] Payoff chart renders cleanly without redundant assumption disclaimers.
+- [x] State messages and table labels are professional and compact.
+- [x] All unit and integration tests pass.
