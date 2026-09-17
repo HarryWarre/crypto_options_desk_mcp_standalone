@@ -55,7 +55,7 @@ Strategy = Literal[
     "broken_wing_butterfly",
 ]
 EvidenceStatus = Literal["not_validated", "insufficient_evidence"]
-ValuationMode = Literal["executable", "theoretical"]
+ValuationMode = Literal["executable", "theoretical", "synthetic"]
 _THEORETICAL_IGNORED_FILTERS = (
     "max_spread_pct",
     "min_edge_after_costs",
@@ -88,6 +88,7 @@ class ScanRequest:
     max_loss: float | None = None
     fee_per_contract: float = 0.0
     slippage_bps: float = 0.0
+    assumed_spread_bps: float = 100.0
     quantity: float = 1.0
     contract_multiplier: float = 1.0
     include_unvalidated: bool = True
@@ -98,8 +99,8 @@ class ScanRequest:
 
     def __post_init__(self) -> None:
         _finite("risk_free_rate", self.risk_free_rate)
-        if self.valuation_mode not in {"executable", "theoretical"}:
-            raise ValueError("valuation_mode must be executable or theoretical")
+        if self.valuation_mode not in {"executable", "theoretical", "synthetic"}:
+            raise ValueError("valuation_mode must be executable, theoretical, or synthetic")
         for name in (
             "min_dte",
             "max_dte",
@@ -113,6 +114,7 @@ class ScanRequest:
             "max_loss",
             "fee_per_contract",
             "slippage_bps",
+            "assumed_spread_bps",
             "quantity",
             "contract_multiplier",
         ):
@@ -133,6 +135,8 @@ class ScanRequest:
             raise ValueError("max_delta cannot exceed 1")
         if self.max_spread_pct is not None and self.max_spread_pct > 1:
             raise ValueError("max_spread_pct cannot exceed 1")
+        if self.assumed_spread_bps > 20_000:
+            raise ValueError("assumed_spread_bps cannot exceed 20,000")
         if self.max_results is not None and self.max_results < 1:
             raise ValueError("max_results must be positive")
         if self.quantity <= 0 or self.contract_multiplier <= 0:
@@ -210,6 +214,7 @@ class Opportunity:
     entry_slippage_cost: float = 0.0
     exit_slippage_cost: float = 0.0
     total_cost: float = 0.0
+    estimated_entry: float | None = None
     execution_allowed: bool = False
     max_profit: float | None = 0.0
     long_symbol: str | None = None
@@ -232,6 +237,7 @@ class Opportunity:
     payoff_metrics_limitations: tuple[str, ...] = ()
     valuation_mode: ValuationMode = "executable"
     mark_price: float | None = None
+    quote_source: str = "live_bid_ask"
 
 
 @dataclass(frozen=True)
@@ -355,7 +361,7 @@ def scan_opportunities(
                 if rejection:
                     rejections.append(rejection)
                     continue
-                if request.valuation_mode == "theoretical":
+                if request.valuation_mode in {"theoretical", "synthetic"}:
                     _scan_theoretical_candidate(
                         candidate,
                         asset_contracts,
@@ -370,7 +376,7 @@ def scan_opportunities(
                         _surface_observations(
                             asset_contracts,
                             excluded_symbols={candidate.symbol},
-                            allow_unquoted=request.valuation_mode == "theoretical",
+                            allow_unquoted=request.valuation_mode in {"theoretical", "synthetic"},
                         ),
                         valuation_time=_as_utc(universe.valuation_time),
                         config=request.surface_config,
@@ -519,10 +525,17 @@ def scan_opportunities(
                 rejections,
             )
 
+    if request.valuation_mode == "synthetic":
+        opportunities = [
+            _with_synthetic_quote_metrics(opportunity, request)
+            for opportunity in opportunities
+        ]
     opportunities = [
         _with_payoff_metrics(opportunity, request, universe.valuation_time)
         for opportunity in opportunities
     ]
+    if request.valuation_mode == "synthetic":
+        opportunities = _apply_synthetic_filters(opportunities, request)
     if request.valuation_mode == "theoretical":
         opportunities.sort(
             key=lambda item: (-item.fair_price, -item.iv_edge, item.asset, item.symbol)
@@ -608,6 +621,7 @@ def _with_payoff_metrics(
     """Attach one consistently calculated payoff contract to any candidate."""
 
     theoretical = opportunity.valuation_mode == "theoretical"
+    synthetic = opportunity.valuation_mode == "synthetic"
 
     scenario_legs = (
         ()
@@ -641,7 +655,13 @@ def _with_payoff_metrics(
             contract_multiplier=request.contract_multiplier,
         ),
         quantity=request.quantity,
-        entry_price_source="theoretical_fair_value" if theoretical else "long ask / short bid",
+        entry_price_source=(
+            "theoretical_fair_value"
+            if theoretical
+            else "synthetic_bid_ask"
+            if synthetic
+            else "long ask / short bid"
+        ),
     )
     return replace(
         opportunity,
@@ -656,10 +676,152 @@ def _with_payoff_metrics(
         payoff_metrics_methodology=metrics.methodology,
         payoff_metrics_assumptions=metrics.assumptions,
         payoff_metrics_limitations=metrics.limitations,
-        max_loss=metrics.max_loss if theoretical else opportunity.max_loss,
-        max_profit=metrics.max_profit if theoretical else opportunity.max_profit,
-        breakevens=metrics.breakevens if theoretical else opportunity.breakevens,
+        max_loss=metrics.max_loss if theoretical or synthetic else opportunity.max_loss,
+        max_profit=metrics.max_profit if theoretical or synthetic else opportunity.max_profit,
+        breakevens=metrics.breakevens if theoretical or synthetic else opportunity.breakevens,
     )
+
+
+def _with_synthetic_quote_metrics(
+    opportunity: Opportunity,
+    request: ScanRequest,
+) -> Opportunity:
+    """Attach an estimated quote and executable-shaped entry metrics.
+
+    The midpoint comes from mark price when available, then the fitted fair
+    value. The resulting bid/ask is
+    deliberately synthetic and is never marked executable.
+    """
+
+    if not opportunity.legs:
+        return opportunity
+
+    legs = tuple(
+        _with_synthetic_leg_quote(leg, request.assumed_spread_bps)
+        for leg in opportunity.legs
+    )
+    positions = tuple(leg.position for leg in legs)
+    scale = request.quantity * request.contract_multiplier
+    entry_unit = sum(
+        (leg.ask_price if position > 0 else -leg.bid_price)
+        for leg, position in zip(legs, positions)
+    )
+    bid_unit = sum(
+        (leg.bid_price if position > 0 else -leg.ask_price)
+        for leg, position in zip(legs, positions)
+    )
+    market_mid_unit = sum(
+        position * (leg.bid_price + leg.ask_price) / 2.0
+        for leg, position in zip(legs, positions)
+    )
+    fair_price = sum(
+        position * leg.fair_price for leg, position in zip(legs, positions)
+    ) * scale
+    entry = entry_unit * scale
+    entry_fee = request.fee_per_contract * len(legs) * scale
+    exit_fee = request.fee_per_contract * len(legs) * scale
+    entry_slippage = sum(
+        abs(leg.ask_price if position > 0 else leg.bid_price)
+        * request.slippage_bps
+        / 10_000.0
+        * scale
+        for leg, position in zip(legs, positions)
+    )
+    exit_slippage = sum(
+        abs(leg.bid_price if position > 0 else leg.ask_price)
+        * request.slippage_bps
+        / 10_000.0
+        * scale
+        for leg, position in zip(legs, positions)
+    )
+    total_cost = entry_fee + exit_fee + entry_slippage + exit_slippage
+    edge = fair_price - entry - total_cost
+    spread_text = f"{request.assumed_spread_bps:g} bps"
+    risk_note = opportunity.risk_note
+    synthetic_note = (
+        "Synthetic bid/ask estimated from mark/fair value with an assumed "
+        f"{spread_text} spread; not executable."
+    )
+    risk_note = f"{risk_note} {synthetic_note}" if risk_note else synthetic_note
+    return replace(
+        opportunity,
+        bid_price=bid_unit * scale,
+        ask_price=entry,
+        market_mid=market_mid_unit * scale,
+        fair_price=fair_price,
+        executable_entry=None,
+        estimated_entry=entry,
+        fee=entry_fee,
+        slippage_cost=entry_slippage,
+        edge_after_costs=edge,
+        edge_pct=edge / max(abs(entry), 1e-12),
+        entry_fee=entry_fee,
+        exit_fee=exit_fee,
+        entry_slippage_cost=entry_slippage,
+        exit_slippage_cost=exit_slippage,
+        total_cost=total_cost,
+        edge_source="fitted_surface_minus_synthetic_bid_ask_after_costs",
+        risk_note=risk_note,
+        valuation_mode="synthetic",
+        quote_source="synthetic_mark_or_fair_value",
+        legs=legs,
+    )
+
+
+def _apply_synthetic_filters(
+    opportunities: list[Opportunity],
+    request: ScanRequest,
+) -> list[Opportunity]:
+    """Apply quote-dependent filters to the estimated synthetic quote."""
+
+    filtered: list[Opportunity] = []
+    for opportunity in opportunities:
+        if (
+            opportunity.edge_after_costs is not None
+            and opportunity.edge_after_costs <= request.min_edge_after_costs
+        ):
+            continue
+        if (
+            request.max_loss is not None
+            and opportunity.max_loss is not None
+            and opportunity.max_loss > request.max_loss
+        ):
+            continue
+        if request.max_spread_pct is not None and any(
+            _quote_spread_pct(leg.bid_price, leg.ask_price) > request.max_spread_pct
+            for leg in opportunity.legs
+        ):
+            continue
+        filtered.append(opportunity)
+    return filtered
+
+
+def _synthetic_midpoint(leg: OpportunityLeg) -> float:
+    if leg.mark_price is not None and math.isfinite(leg.mark_price) and leg.mark_price > 0:
+        return leg.mark_price
+    return max(0.0, leg.fair_price)
+
+
+def _synthetic_bid_ask(midpoint: float, spread_bps: float) -> tuple[float, float]:
+    half_spread = spread_bps / 20_000.0
+    return (
+        max(0.0, midpoint * (1.0 - half_spread)),
+        max(0.0, midpoint * (1.0 + half_spread)),
+    )
+
+
+def _with_synthetic_leg_quote(leg: OpportunityLeg, spread_bps: float) -> OpportunityLeg:
+    bid, ask = _synthetic_bid_ask(_synthetic_midpoint(leg), spread_bps)
+    return replace(leg, bid_price=bid, ask_price=ask)
+
+
+def _quote_spread_pct(bid: float | None, ask: float | None) -> float:
+    if bid is None or ask is None:
+        return math.inf
+    midpoint = (bid + ask) / 2.0
+    if midpoint <= 0:
+        return math.inf
+    return (ask - bid) / midpoint
 
 
 def _scenario_strategy(strategy: Strategy) -> str:
@@ -685,7 +847,7 @@ def _scan_theoretical_candidate(
             _surface_observations(
                 asset_contracts,
                 excluded_symbols={candidate.symbol},
-                allow_unquoted=request.valuation_mode == "theoretical",
+                allow_unquoted=request.valuation_mode in {"theoretical", "synthetic"},
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -755,9 +917,18 @@ def _scan_theoretical_candidate(
             execution_allowed=False,
             long_symbol=candidate.symbol,
             long_strike=candidate.strike,
-            risk_note="Theoretical valuation only; bid/ask is not an executable quote.",
-            valuation_mode="theoretical",
+            risk_note=(
+                "Synthetic valuation only; bid/ask is estimated and not executable."
+                if request.valuation_mode == "synthetic"
+                else "Theoretical valuation only; bid/ask is not an executable quote."
+            ),
+            valuation_mode=request.valuation_mode,
             mark_price=candidate.mark_price,
+            quote_source=(
+                "synthetic_mark_or_fair_value"
+                if request.valuation_mode == "synthetic"
+                else "theoretical_fair_value"
+            ),
             legs=(
                 OpportunityLeg(
                     symbol=candidate.symbol,
@@ -893,8 +1064,18 @@ def _append_theoretical_multi_leg(
                 None,
             ),
             requires_underlying_position=requires_underlying_position,
-            risk_note=risk_note or "Theoretical valuation only; bid/ask is not an executable quote.",
-            valuation_mode="theoretical",
+            risk_note=risk_note
+            or (
+                "Synthetic valuation only; bid/ask is estimated and not executable."
+                if request.valuation_mode == "synthetic"
+                else "Theoretical valuation only; bid/ask is not an executable quote."
+            ),
+            valuation_mode=request.valuation_mode,
+            quote_source=(
+                "synthetic_mark_or_fair_value"
+                if request.valuation_mode == "synthetic"
+                else "theoretical_fair_value"
+            ),
             legs=tuple(
                 OpportunityLeg(
                     symbol=leg.symbol,
@@ -1277,7 +1458,7 @@ def _scan_overlay_candidate(
             _surface_observations(
                 asset_contracts,
                 excluded_symbols={candidate.symbol},
-                allow_unquoted=request.valuation_mode == "theoretical",
+                allow_unquoted=request.valuation_mode in {"theoretical", "synthetic"},
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -1301,7 +1482,7 @@ def _scan_overlay_candidate(
         )
         return
 
-    if request.valuation_mode == "theoretical":
+    if request.valuation_mode in {"theoretical", "synthetic"}:
         _append_theoretical_multi_leg(
             strategy,
             (candidate,),
@@ -1313,9 +1494,17 @@ def _scan_overlay_candidate(
             rejections,
             requires_underlying_position=True,
             risk_note=(
-                "Theoretical valuation only; protective put requires an existing spot/perpetual position."
+                (
+                    "Synthetic valuation only; protective put requires an existing spot/perpetual position."
+                    if request.valuation_mode == "synthetic"
+                    else "Theoretical valuation only; protective put requires an existing spot/perpetual position."
+                )
                 if strategy == "protective_put"
-                else "Theoretical valuation only; covered call requires an existing spot/perpetual position."
+                else (
+                    "Synthetic valuation only; covered call requires an existing spot/perpetual position."
+                    if request.valuation_mode == "synthetic"
+                    else "Theoretical valuation only; covered call requires an existing spot/perpetual position."
+                )
             ),
         )
         return
@@ -1507,7 +1696,7 @@ def _scan_multi_leg_candidate(
             _surface_observations(
                 asset_contracts,
                 excluded_symbols=excluded,
-                allow_unquoted=request.valuation_mode == "theoretical",
+                allow_unquoted=request.valuation_mode in {"theoretical", "synthetic"},
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -1539,7 +1728,7 @@ def _scan_multi_leg_candidate(
         )
         return
 
-    if request.valuation_mode == "theoretical":
+    if request.valuation_mode in {"theoretical", "synthetic"}:
         _append_theoretical_multi_leg(
             strategy,
             legs,
@@ -1809,7 +1998,7 @@ def _scan_vertical_pair(
             _surface_observations(
                 asset_contracts,
                 excluded_symbols=excluded,
-                allow_unquoted=request.valuation_mode == "theoretical",
+                allow_unquoted=request.valuation_mode in {"theoretical", "synthetic"},
             ),
             valuation_time=_as_utc(valuation_time),
             config=request.surface_config,
@@ -1852,7 +2041,7 @@ def _scan_vertical_pair(
         )
         return
 
-    if request.valuation_mode == "theoretical":
+    if request.valuation_mode in {"theoretical", "synthetic"}:
         _append_theoretical_multi_leg(
             strategy,
             (long_leg, short_leg),

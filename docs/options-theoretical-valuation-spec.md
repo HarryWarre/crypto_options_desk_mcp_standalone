@@ -21,9 +21,10 @@ receives no scan result.
 ## Solution
 
 Add an explicit valuation mode to the scan contract. `executable` remains the
-default and keeps the current bid/ask requirements. `theoretical` is an
-explicit user choice that allows missing or zero bid/ask quotes when the
-remaining model inputs are valid.
+default and keeps the current bid/ask requirements. `theoretical` allows
+fair-value analysis without inventing a quote. `synthetic` is an explicit
+fallback that builds an estimated bid/ask around mark price, or fair value
+when mark price is unavailable, using a configurable assumed spread.
 
 Theoretical results are clearly marked as non-executable. They may expose
 mark-price reference data, current-surface fair IV, fair price, Greeks, expiry
@@ -81,11 +82,14 @@ produces an explicit degraded context rather than crashing the scan stream.
 16. As a maintainer, I want deterministic API, unit, and browser tests for both
     modes and timestamp forms, so that future refactors cannot reintroduce the
     failure.
+17. As a researcher, I want a synthetic quote mode to calculate the same
+    quote-dependent fields as executable mode when Bybit bid/ask is missing,
+    while keeping the lower quote quality visible.
 
 ## Implementation Decisions
 
-- Add a typed valuation mode with `executable` and `theoretical` values. The
-  default is `executable` for backward compatibility and safety.
+- Add a typed valuation mode with `executable`, `theoretical`, and `synthetic`
+  values. The default is `executable` for backward compatibility and safety.
 - Keep the mode in the public scan request and normalized scan context. The
   browser exposes it as an explicit opt-in control in the default form, with
   Vietnamese copy explaining that it is model-only and may lack executable
@@ -127,6 +131,11 @@ produces an explicit degraded context rather than crashing the scan stream.
 - Keep mark-price-history replay separate from both executable and theoretical
   live valuation. Theoretical mode may use the latest ticker mark reference,
   not historical candles.
+- In synthetic mode, use `assumed_spread_bps` (default 100 bps total spread)
+  around mark price, falling back to fair value. Populate estimated entry,
+  edge-after-costs, payoff, EV, probability, RR, and payoff bounds through the
+  same formulas as executable mode, while setting `execution_allowed` false
+  and exposing the synthetic quote source.
 
 ## Testing Decisions
 
@@ -137,7 +146,8 @@ produces an explicit degraded context rather than crashing the scan stream.
   positive bid/ask, missing bid/ask, zero bid/ask, and invalid mark inputs.
 - Test the pricing/scanner result contract with independent expected values:
   executable mode keeps current edge semantics; theoretical mode returns fair
-  value/Greeks but no executable edge claim.
+  value/Greeks without a quote-dependent edge; synthetic mode returns the
+  complete estimated metric set from its assumed quote.
 - Test the browser flow through the visible form and result state. Verify the
   opt-in control, warning copy, outgoing mode, and separate theoretical label.
 - Test both aware and naive `now_fn`/request timestamps through the historical
@@ -154,7 +164,7 @@ produces an explicit degraded context rather than crashing the scan stream.
 
 - Treating mark price as an executable bid or ask.
 - Claiming positive expected value, probability of profit, or order-fill
-  feasibility from theoretical valuations.
+  feasibility from theoretical or synthetic valuations.
 - Reconstructing historical bid/ask, historical IV, or historical Greeks.
 - Fetching mark-price candles during a live scan.
 - Changing the volatility-surface methodology or fair-value model.
@@ -165,6 +175,7 @@ produces an explicit degraded context rather than crashing the scan stream.
 ## Further Notes
 
 The expected result is deliberately asymmetric: an illiquid asset may show
-more theoretical values than executable opportunities, but only the latter
-may be ranked as tradeable candidates. A theoretical list is useful for model
-comparison and market coverage, not for execution decisions.
+more theoretical or synthetic values than executable opportunities, but only
+the latter may be treated as tradeable candidates. Synthetic mode is useful
+for ranking and coverage when a spread assumption is acceptable; it is still
+not an execution decision.

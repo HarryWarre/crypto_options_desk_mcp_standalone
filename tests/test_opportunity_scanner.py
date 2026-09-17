@@ -264,6 +264,47 @@ def test_theoretical_vertical_calculates_model_payoff_metrics_from_fair_values()
     assert candidate.payoff_metrics_assumptions.entry_price_source == "theoretical_fair_value"
 
 
+def test_synthetic_mode_builds_full_estimated_quote_metrics() -> None:
+    target = replace(
+        _contract("BTC", 100, mark_iv=0.15, ask=0.60, bid=0.50),
+        bid_price=None,
+        ask_price=0.0,
+        mark_price=0.10,
+    )
+    universe = _universe(
+        _contract("BTC", 90, mark_iv=0.30, ask=2.0, bid=1.8),
+        target,
+        _contract("BTC", 110, mark_iv=0.30, ask=2.0, bid=1.8),
+    )
+
+    result = scan_opportunities(
+        universe,
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("long_call",),
+            valuation_mode="synthetic",
+            assumed_spread_bps=100.0,
+        ),
+    )
+
+    candidate = next(item for item in result.opportunities if item.symbol == target.symbol)
+    assert result.valuation_mode == "synthetic"
+    assert result.ignored_filters == ()
+    assert candidate.quote_source == "synthetic_mark_or_fair_value"
+    assert candidate.bid_price == pytest.approx(0.0995)
+    assert candidate.ask_price == pytest.approx(0.1005)
+    assert candidate.estimated_entry == pytest.approx(candidate.ask_price)
+    assert candidate.executable_entry is None
+    assert candidate.edge_after_costs is not None
+    assert candidate.edge_after_costs > 0
+    assert candidate.expected_value is not None
+    assert candidate.max_loss is not None
+    assert candidate.payoff_metrics_assumptions is not None
+    assert candidate.payoff_metrics_assumptions.entry_price_source == "synthetic_bid_ask"
+    assert any("synthesized" in item for item in candidate.payoff_metrics_limitations)
+
+
 def test_theoretical_single_leg_keeps_fair_value_per_contract() -> None:
     target = replace(
         _contract("BTC", 100, mark_iv=0.15),

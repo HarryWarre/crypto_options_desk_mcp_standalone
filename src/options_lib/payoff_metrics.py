@@ -201,6 +201,14 @@ def calculate_payoff_metrics(
             )
             if entry_price_source == "theoretical_fair_value"
             else ()
+        )
+        + (
+            (
+                "Bid/ask was synthesized from mark/fair value and an assumed spread; it is an "
+                + "estimated quote and does not represent an executable quote.",
+            )
+            if entry_price_source == "synthetic_bid_ask"
+            else ()
         ),
     )
 
@@ -293,6 +301,13 @@ def _methodology(entry_price_source: str) -> str:
             "risk-free rate, and time to expiry. Payoff uses theoretical fair value for each "
             "leg plus stated opening fees/slippage as a model estimate; no executable bid/ask "
             "quote was available."
+        )
+    if entry_price_source == "synthetic_bid_ask":
+        return (
+            "Risk-neutral lognormal expiry distribution using the stated spot, annualized IV, "
+            "risk-free rate, and time to expiry. Payoff uses bid/ask synthesized from mark/fair "
+            "value and an assumed spread, plus stated opening fees/slippage; the quote is not "
+            "executable."
         )
     return METHODOLOGY
 

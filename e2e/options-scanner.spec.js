@@ -88,6 +88,17 @@ const theoreticalVerticalOpportunity = {
   ],
 };
 
+const syntheticOpportunity = {
+  ...theoreticalVerticalOpportunity,
+  valuation_mode: "synthetic",
+  bid_price: 0.0105,
+  ask_price: 0.0115,
+  market_mid: 0.011,
+  edge_after_costs: 0.004,
+  estimated_entry: 0.0115,
+  quote_source: "synthetic_mark_or_fair_value",
+};
+
 async function mockApi(page) {
   await page.route("**/api/v1/assets", (route) => route.fulfill({
     status: 200,
@@ -121,7 +132,7 @@ async function mockApi(page) {
       timestamp: "2026-09-15T14:46:33Z",
       data_timestamp: "2026-09-15T14:46:33Z",
       valuation_mode: body.valuation_mode || "executable",
-      opportunities: empty ? [] : [body.valuation_mode === "theoretical" ? theoreticalVerticalOpportunity : opportunity],
+      opportunities: empty ? [] : [body.valuation_mode === "theoretical" ? theoreticalVerticalOpportunity : body.valuation_mode === "synthetic" ? syntheticOpportunity : opportunity],
       rejections: [],
       asset_failures: [],
       issues: [],
@@ -138,6 +149,7 @@ async function mockApi(page) {
           risk_free_rate: Number(body.risk_free_rate) || 0.05,
           fee_per_contract: 2.5,
           slippage_bps: 7,
+          assumed_spread_bps: Number(body.assumed_spread_bps) || 100,
           quantity: 1,
           contract_multiplier: 1,
           include_unvalidated: true,
@@ -280,6 +292,29 @@ test("opts into theoretical valuation and labels the result as non-executable", 
   await expect(page.locator("#opportunity-explanations")).toContainText("EV mô hình");
   await page.getByRole("button", { name: "Xem payoff mô hình" }).click();
   await expect(page.locator("#opportunity-detail")).toBeVisible();
+  await expect(page.locator("#detail-metrics")).toContainText("Lỗ tối đa (mô hình)");
+});
+
+test("opts into synthetic quotes and calculates the full estimated metrics", async ({ page }) => {
+  await expect(page.getByLabel("Executable — mặc định")).toBeChecked();
+  await page.getByLabel("Synthetic — spread giả định").check();
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
+
+  const scanRequest = page.waitForRequest((request) => (
+    request.url().includes("/api/v1/opportunities/scan/stream")
+  ));
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  expect((await scanRequest).postDataJSON()).toMatchObject({
+    valuation_mode: "synthetic",
+    assumed_spread_bps: 100,
+  });
+
+  await expect(page.locator("#valuation-mode-notice")).toBeVisible();
+  await expect(page.locator("#valuation-mode-notice")).toContainText("spread giả định");
+  await expect(page.locator("#results-body")).toContainText("Giả định");
+  await expect(page.locator("#results-body")).toContainText("0.004");
+  await expect(page.getByRole("button", { name: "Xem payoff tổng hợp" })).toBeEnabled();
+  await page.getByRole("button", { name: "Xem payoff tổng hợp" }).click();
   await expect(page.locator("#detail-metrics")).toContainText("Lỗ tối đa (mô hình)");
 });
 

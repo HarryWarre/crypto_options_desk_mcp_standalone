@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260917-1">
-    <script src="/static/app.js?v=20260917-1" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260917-2">
+    <script src="/static/app.js?v=20260917-2" defer></script>
   </head>
   <body>
     <header class="site-header">
@@ -118,8 +118,12 @@
                 <input type="radio" name="valuation_mode" value="theoretical">
                 <span><strong>Theoretical — bỏ qua bid/ask</strong><small>Chỉ dùng giá trị mô hình/fair value khi Bybit thiếu bid/ask; không phải giá khớp.</small></span>
               </label>
+              <label class="valuation-mode-card">
+                <input type="radio" name="valuation_mode" value="synthetic">
+                <span><strong>Synthetic — spread giả định</strong><small>Dựng bid/ask quanh mark/fair value để tính đủ edge và rủi ro; vẫn không phải giá khớp.</small></span>
+              </label>
             </div>
-            <p class="field-help" id="valuation-mode-help">Theoretical có thể giúp tham khảo XRP, XAUT, SOL, HYPE, MNT khi quote kém; payoff, EV và risk/reward vẫn là ước tính từ fair value, không phải kết quả khớp lệnh.</p>
+            <p class="field-help" id="valuation-mode-help">Theoretical phù hợp để xem fair value thuần. Synthetic phù hợp khi muốn tính đủ edge, EV, RR và lỗ tối đa bằng spread giả định cho XRP, XAUT, SOL, HYPE, MNT.</p>
           </fieldset>
 
           <details class="advanced-filters" id="advanced-filters" data-testid="advanced-filters">
@@ -169,6 +173,10 @@
                 <label>Trượt giá (bps)
                   <input name="slippage_bps" type="number" value="0" min="0" step="1">
                   <small class="field-help">100 bps = 1%.</small>
+                </label>
+                <label>Spread giả định (bps)
+                  <input name="assumed_spread_bps" type="number" value="100" min="0" max="20000" step="1">
+                  <small class="field-help">Chỉ dùng ở Synthetic; 100 bps nghĩa là tổng bid–ask khoảng 1% quanh mark/fair value.</small>
                 </label>
                 <label>Số hợp đồng
                   <input name="quantity" type="number" value="1" min="0.01" step="0.01">

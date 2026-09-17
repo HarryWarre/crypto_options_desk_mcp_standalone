@@ -154,7 +154,7 @@ class ScanFilters(BaseModel):
 
     risk_free_rate: float = _DEFAULT_SCAN_RISK_FREE_RATE
     assets: list[str] = Field(default_factory=list)
-    valuation_mode: Literal["executable", "theoretical"] = "executable"
+    valuation_mode: Literal["executable", "theoretical", "synthetic"] = "executable"
     market_view: Literal["up", "down", "sideways", "custom"] | None = None
     time_horizon: Literal["0_7", "7_30", "30_90"] | None = None
     strategy_preference: (
@@ -188,6 +188,7 @@ class ScanFilters(BaseModel):
     max_loss: float | None = Field(default=None, ge=0)
     fee_per_contract: float = Field(default=0, ge=0)
     slippage_bps: float = Field(default=0, ge=0)
+    assumed_spread_bps: float = Field(default=100, ge=0, le=20_000)
     quantity: float = Field(default=1, gt=0)
     contract_multiplier: float = Field(default=1, gt=0)
     include_unvalidated: bool = True
@@ -209,6 +210,7 @@ class ScanFilters(BaseModel):
         "max_loss",
         "fee_per_contract",
         "slippage_bps",
+        "assumed_spread_bps",
         "quantity",
         "contract_multiplier",
         mode="before",
@@ -253,7 +255,7 @@ class ScanFilters(BaseModel):
         if self.market_view is not None:
             if not self.assets:
                 raise ValueError("at least one asset is required for a simple scan")
-            if self.max_loss is None and self.valuation_mode == "executable":
+            if self.max_loss is None and self.valuation_mode in {"executable", "synthetic"}:
                 raise ValueError("max_loss is required for a simple scan")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
@@ -1004,6 +1006,7 @@ def _serialize_scan_result(
         payload = _serialize(result)
         opportunities = result.opportunities
     theoretical = scan_request.valuation_mode == "theoretical"
+    synthetic = scan_request.valuation_mode == "synthetic"
     payload["opportunities"] = [
         _serialize_opportunity(opportunity)
         for opportunity in opportunities
@@ -1020,6 +1023,7 @@ def _serialize_scan_result(
         "min_volume_24h": scan_request.min_volume_24h,
         "min_edge_after_costs": scan_request.min_edge_after_costs,
         "min_expected_value": filters.min_expected_value,
+        "assumed_spread_bps": scan_request.assumed_spread_bps,
         "max_results": scan_request.max_results,
     }
     ignored_filters = (
@@ -1045,6 +1049,7 @@ def _serialize_scan_result(
             "risk_free_rate": scan_request.risk_free_rate,
             "fee_per_contract": scan_request.fee_per_contract,
             "slippage_bps": scan_request.slippage_bps,
+            "assumed_spread_bps": scan_request.assumed_spread_bps,
             "quantity": scan_request.quantity,
             "contract_multiplier": scan_request.contract_multiplier,
             "include_unvalidated": scan_request.include_unvalidated,
@@ -1079,7 +1084,9 @@ def _serialize_scan_result(
                     f"Kỳ vọng {view_text} · {horizon_text} · "
                     + (
                         "chỉ định giá lý thuyết, không có giá khớp"
-                        if scan_request.valuation_mode == "theoretical"
+                        if theoretical
+                        else f"định giá quote tổng hợp với spread {scan_request.assumed_spread_bps:g} bps"
+                        if synthetic
                         else f"lỗ tối đa {max_loss_text}"
                     )
                 ),

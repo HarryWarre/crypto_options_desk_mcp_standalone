@@ -9,7 +9,7 @@ Source spec: [options-theoretical-valuation-spec.md](options-theoretical-valuati
 ## Dependency order
 
 ```text
-OPS-013 → OPS-012 → OPS-014
+OPS-013 → OPS-012 → OPS-014 → OPS-015
 ```
 
 `OPS-013` fixes the historical context boundary independently. `OPS-012`
@@ -122,9 +122,32 @@ responsive viewport.
 **Out of scope:** A new frontend framework, redesign of P&L scenarios, and
 remote issue publication.
 
+## OPS-015 — Add synthetic bid/ask fallback
+
+**Outcome:** Researchers can calculate quote-dependent scan metrics for thin
+markets using a visible, configurable spread assumption without treating the
+result as executable.
+
+**Acceptance criteria:**
+
+- `synthetic` is accepted as an explicit valuation mode while `executable`
+  remains the default and `theoretical` keeps fair-value-only semantics.
+- `assumed_spread_bps` defaults to 100 bps and is shown in the scan context.
+- Synthetic mode uses mark price as midpoint, falls back to fair value, and
+  calculates estimated entry, edge, payoff, EV, probability, RR, and payoff
+  bounds with the existing formulas.
+- Synthetic output exposes `quote_source`, keeps `execution_allowed` false,
+  and remains visibly labeled as estimated in the browser.
+- Synthetic quote-dependent filters are applied to the estimated values and
+  do not alter executable-mode behavior.
+
+**Checks:** Scanner regression with missing bid/ask; API round trip for mode
+and spread; browser payload/result labeling; full Python and Playwright suites.
+
 ## Recommended implementation order
 
 1. OPS-013 — timestamp boundary regression.
 2. OPS-012 — domain/adapter/API theoretical mode.
 3. OPS-014 — browser control and UI QA.
-4. Full review, test suite, commit, and merge.
+4. OPS-015 — synthetic quote fallback and metric parity.
+5. Full review, test suite, commit, and merge.

@@ -23,8 +23,8 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/app.js?v=20260917-1" defer></script>' in response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-1">' in response.text
+    assert '<script src="/static/app.js?v=20260917-2" defer></script>' in response.text
+    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-2">' in response.text
     assert 'id="service-status"' in response.text
     assert 'id="scan-terminal"' in response.text
     assert 'id="clear-terminal"' in response.text
@@ -67,8 +67,10 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'name="risk_free_rate_pct"' in response.text
     assert 'name="valuation_mode" value="executable" checked' in response.text
     assert 'name="valuation_mode" value="theoretical"' in response.text
-    assert "Theoretical — bỏ qua bid/ask" in response.text
-    assert "payoff, EV và risk/reward vẫn là ước tính từ fair value" in response.text
+    assert 'name="valuation_mode" value="synthetic"' in response.text
+    assert "Synthetic — spread giả định" in response.text
+    assert 'name="assumed_spread_bps"' in response.text
+    assert "tính đủ edge, EV, RR và lỗ tối đa" in response.text
     assert "Khi nào nên chọn" in response.text
 
 
@@ -132,6 +134,8 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "streamJson" in javascript.text
     assert "valuation_mode" in javascript.text
     assert "Theoretical mode" in javascript.text
+    assert "Synthetic bid/ask" in javascript.text
+    assert "assumed_spread_bps" in javascript.text
     assert "Thiếu bid/ask" in javascript.text
     assert "Xem payoff mô hình" in javascript.text
     assert "EV mô hình" in javascript.text
