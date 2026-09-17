@@ -17,6 +17,11 @@ from indicators_lib.sentiment import SentimentAnalyzer
 from .volatility_analyzer import VolatilityAnalyzer
 from bybit_api import BybitClient
 from portfolio_lib import PortfolioEngine, PortfolioAnalyzer
+from position_monitoring import (
+    BybitPositionSnapshotAdapter,
+    ExitPolicy,
+    PositionTracker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +85,9 @@ class MCPOrchestrator:
         self.volatility_analyzer = VolatilityAnalyzer(self.api)
         self.portfolio_engine = PortfolioEngine()
         self.portfolio_analyzer = PortfolioAnalyzer(self.portfolio_engine)
+        self.position_tracker = PositionTracker(
+            BybitPositionSnapshotAdapter(self.api)
+        )
 
         self.flow_config = OptionsFlowConfig(
             volume_threshold=3.0,
@@ -333,6 +341,50 @@ class MCPOrchestrator:
         except Exception as e:
             logger.error(f"Scenario analysis error: {e}")
             return _error_response(str(e), "scenario_analysis")
+
+    async def monitor_positions(
+        self,
+        base_coin: str,
+        position_type: str,
+        policies: list[ExitPolicy],
+    ) -> Dict[str, Any]:
+        """Read current positions and emit manual-review exit decisions."""
+        if not self.api.has_private_access():
+            return _error_response(
+                "Private operations require API credentials",
+                "position_monitoring",
+            ) | {
+                "hint": "Use a read-only BYBIT_API_KEY / BYBIT_API_SECRET pair; no order mutation is performed.",
+            }
+
+        try:
+            policy_map: dict[str, ExitPolicy] = {}
+            for policy in policies:
+                if policy.symbol in policy_map:
+                    return _error_response(
+                        f"Duplicate exit policy for {policy.symbol}",
+                        "position_monitoring",
+                    )
+                policy_map[policy.symbol] = policy
+
+            # Rebuild the adapter around the current client so tests and
+            # callers that rotate credentials do not retain stale connections.
+            tracker = PositionTracker(BybitPositionSnapshotAdapter(self.api))
+            report = await tracker.monitor(
+                base_coin=base_coin,
+                position_type=position_type,
+                policies=policy_map,
+            )
+            return _success_response(
+                "position_monitoring",
+                report.to_dict(),
+                decisions_summary=report.summary,
+                execution_allowed=False,
+                requires_human_confirmation=True,
+            )
+        except Exception as exc:
+            logger.error(f"Position monitoring error: {exc}")
+            return _error_response(str(exc), "position_monitoring")
 
     def _build_scenario_config(
         self, portfolio_data: Dict[str, Any], scenarios: List[Dict[str, Any]]
