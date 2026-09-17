@@ -214,7 +214,7 @@ def run_snapshot_backtest(
     unresolved: list[UnresolvedSignal] = []
     warnings = [issue.message for issue in loaded.issues]
     signal_evaluations = 0
-    traded_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+    active_positions: dict[tuple[str, str, tuple[str, ...]], TradeOutcome] = {}
 
     for asset in config.assets:
         snapshots = sorted(by_asset[asset], key=lambda item: _utc(item.source_timestamp))
@@ -238,14 +238,14 @@ def run_snapshot_backtest(
             signal_evaluations += 1
             opportunities = tuple(getattr(scan, "opportunities", ()))[: config.max_signals_per_snapshot]
             for opportunity in opportunities:
-                key = (
-                    opportunity.asset,
-                    str(opportunity.strategy),
-                    tuple(sorted(leg.symbol for leg in opportunity.legs)),
-                )
-                if not key[2] or key in traded_keys:
+                key = _candidate_key(opportunity)
+                if not key[2]:
                     continue
-                traded_keys.add(key)
+                active_trade = active_positions.get(key)
+                if active_trade is not None:
+                    if active_trade.exit_time > signal_time:
+                        continue
+                    del active_positions[key]
                 trade, unresolved_signal = _evaluate_signal(
                     opportunity,
                     entry_time=signal_time,
@@ -254,6 +254,8 @@ def run_snapshot_backtest(
                 )
                 if trade is not None:
                     trades.append(trade)
+                    if trade.exit_time > signal_time:
+                        active_positions[key] = trade
                 elif unresolved_signal is not None:
                     unresolved.append(unresolved_signal)
 
@@ -306,6 +308,15 @@ def _evaluate_signal(
     risk_base = max(abs(float(opportunity.max_loss)), 1e-12)
     future = [snapshot for snapshot in snapshots if _utc(snapshot.source_timestamp) > entry_time]
     expiry = _utc(opportunity.expiry_at)
+
+    if expiry <= entry_time:
+        return None, UnresolvedSignal(
+            asset=opportunity.asset,
+            strategy=str(opportunity.strategy),
+            symbol=opportunity.symbol,
+            entry_time=entry_time,
+            reason="candidate had already expired at the signal timestamp",
+        )
 
     for snapshot in future:
         observed_at = _utc(snapshot.source_timestamp)
@@ -451,6 +462,16 @@ def _exit_triggered(trade: TradeOutcome, policy: ExitPolicy, risk_base: float) -
     if policy.type == "stop_loss":
         return trade.net_pnl <= -policy.stop_loss_pct * risk_base
     return policy.type == "min_dte"
+
+
+def _candidate_key(opportunity: Opportunity) -> tuple[str, str, tuple[str, ...]]:
+    """Return the identity used to enforce one active position per candidate."""
+
+    return (
+        str(opportunity.asset).strip().upper(),
+        str(opportunity.strategy),
+        tuple(sorted(str(leg.symbol).strip() for leg in opportunity.legs)),
+    )
 
 
 def _executable_quote(quote: HistoricalOptionQuote | None) -> bool:

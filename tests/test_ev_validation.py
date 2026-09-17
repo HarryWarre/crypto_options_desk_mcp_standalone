@@ -50,6 +50,24 @@ def test_backtest_sorts_chronologically_and_reports_net_holdout_metrics() -> Non
     assert report.holdout.expected_value == pytest.approx(7.5)
     assert report.holdout.max_drawdown == pytest.approx(2.0)
     assert report.holdout.total_cost == pytest.approx(6.0)
+    assert report.train.win_rate == pytest.approx(0.5)
+    assert report.holdout.win_rate == pytest.approx(0.5)
+    assert report.holdout.historical_win_rate == pytest.approx(0.5)
+    assert report.evidence_metadata == {
+        "evidence_status": "validated_positive_ev",
+        "outcome_type": "historical_realized",
+        "historical_outcomes_used": True,
+        "probability_basis": "historical_net_pnl_after_costs",
+        "win_rate_basis": "historical_net_pnl_after_costs",
+        "win_rate_definition": "wins / completed trades where net_pnl > 0",
+        "costs_included": True,
+        "lookahead_free": True,
+        "sample_sufficient": True,
+        "train_sample_count": 2,
+        "holdout_sample_count": 2,
+        "minimum_train_samples": 1,
+        "minimum_holdout_samples": 2,
+    }
     assert report.lookahead_free is True
 
 
@@ -68,6 +86,23 @@ def test_positive_ev_requires_minimum_held_out_sample_count() -> None:
     assert report.status == "insufficient_evidence"
     assert report.holdout.expected_value == pytest.approx(3.5)
     assert report.evidence_note
+
+
+def test_positive_ev_remains_blocked_without_lookahead_verification() -> None:
+    report = validate_backtest(
+        (_sample(0, 2.0), _sample(1, 3.0), _sample(2, 4.0)),
+        ValidationConfig(
+            holdout_count=2,
+            minimum_train_samples=1,
+            minimum_holdout_samples=2,
+        ),
+    )
+
+    assert report.status == BacktestStatus.INSUFFICIENT_EVIDENCE
+    assert report.holdout.expected_value == pytest.approx(3.5)
+    assert report.lookahead_free is False
+    assert report.evidence_metadata["sample_sufficient"] is True
+    assert report.evidence_metadata["lookahead_free"] is False
 
 
 def test_non_positive_ev_is_reported_after_costs() -> None:
