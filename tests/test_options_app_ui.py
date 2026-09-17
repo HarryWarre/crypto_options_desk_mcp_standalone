@@ -23,9 +23,9 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/live-desk.js?v=20260917-5" defer></script>' in response.text
-    assert '<script src="/static/app.js?v=20260917-5" defer></script>' in response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-5">' in response.text
+    assert '<script src="/static/live-desk.js?v=20260918-1" defer></script>' in response.text
+    assert '<script src="/static/app.js?v=20260918-1" defer></script>' in response.text
+    assert '<link rel="stylesheet" href="/static/styles.css?v=20260918-1">' in response.text
     assert 'id="service-status"' in response.text
     assert 'id="live-desk-title"' in response.text
     assert 'id="live-toggle"' in response.text
@@ -50,8 +50,8 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'id="scan-terminal"' in response.text
     assert 'id="clear-terminal"' in response.text
     assert 'id="historical-context"' in response.text
-    assert "Biến động lịch sử 30 ngày" in response.text
-    assert "không tải lịch sử mark-price" in response.text
+    assert "Biến động lịch sử 30 ngày" not in response.text
+    assert "không tải lịch sử mark-price" not in response.text
     assert "Không đặt lệnh" not in response.text
     assert "Chưa kiểm định" not in response.text
     assert "include_unvalidated" not in response.text
@@ -65,7 +65,7 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'name="strategies" value="put_vertical"' in response.text
     assert "Đường payoff tại đáo hạn" in response.text
     assert "Giá cơ sở tại đáo hạn" in response.text
-    assert "Ước tính payoff dựa trên các điểm do API trả về" in response.text
+    assert "Ước tính payoff dựa trên các điểm do API trả về" not in response.text
     assert 'name="min_expected_value"' in response.text
     assert "EV ước tính không âm" in response.text
     for strategy in (
@@ -91,7 +91,7 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'name="valuation_mode" value="synthetic"' in response.text
     assert "Synthetic — spread giả định" in response.text
     assert 'name="assumed_spread_bps"' in response.text
-    assert "tính đủ edge, EV, RR và lỗ tối đa" in response.text
+    assert "Synthetic dùng spread giả định" in response.text
     assert "Khi nào nên chọn" in response.text
 
 
@@ -158,8 +158,8 @@ async def test_static_assets_are_served_from_same_origin() -> None:
         assert strategy in javascript.text
     assert "strategyLabel" in javascript.text
     assert "historical_volatility_contexts" in javascript.text
-    assert "anchor/quality" in javascript.text
-    assert "không tải lịch sử mark-price" in javascript.text
+    assert "anchor/quality" not in javascript.text
+    assert "không tải lịch sử mark-price" not in javascript.text
     assert "opportunityLegs" in javascript.text
     assert "leg-summary" in javascript.text
     assert "textContent" in javascript.text
@@ -170,9 +170,8 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "streamJson" in javascript.text
     assert "valuation_mode" in javascript.text
     assert "Theoretical mode" in javascript.text
-    assert "Synthetic bid/ask" in javascript.text
+    assert "Synthetic mode" in javascript.text
     assert "assumed_spread_bps" in javascript.text
-    assert "Thiếu bid/ask" in javascript.text
     assert "Xem payoff mô hình" in javascript.text
     assert "EV mô hình" in javascript.text
 

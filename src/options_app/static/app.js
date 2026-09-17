@@ -579,12 +579,6 @@ function renderOpportunityExplanation(item, index) {
   takeaway.className = "explanation-takeaway";
   takeaway.textContent = strategyTakeaway(item, legs);
   card.appendChild(takeaway);
-  if (item?.risk_note) {
-    const riskNote = document.createElement("p");
-    riskNote.className = "explanation-extra muted";
-    riskNote.textContent = `Lưu ý: ${item.risk_note}`;
-    card.appendChild(riskNote);
-  }
 
   const legList = document.createElement("div");
   legList.className = "explanation-legs";
@@ -864,11 +858,11 @@ function renderPayoffDetail(item) {
     scenarioResultsBody.appendChild(row);
   });
   const quoteAssumption = theoretical
-    ? "Theoretical: premium vào lệnh dùng fair value, không phải bid/ask khớp được. "
+    ? "Theoretical: premium vào lệnh dùng fair value. "
     : synthetic
-    ? `Synthetic: bid/ask dựng quanh mark/fair value với spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps; không phải quote khớp được. `
+    ? `Synthetic: spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps. `
     : "";
-  pnlChartAssumptions.textContent = `${quoteAssumption}Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất có lãi và RR đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
+  pnlChartAssumptions.textContent = `${quoteAssumption}Phương pháp / giả định API: ${methodologyNote(item)}`;
   if (points.length) {
     setScenarioState(`Hiển thị ${points.length} điểm payoff tại đáo hạn do API trả về.`);
   } else {
@@ -1132,12 +1126,12 @@ function renderValuationModeNotice(mode) {
   }
   const title = document.createElement("strong");
   title.textContent = isSyntheticMode(mode)
-    ? "Synthetic bid/ask — quote giả định"
-    : "Theoretical mode — chỉ định giá mô hình";
+    ? "Synthetic mode"
+    : "Theoretical mode";
   const explanation = document.createElement("span");
   explanation.textContent = isSyntheticMode(mode)
-    ? "Bid/ask được dựng quanh mark/fair value theo spread giả định nên hệ thống tính đủ premium, edge, EV, xác suất, RR và lỗ tối đa; các con số vẫn là ước tính, không phải giá khớp thật."
-    : "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value làm giá vào mô hình; payoff, EV, xác suất, RR và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
+    ? `Dựng bid/ask theo spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps quanh mark/fair value.`
+    : "Định giá theo fair value mô hình khi thị trường thiếu bid/ask.";
   valuationModeNotice.append(title, explanation);
   valuationModeNotice.hidden = false;
 }
@@ -1157,15 +1151,11 @@ function renderHistoricalContext(contexts) {
     historicalContext.hidden = true;
     return;
   }
-  const summary = document.createElement("div");
-  summary.className = "historical-context-summary";
-  summary.textContent = "Ngữ cảnh chất lượng: HV lịch sử 30 ngày chỉ là anchor/quality, không thay đổi IV hoặc giá định giá hiện tại; live scan không tải lịch sử mark-price.";
-  historicalContext.appendChild(summary);
   const details = document.createElement("div");
   details.className = "historical-context-items";
   items.forEach((context) => {
     const item = document.createElement("span");
-    item.textContent = `${context.asset || "—"}: ${historicalContextStatus(context)}${context.historical_volatility == null ? "" : ` · ${percent(context.historical_volatility)}`}`;
+    item.textContent = `${context.asset || "—"}: ${historicalContextStatus(context)}${context.historical_volatility == null ? "" : ` · HV30 ${percent(context.historical_volatility)}`}`;
     details.appendChild(item);
   });
   historicalContext.appendChild(details);
@@ -1285,8 +1275,8 @@ function scanPayloadFromForm() {
   const maxLoss = useAdvancedFilters
     ? optionalNumber(data, "max_loss")
     : optionalNumber(data, "quick_max_loss");
-  if (!useAdvancedFilters && maxLoss === null && valuationMode !== "theoretical") {
-    return { error: "Hãy nhập mức lỗ tối đa cho mỗi ý tưởng." };
+  if (maxLoss !== null && maxLoss < 0) {
+    return { error: "Mức lỗ tối đa không được âm." };
   }
 
   const payload = {
@@ -1342,19 +1332,10 @@ function renderResults(payload) {
   renderHistoricalContext(payload.historical_volatility_contexts);
   detailPanel.hidden = true;
   selectedOpportunity = null;
-  const opportunities = payload.opportunities || [];
-  resultsGuide.hidden = !opportunities.length;
-  const guide = resultsGuide.querySelector("span");
-  if (guide) {
-    guide.textContent = isSyntheticMode(activeScanValuationMode)
-      ? "Các dòng dưới đây dùng bid/ask tổng hợp từ mark/fair value và spread giả định. Edge, EV, RR và lỗ tối đa đã được tính nhưng vẫn là ước tính, không phải khả năng khớp lệnh."
-      : isTheoreticalMode(activeScanValuationMode)
-      ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, RR và lỗ tối đa chỉ là ước tính mô hình, còn edge giao dịch và khả năng khớp không được suy ra."
-      : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
+  if (resultsGuide) {
+    resultsGuide.hidden = true;
   }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
-  else if (isTheoreticalMode(activeScanValuationMode)) setState(`${opportunities.length} định giá lý thuyết đạt điều kiện; không phải cơ hội giao dịch.`);
-  else if (isSyntheticMode(activeScanValuationMode)) setState(`${opportunities.length} cơ hội theo quote tổng hợp; không phải giá khớp thật.`);
   else setState(`${opportunities.length} cơ hội đạt điều kiện.`);
   opportunities.forEach((item, index) => {
     opportunityExplanations.appendChild(renderOpportunityExplanation(item, index));
@@ -1370,9 +1351,9 @@ function renderResults(payload) {
       : Number(item.bid_price) > 0 && Number(item.ask_price) > 0;
     const quoteLabel = hasQuote
       ? synthetic
-        ? `Giả định ${number(item.market_mid)} · spread tổng hợp`
-        : `Tham khảo ${number(item.market_mid)} · không dùng để khớp`
-      : "Thiếu bid/ask · không có giá khớp";
+        ? `Giả định ${number(item.market_mid)}`
+        : `Tham khảo ${number(item.market_mid)}`
+      : "—";
     cell(row, modelMode ? quoteLabel : number(item.market_mid), modelMode ? "theoretical-value" : "");
     cell(row, number(item.fair_price), modelMode ? "theoretical-value" : "");
     cell(row, percent(item.iv_edge), item.iv_edge >= 0 ? "positive" : "negative");
@@ -1385,11 +1366,9 @@ function renderResults(payload) {
     detailButton.className = "secondary-button compact-button";
     if (synthetic) {
       detailButton.textContent = "Xem payoff tổng hợp";
-      detailButton.title = "Payoff, EV và risk/reward dùng bid/ask dựng theo spread giả định; không phải P&L theo giá khớp.";
       detailButton.addEventListener("click", () => showOpportunityDetail(item));
     } else if (theoretical) {
       detailButton.textContent = "Xem payoff mô hình";
-      detailButton.title = "Payoff, EV và risk/reward dùng fair value mô hình; không phải P&L theo giá khớp.";
       detailButton.addEventListener("click", () => showOpportunityDetail(item));
     } else {
       detailButton.textContent = "Xem payoff / P&L";

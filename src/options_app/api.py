@@ -260,8 +260,6 @@ class ScanFilters(BaseModel):
         if self.market_view is not None:
             if not self.assets:
                 raise ValueError("at least one asset is required for a simple scan")
-            if self.max_loss is None and self.valuation_mode in {"executable", "synthetic"}:
-                raise ValueError("max_loss is required for a simple scan")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
         if (

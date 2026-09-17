@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260917-5">
-    <script src="/static/live-desk.js?v=20260917-5" defer></script>
-    <script src="/static/app.js?v=20260917-5" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260918-1">
+    <script src="/static/live-desk.js?v=20260918-1" defer></script>
+    <script src="/static/app.js?v=20260918-1" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -54,7 +54,7 @@
         <div class="sidebar-footer">
           <span class="status-dot" aria-hidden="true"></span>
           <span>Research mode</span>
-          <small>Paper trading only</small>
+          <small>Paper trading</small>
         </div>
       </aside>
 
@@ -64,7 +64,6 @@
             <p class="eyebrow" id="module-eyebrow">Nghiên cứu quyền chọn / Scanner</p>
             <h1 id="module-title">Crypto Options Scanner</h1>
             <p class="lede" id="module-description">Tìm hợp đồng có chênh lệch giữa giá mô hình và giá có thể mua.</p>
-            <p class="research-note">Tín hiệu nghiên cứu / paper trading; không phải khuyến nghị đầu tư.</p>
           </div>
           <div class="status-pill" id="service-status">Đang tải dữ liệu…</div>
         </header>
@@ -283,8 +282,8 @@
               <small class="field-help" id="time-horizon-help">Khoảng thời gian còn lại đến ngày đáo hạn.</small>
             </label>
             <label>Lỗ tối đa mỗi ý tưởng
-              <input name="quick_max_loss" type="number" min="0" step="0.01" aria-describedby="quick-max-loss-help">
-              <small class="field-help" id="quick-max-loss-help">Nhập số tiền tối đa bạn chấp nhận mất, theo đơn vị báo giá của hợp đồng.</small>
+              <input name="quick_max_loss" type="number" min="0" step="0.01" placeholder="Không giới hạn" aria-describedby="quick-max-loss-help">
+              <small class="field-help" id="quick-max-loss-help">Để trống nếu không giới hạn mức lỗ, hoặc nhập số tiền tối đa chấp nhận mất.</small>
             </label>
           </div>
 
@@ -297,14 +296,14 @@
               </label>
               <label class="valuation-mode-card">
                 <input type="radio" name="valuation_mode" value="theoretical">
-                <span><strong>Theoretical — bỏ qua bid/ask</strong><small>Chỉ dùng giá trị mô hình/fair value khi Bybit thiếu bid/ask; không phải giá khớp.</small></span>
+                <span><strong>Theoretical — bỏ qua bid/ask</strong><small>Dùng fair value mô hình khi Bybit thiếu bid/ask.</small></span>
               </label>
               <label class="valuation-mode-card">
                 <input type="radio" name="valuation_mode" value="synthetic">
-                <span><strong>Synthetic — spread giả định</strong><small>Dựng bid/ask quanh mark/fair value để tính đủ edge và rủi ro; vẫn không phải giá khớp.</small></span>
+                <span><strong>Synthetic — spread giả định</strong><small>Dựng bid/ask quanh mark/fair value theo spread giả định.</small></span>
               </label>
             </div>
-            <p class="field-help" id="valuation-mode-help">Theoretical phù hợp để xem fair value thuần. Synthetic phù hợp khi muốn tính đủ edge, EV, RR và lỗ tối đa bằng spread giả định cho XRP, XAUT, SOL, HYPE, MNT.</p>
+            <p class="field-help" id="valuation-mode-help">Theoretical để phân tích fair value thuần. Synthetic dùng spread giả định để ước tính edge và rủi ro.</p>
           </fieldset>
 
           <details class="advanced-filters" id="advanced-filters" data-testid="advanced-filters">
@@ -342,11 +341,10 @@
                 </label>
                 <label>Chênh lệch mô hình sau phí tối thiểu
                   <input name="min_edge_after_costs" type="number" value="0" min="0" step="0.01">
-                  <small class="field-help">Đây là chênh lệch giá mô hình, không phải lợi nhuận đảm bảo.</small>
                 </label>
                 <label>EV tối thiểu
                   <input name="min_expected_value" type="number" value="0" step="0.01">
-                  <small class="field-help">Mặc định chỉ giữ EV ước tính không âm; đây không phải EV lịch sử đã kiểm định.</small>
+                  <small class="field-help">Mặc định chỉ giữ EV ước tính không âm.</small>
                 </label>
                 <label>Phí mỗi chiều
                   <input name="fee_per_contract" type="number" value="0" min="0" step="0.01">
@@ -370,7 +368,7 @@
                 </label>
                 <label>Lãi suất mô hình (%/năm)
                   <input name="risk_free_rate_pct" type="number" value="5" min="0" step="0.1" aria-describedby="risk-free-rate-help">
-                  <small class="field-help" id="risk-free-rate-help">Giả định lãi suất dùng để định giá; mặc định 5%, không phải lợi nhuận kỳ vọng.</small>
+                  <small class="field-help" id="risk-free-rate-help">Lãi suất phi rủi ro dùng để định giá; mặc định 5%.</small>
                 </label>
               </div>
             </div>
@@ -403,14 +401,6 @@
         </div>
         <div class="valuation-mode-notice" id="valuation-mode-notice" hidden role="status"></div>
         <div class="state-message" id="result-state">Chọn điều kiện rồi bấm “Quét cơ hội”.</div>
-        <div class="quality-note" role="note">
-          Biến động lịch sử 30 ngày chỉ dùng làm ngữ cảnh/kiểm tra chất lượng; định giá vẫn dùng IV hiện tại.
-          Khi quét live không tải lịch sử mark-price.
-        </div>
-        <div class="results-guide" id="results-guide" hidden>
-          <strong>Cách đọc nhanh</strong>
-          <span>Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.</span>
-        </div>
         <div class="scan-context" id="scan-context" hidden></div>
         <div class="historical-context" id="historical-context" hidden></div>
         <div class="opportunity-explanations" id="opportunity-explanations"></div>
@@ -450,9 +440,7 @@
           <div class="chart-tooltip" id="pnl-chart-tooltip" hidden></div>
         </div>
         <div class="chart-legend" id="pnl-chart-legend" aria-label="Chú giải biểu đồ">P&amp;L tại đáo hạn</div>
-        <div class="chart-assumptions" id="pnl-chart-assumptions">
-          Ước tính payoff dựa trên các điểm do API trả về, gồm giả định giá vào/ra và chi phí của lần quét. Đây không phải dự đoán giá hay lợi nhuận đảm bảo.
-        </div>
+        <div class="chart-assumptions" id="pnl-chart-assumptions" hidden></div>
         <div class="state-message" id="scenario-state">Chọn một cơ hội để xem payoff tại đáo hạn.</div>
         <div class="detail-metrics" id="detail-metrics"></div>
         <details class="scenario-data-details">
@@ -477,7 +465,7 @@
                 <div>
                   <p class="eyebrow">Backtest workspace</p>
                   <h2 id="backtest-title">Kiểm tra tín hiệu trên dữ liệu lịch sử</h2>
-                  <p class="muted">Dùng archive snapshot Bybit đã lưu; không dùng dữ liệu live thay thế.</p>
+                  <p class="muted">Kiểm định chiến lược trên archive snapshot dữ liệu Bybit.</p>
                 </div>
                 <span class="badge" id="backtest-engine-badge">Snapshot replay</span>
               </div>
@@ -564,11 +552,6 @@
                 <span class="badge">Read-only · Manual close</span>
               </div>
 
-              <div class="monitoring-safety-note">
-                <strong>Không tự gửi lệnh.</strong>
-                <span>Engine chỉ trả về <code>CLOSE</code>, <code>HOLD</code> hoặc <code>REVIEW</code>. Nếu có <code>CLOSE</code>, bạn vẫn phải kiểm tra và đóng lệnh thủ công.</span>
-              </div>
-
               <form id="monitoring-form" class="monitoring-form">
                 <div class="form-grid">
                   <label>Base coin
@@ -596,7 +579,7 @@
                   </label>
                   <label>Policy nhanh
                     <select id="monitoring-policy-profile" name="policy_profile">
-                      <option value="review">Chỉ quan sát · an toàn nhất</option>
+                      <option value="review">Chỉ quan sát (Review)</option>
                       <option value="day_trade">Intraday · tối đa 24 giờ</option>
                       <option value="swing">Swing · tối đa 7 ngày</option>
                     </select>
@@ -625,12 +608,11 @@
                   </div>
                 </details>
                 <div class="form-options monitoring-actions">
-                  <p class="scan-note">Khi mất kết nối hoặc chưa reconcile, hệ thống hiển thị REVIEW thay vì suy diễn HOLD.</p>
                   <button type="submit" class="primary-button" id="monitoring-submit">Cập nhật theo dõi</button>
                 </div>
               </form>
 
-              <div class="state-message" id="monitoring-state" role="status">Chưa chạy. Position monitor đang ở chế độ read-only và không tự đóng lệnh.</div>
+              <div class="state-message" id="monitoring-state" role="status">Chưa có dữ liệu theo dõi. Bấm “Cập nhật theo dõi” để đọc vị thế.</div>
               <div class="detail-metrics monitoring-metrics" id="monitoring-metrics"></div>
               <div class="monitoring-decision-guide" id="monitoring-decision-guide">
                 <strong>Đọc quyết định</strong>

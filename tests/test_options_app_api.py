@@ -1134,16 +1134,47 @@ async def test_scan_rejects_partial_simple_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scan_rejects_simple_request_without_max_loss() -> None:
+async def test_scan_accepts_simple_request_without_max_loss() -> None:
+    scan_requests: list[ScanRequest] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+            valuation_mode=scan_request.valuation_mode,
+        )
+
     response = await request(
-        create_app(adapter=FakeAdapter()),
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
         "POST",
         "/api/v1/opportunities/scan",
         json={"assets": ["BTC"], "market_view": "up", "time_horizon": "7_30"},
     )
 
-    assert response.status_code == 422
-    assert "max_loss is required for a simple scan" in str(response.json())
+    assert response.status_code == 200
+    assert scan_requests[0].max_loss is None
+    payload = response.json()
+    assert payload["scan_context"]["max_loss"] is None
+    assert "không giới hạn" in payload["scan_context"]["summary"]
+
+    response_syn = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "market_view": "up",
+            "time_horizon": "7_30",
+            "valuation_mode": "synthetic",
+        },
+    )
+    assert response_syn.status_code == 200
+    assert scan_requests[1].max_loss is None
 
 
 @pytest.mark.asyncio

@@ -330,6 +330,7 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByRole("group", { name: "Tài sản" })).toBeVisible();
   await expect(page.getByLabel("Thời hạn")).toBeVisible();
   await expect(page.getByLabel("Lỗ tối đa mỗi ý tưởng")).toBeVisible();
+  await expect(page.getByLabel("Lỗ tối đa mỗi ý tưởng")).toHaveAttribute("placeholder", "Không giới hạn");
   await expect(page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ })).toBeVisible();
   await expect(page.getByRole("group", { name: "Bạn muốn tìm ý tưởng nào?" })).toBeVisible();
   await expect(page.locator('.strategy-card input[type="checkbox"]')).toHaveCount(13);
@@ -339,6 +340,33 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByLabel("IV edge tối thiểu")).not.toBeVisible();
   await expect(page.getByLabel("Delta tối thiểu")).not.toBeVisible();
   await expect(page.getByLabel("Phí mỗi chiều")).not.toBeVisible();
+});
+
+test("scans successfully without entering maximum loss (unconstrained loss)", async ({ page }) => {
+  let submittedPayload = null;
+  page.on("request", (req) => {
+    if (req.url().includes("/api/v1/opportunities/scan/stream")) {
+      submittedPayload = req.postDataJSON();
+    }
+  });
+
+  // Do not fill "Lỗ tối đa mỗi ý tưởng"
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+
+  await expect(page.locator("#result-state")).toContainText("1 cơ hội");
+  await expect(page.locator("#results-body tr")).toHaveCount(1);
+  await expect(page.locator("#scan-context")).toContainText("không giới hạn");
+  expect(submittedPayload.max_loss).toBeNull();
+});
+
+test("prevents submission and flags invalid state when negative maximum loss is entered", async ({ page }) => {
+  const maxLossInput = page.getByLabel("Lỗ tối đa mỗi ý tưởng");
+  await maxLossInput.fill("-10");
+  expect(await maxLossInput.evaluate((el) => el.validity.valid)).toBe(false);
+  expect(await maxLossInput.evaluate((el) => el.validity.rangeUnderflow)).toBe(true);
+
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  await expect(page.locator("#result-state")).toHaveText("Chọn điều kiện rồi bấm “Quét cơ hội”.");
 });
 
 test("connects the live options feed and updates the desk dashboard", async ({ page }) => {

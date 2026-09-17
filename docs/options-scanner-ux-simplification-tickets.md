@@ -9,7 +9,7 @@ These provisional ticket identifiers are for local dependency tracking only. The
 ## Dependency order
 
 ```text
-SCAN-UX-001 → SCAN-UX-002 → SCAN-UX-003 → SCAN-UX-004
+SCAN-UX-001 → SCAN-UX-002 → SCAN-UX-003 → SCAN-UX-004 → SCAN-UX-005
 ```
 
 The agreed public test seams for the whole change are:
@@ -148,11 +148,30 @@ The agreed public test seams for the whole change are:
 
 **Out of scope:** Performance benchmarking under live Bybit load, visual pixel-perfect baselines for unrelated screens, real-money exchange calls, and remote issue publication.
 
+## SCAN-UX-005 — Optional unconstrained maximum loss in scanner
+
+**Outcome:** A user can run quick or advanced scans without being forced to enter an arbitrary loss limit (`quick_max_loss`), defaulting to unconstrained loss filtering while preserving candidate-level risk metrics.
+
+**Source issue:** [SCAN-UX-005 Issue Specification](issues/scan-ux-005-optional-max-loss.md)
+
+**Blocking:** SCAN-UX-002, SCAN-UX-004.
+
+**Acceptance criteria:**
+
+- `POST /api/v1/opportunities/scan` and WebSocket streaming accept simple requests with `max_loss` omitted or `null`.
+- `ScanFilters.validate_ranges` no longer raises `ValueError("max_loss is required for a simple scan")`.
+- UI Quick Scan form allows submission with empty `quick_max_loss` without client-side error, sending `max_loss: null`.
+- `index.html` displays placeholder `"Không giới hạn"` and explanatory field help.
+- Scan context displays `"Lỗ tối đa: không giới hạn"` when omitted.
+- Candidate-level maximum loss calculations and display remain intact per `CONTEXT.md`.
+- Automated API and Playwright tests verify unconstrained scan flow.
+
 ## Recommended implementation order
 
 1. Implement SCAN-UX-001 and make the POST API contract/defaults deterministic.
 2. Implement SCAN-UX-002 against that contract; keep the existing advanced capability available.
 3. Implement SCAN-UX-003 so results explain the resolved request rather than exposing raw model output.
 4. Implement SCAN-UX-004, run the API suite and Playwright suite, and record the final verification.
+5. Implement SCAN-UX-005, removing the mandatory max_loss requirement and validating end-to-end.
 
 Publication note: create these as small implementation issues in the configured tracker when a tracker guide and connection become available, apply the repository's `ready-for-agent` triage label, and replace the provisional identifiers with canonical issue URLs/numbers in this document and the source spec.
