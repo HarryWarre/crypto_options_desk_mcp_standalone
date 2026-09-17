@@ -31,6 +31,7 @@ from bybit_api.options_market_data import (
     OptionAssetCatalog,
 )
 from bybit_api.public import BybitPublicClient
+from options_app.live_desk import LiveDeskSnapshot
 from options_lib.backtest_engine import (
     BacktestDataUnavailable,
     BacktestResult,
@@ -103,6 +104,7 @@ _BACKTEST_ARCHIVE_ENV = "OPTIONS_BACKTEST_ARCHIVE"
 _DEFAULT_SCAN_RISK_FREE_RATE = 0.05
 _DEFAULT_MIN_EXPECTED_VALUE = 0.0
 _LIVE_SCAN_INTERVAL_SECONDS = 8.0
+_LIVE_MAX_OPPORTUNITIES = 24
 
 # The scanner gained EV metrics after the original HTTP contract.  Keep the
 # API tolerant of either spelling while the domain slices land independently.
@@ -147,6 +149,7 @@ class HistoricalVolatilityLoader(Protocol):
 
 
 ProgressCallback = Callable[[str], Awaitable[None]]
+MarketDataCallback = Callable[[NormalizedOptionUniverse], Awaitable[None] | None]
 
 
 class ScanFilters(BaseModel):
@@ -796,6 +799,12 @@ def create_app(
             )
 
             while True:
+                market_universe: NormalizedOptionUniverse | None = None
+
+                def capture_market_universe(universe: NormalizedOptionUniverse) -> None:
+                    nonlocal market_universe
+                    market_universe = universe
+
                 async def on_progress(message: str) -> None:
                     await websocket.send_json({"type": "log", "message": message})
 
@@ -805,11 +814,22 @@ def create_app(
                     scanner,
                     historical_volatility_loader=history_loader,
                     on_progress=on_progress,
+                    on_market_data=capture_market_universe,
+                )
+                if market_universe is None:
+                    raise RuntimeError("Live scan did not produce market data")
+                payload = _serialize_live_scan_result(snapshot, filters, scan_request)
+                payload["live_desk"] = _serialize(
+                    LiveDeskSnapshot.from_scan(
+                        market_universe,
+                        snapshot.scan,
+                        selected_assets=scan_request.assets,
+                    )
                 )
                 await websocket.send_json(
                     {
                         "type": "snapshot",
-                        "payload": _serialize_scan_result(snapshot, filters, scan_request),
+                        "payload": payload,
                         "execution_allowed": False,
                     }
                 )
@@ -1050,6 +1070,7 @@ async def _execute_scan(
     *,
     historical_volatility_loader: HistoricalVolatilityLoader | None = None,
     on_progress: ProgressCallback | None = None,
+    on_market_data: MarketDataCallback | None = None,
 ) -> HistoricalContextScanResult:
     started_at = time.perf_counter()
     selected_assets = ",".join(scan_request.assets) if scan_request.assets else "all"
@@ -1077,6 +1098,8 @@ async def _execute_scan(
         f"assets={len(universe.assets)} contracts={len(universe.contracts)} "
         f"issues={len(universe.issues)} elapsed={time.perf_counter() - started_at:.2f}s"
     )
+    if on_market_data is not None:
+        await _maybe_await(on_market_data(universe))
     history_assets = _history_assets(universe, scan_request)
     await progress(
         "[OPTIONS] loading 30-day historical volatility "
@@ -1312,6 +1335,31 @@ def _serialize_scan_result(
                 ),
             }
         )
+    return payload
+
+
+def _serialize_live_scan_result(
+    result: HistoricalContextScanResult,
+    filters: ScanFilters,
+    scan_request: ScanRequest,
+) -> dict[str, Any]:
+    """Build a bounded WebSocket payload for repeated live snapshots.
+
+    A full scan contains diagnostic rejection objects, market-data issues and
+    payoff arrays for every candidate.  That is useful for the one-shot
+    research report but can exceed common WebSocket frame limits when several
+    assets are selected.  The live-desk model already carries the aggregate
+    rejection context, so the stream keeps only the ranked opportunities needed
+    by the desk and exposes counts for the omitted diagnostics.
+    """
+
+    payload = _serialize_scan_result(result, filters, scan_request)
+    scan = result.scan
+    payload["opportunities"] = payload["opportunities"][:_LIVE_MAX_OPPORTUNITIES]
+    payload["rejections"] = []
+    payload["issues"] = []
+    payload["rejection_count"] = len(scan.rejections)
+    payload["issue_count"] = len(scan.issues)
     return payload
 
 
