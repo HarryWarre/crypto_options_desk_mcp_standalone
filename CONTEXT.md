@@ -23,3 +23,44 @@
 Decision metrics must expose whether they are model-estimated, historically
 validated, or unavailable because required inputs are missing. A positive
 model estimate must not be described as a guarantee or as historical evidence.
+
+## Position monitoring language
+
+**Manual execution**:
+An order created and managed by the user outside this application. The
+exchange position and fills, not a local signal or an order acknowledgement,
+are the source of truth for what was actually opened.
+_Avoid_: simulated execution, assumed fill
+
+**Position**:
+An open exposure reported by the exchange after one or more fills, identified
+by its symbol, category, direction, quantity, entry, mark, and risk fields.
+_Avoid_: order, signal
+
+**Exit policy**:
+A pre-declared set of loss, profit, time, liquidation-buffer, and thesis rules
+against which one position is evaluated. It is input to a decision, not a
+prediction of future price.
+_Avoid_: guarantee, stop promise
+
+**Exit decision**:
+A deterministic, timestamped recommendation to `CLOSE`, `HOLD`, or `REVIEW`
+one observed position. It is never an exchange command.
+_Avoid_: automated trade, order instruction
+
+**HOLD**:
+A conditional result meaning the configured policy has no triggered rule and
+the required observations are usable; it does not mean the position is safe or
+expected to profit.
+_Avoid_: keep forever, safe trade
+
+**REVIEW**:
+A fail-safe result used when a policy, source observation, or reconciliation
+fact is missing or inconsistent. It must not be silently downgraded to HOLD.
+_Avoid_: neutral, no action
+
+**Manual close instruction**:
+A human-reviewable description of the opposite side and current broker
+quantity to use if a CLOSE decision is accepted. The application does not
+submit it in the read-only monitoring phase.
+_Avoid_: close order, executed close

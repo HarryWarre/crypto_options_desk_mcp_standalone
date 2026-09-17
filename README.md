@@ -34,7 +34,7 @@ funding, OI) and tells you what *changed* and why it matters, not just where the
 - [Keep the session rolling](#keep-the-session-rolling) ⭐
 - [Example outputs](#example-outputs)
 - [API key setup](#api-key-setup-optional) (optional)
-- [The 22 tools](#the-22-tools)
+- [The 24 tools](#the-24-tools)
 - [Bonus: the research prompt](#bonus-the-research-prompt)
 - [Configuration](#configuration)
 - [Safety model](#safety-model)
@@ -237,7 +237,7 @@ workflow above, captured on disk.
 **Most tools need no credentials** — GEX, vanna, skew, flow, vol surface, indicators, klines, funding,
 OI, options chain, IV-RV, and all strategy-analysis tools use Bybit **public** market data.
 
-Only the **two user-position tools** (`get_user_options_positions`, `get_user_all_positions`) require a
+The user-position tools and the read-only `monitor_positions` tool require a
 Bybit API key. A **read-only** key is enough and recommended.
 
 Provide the key by env var (`BYBIT_API_KEY`, `BYBIT_API_SECRET`) any of these ways:
@@ -258,7 +258,7 @@ Without a key the position tools return a structured error; everything else work
 
 ---
 
-## The 22 tools
+## The 24 tools
 
 Every tool returns a uniform envelope — `{ "success": bool, "data": …, "timestamp": … }` (or a
 tool-specific structured object). Defaults shown in `()`.
@@ -316,6 +316,12 @@ tool-specific structured object). Defaults shown in `()`.
 | `get_user_options_positions` | `base_coin`(BTC, or `all`), `position_type`(option) | Live option positions + total unrealised PnL |
 | `get_user_all_positions` | `base_coin`(BTC), `position_type`(option/linear/inverse/all) | All positions, per-category breakdown + summary |
 
+### Position monitoring (2) — *API-key gated, read-only*
+| Tool | Params | Returns |
+|------|--------|---------|
+| `monitor_positions` | `base_coin`, `position_type`, `policies` | Positions, open orders, order history, and deterministic `CLOSE`, `HOLD`, or `REVIEW` decisions; close instructions require manual confirmation |
+| `get_position_monitoring_history` | `limit`(20) | Local append-only monitoring snapshots and the latest PnL/mark/order/decision diff |
+
 ### Meta (1)
 | Tool | Params | Returns |
 |------|--------|---------|
@@ -336,7 +342,8 @@ Desktop it appears in the prompt picker; just pass an asset like `BTC`.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `BYBIT_API_KEY` / `BYBIT_API_SECRET` | — | Only for the two user-position tools (read-only key recommended) |
+| `BYBIT_API_KEY` / `BYBIT_API_SECRET` | — | Required for user-position and live monitoring tools (read-only key recommended) |
+| `POSITION_MONITORING_SNAPSHOT_FILE` | `data/position_monitoring/snapshots.jsonl` | Local append-only position-monitoring history file |
 | `MCP_LOG_FILE` | `/tmp/mcp-trading.log` | Where the server logs (never stdout — stdio is the JSON-RPC channel) |
 | `DEBUG_MCP` | unset | Set to `1` for DEBUG-level logs |
 
@@ -346,7 +353,7 @@ Desktop it appears in the prompt picker; just pass an asset like `BTC`.
 
 - **Uniform envelope** — every tool returns structured `{success, data, timestamp}`; failures are never free text.
 - **Read-first** — the analytics surface has no side effects; nothing places or modifies orders.
-- **Key-gated** — only the position tools touch authenticated endpoints; an unconfigured agent physically can't read your book, let alone move money. Use a **read-only** key.
+- **Key-gated** — only the position and monitoring tools touch authenticated endpoints; an unconfigured agent physically can't read your book, let alone move money. Use a **read-only** key.
 - **Logs off the wire** — MCP uses stdio for JSON-RPC, so all logging is file-only by design.
 
 ---
@@ -354,11 +361,12 @@ Desktop it appears in the prompt picker; just pass an asset like `BTC`.
 ## Architecture
 
 ```
-mcp_trading/            thin MCP facade — server.py = 22 @mcp.tool wrappers + 1 prompt
+mcp_trading/            thin MCP facade — server.py = 24 @mcp.tool wrappers + 1 prompt
   ├─ orchestrator.py    routes tool calls to the libs; holds the Bybit client + vol analyzer
   ├─ options_lib/       GEX · vanna · skew · flow · vol surface · strategy classification · pricing
   ├─ indicators_lib/    technicals + sentiment
   ├─ portfolio_lib/     portfolio engine · greeks · scenario analysis
+  ├─ position_monitoring/ read-only snapshots · risk monitor · manual exit decisions
   └─ bybit_api/         exchange client (klines, options chain, funding, OI, positions)
 ```
 

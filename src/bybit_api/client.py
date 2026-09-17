@@ -307,10 +307,16 @@ class BybitClient:
         base_coin: str = None,
         order_id: str = None,
         client_order_id: str = None,
+        settle_coin: str = None,
     ) -> List[Dict[str, Any]]:
         self._ensure_private_access()
         return await self.private.get_open_orders(
-            category, symbol, base_coin, order_id, client_order_id
+            category,
+            symbol,
+            base_coin,
+            order_id,
+            client_order_id,
+            settle_coin=settle_coin,
         )
 
     async def get_order_history(
@@ -322,10 +328,18 @@ class BybitClient:
         start_time: datetime = None,
         end_time: datetime = None,
         limit: int = 50,
+        settle_coin: str = None,
     ) -> List[Dict[str, Any]]:
         self._ensure_private_access()
         return await self.private.get_order_history(
-            category, symbol, base_coin, order_id, start_time, end_time, limit
+            category,
+            symbol,
+            base_coin,
+            order_id,
+            start_time,
+            end_time,
+            limit,
+            settle_coin=settle_coin,
         )
 
     async def get_trade_history(
