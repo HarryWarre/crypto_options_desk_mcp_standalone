@@ -5,6 +5,7 @@ import pytest
 from bybit_api.models import Position
 from mcp_trading.orchestrator import MCPOrchestrator
 from mcp_trading.server import ExitPolicyParams, MonitorPositionsParams
+from position_monitoring import JsonlSnapshotHistory
 
 AS_OF = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
 
@@ -49,6 +50,7 @@ async def test_orchestrator_returns_manual_close_decision_and_never_execution_pe
         "BTC",
         "option",
         [ExitPolicyParams(symbol="BTC-25SEP26-100000-C", take_profit_price=105).to_domain()],
+        persist=False,
     )
 
     assert result["success"] is True
@@ -68,6 +70,29 @@ async def test_missing_private_credentials_is_structured_and_read_only() -> None
     assert result["success"] is False
     assert result["context"] == "position_monitoring"
     assert "BYBIT_API_KEY" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_monitoring_persists_and_exposes_snapshot_diff(tmp_path) -> None:
+    orchestrator = MCPOrchestrator()
+    orchestrator.api = FakeMonitoringApi()
+    orchestrator.position_snapshot_history = JsonlSnapshotHistory(tmp_path / "history.jsonl")
+    policies = [ExitPolicyParams(symbol="BTC-25SEP26-100000-C", take_profit_price=105).to_domain()]
+
+    first = await orchestrator.monitor_positions("BTC", "option", policies, persist=True)
+    second = await orchestrator.monitor_positions("BTC", "option", policies, persist=True)
+    history = orchestrator.get_position_monitoring_history(limit=10)
+
+    assert first["persistence"]["status"] == "saved"
+    assert (
+        second["persistence"]["diff"]["previous_snapshot_id"] == first["persistence"]["snapshot_id"]
+    )
+    assert history["success"] is True
+    assert len(history["data"]["records"]) == 2
+    assert (
+        history["data"]["latest_diff"]["current_snapshot_id"]
+        == second["persistence"]["snapshot_id"]
+    )
 
 
 def test_policy_model_requires_risk_budget_for_percentage_loss() -> None:

@@ -14,6 +14,13 @@ from .models import (
     TrackedOrder,
     TrackedPosition,
 )
+from .persistence import (
+    JsonlSnapshotHistory,
+    SnapshotHistoryError,
+    compare_snapshot_records,
+    snapshot_id_for,
+    snapshot_record,
+)
 from .tracker import BybitPositionSnapshotAdapter, MonitoringReport, PositionTracker
 
 __all__ = [
@@ -23,6 +30,7 @@ __all__ = [
     "ExitDecision",
     "ExitDecisionEngine",
     "ExitPolicy",
+    "JsonlSnapshotHistory",
     "MonitoringReport",
     "PositionSide",
     "PositionSnapshot",
@@ -30,7 +38,11 @@ __all__ = [
     "RiskAssessment",
     "RiskMonitor",
     "RiskRuleResult",
+    "SnapshotHistoryError",
     "ThesisStatus",
     "TrackedOrder",
     "TrackedPosition",
+    "compare_snapshot_records",
+    "snapshot_id_for",
+    "snapshot_record",
 ]

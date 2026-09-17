@@ -92,6 +92,15 @@ class MonitorPositionsParams(BaseModel):
     base_coin: str = Field(default="BTC", min_length=1)
     position_type: Literal["option", "linear", "inverse", "all"] = "all"
     policies: List[ExitPolicyParams] = Field(default_factory=list)
+    persist: bool = True
+
+
+class MonitoringHistoryParams(BaseModel):
+    """Read-only local snapshot history query."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=20, ge=1, le=1000)
 
 
 class MarketDataParams(BaseModel):
@@ -402,6 +411,7 @@ async def monitor_positions(params: MonitorPositionsParams) -> Dict[str, Any]:
             params.base_coin,
             params.position_type,
             policies,
+            params.persist,
         )
     except (TypeError, ValueError) as exc:
         return {
@@ -410,6 +420,15 @@ async def monitor_positions(params: MonitorPositionsParams) -> Dict[str, Any]:
             "context": "position_monitoring",
             "timestamp": datetime.now().isoformat(),
         }
+
+
+@mcp.tool(
+    description="Read local position-monitoring snapshots and the latest position/order/decision diff"
+)
+async def get_position_monitoring_history(
+    params: MonitoringHistoryParams,
+) -> Dict[str, Any]:
+    return orchestrator.get_position_monitoring_history(params.limit)
 
 
 # ── Covered call ──
@@ -509,8 +528,8 @@ async def analyze_portfolio_strategies(
 async def get_server_info() -> Dict[str, Any]:
     return {
         "server_name": "Quant Trading Server",
-        "version": "2.2.0",
-        "tools_count": 23,
+        "version": "2.3.0",
+        "tools_count": 24,
         "categories": [
             "Options Flow (GEX, Vanna, Flow, Skew, Vol Surface)",
             "Technical Analysis",
@@ -519,6 +538,7 @@ async def get_server_info() -> Dict[str, Any]:
             "Sentiment (Long/Short, OI, Funding)",
             "User Positions",
             "Position Monitoring (read-only CLOSE, HOLD, REVIEW)",
+            "Position Monitoring History (local read-only snapshots)",
             "Covered Call (IV-RV Spread, Signal)",
             "Strategy Analysis (Straddles, Strangles, Spreads)",
         ],
