@@ -5,6 +5,7 @@ MCP Services Orchestrator — delegates tool requests to existing business logic
 from typing import Dict, Any, List, Optional
 from datetime import datetime, UTC
 import logging
+import os
 
 from options_lib.flow.gex import GammaExposure
 from options_lib.flow.vanna import VannaAnalyzer
@@ -20,7 +21,11 @@ from portfolio_lib import PortfolioEngine, PortfolioAnalyzer
 from position_monitoring import (
     BybitPositionSnapshotAdapter,
     ExitPolicy,
+    JsonlSnapshotHistory,
     PositionTracker,
+    SnapshotHistoryError,
+    compare_snapshot_records,
+    snapshot_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +92,12 @@ class MCPOrchestrator:
         self.portfolio_analyzer = PortfolioAnalyzer(self.portfolio_engine)
         self.position_tracker = PositionTracker(
             BybitPositionSnapshotAdapter(self.api)
+        )
+        self.position_snapshot_history = JsonlSnapshotHistory(
+            os.getenv(
+                "POSITION_MONITORING_SNAPSHOT_FILE",
+                "data/position_monitoring/snapshots.jsonl",
+            )
         )
 
         self.flow_config = OptionsFlowConfig(
@@ -347,6 +358,7 @@ class MCPOrchestrator:
         base_coin: str,
         position_type: str,
         policies: list[ExitPolicy],
+        persist: bool = True,
     ) -> Dict[str, Any]:
         """Read current positions and emit manual-review exit decisions."""
         if not self.api.has_private_access():
@@ -367,6 +379,18 @@ class MCPOrchestrator:
                     )
                 policy_map[policy.symbol] = policy
 
+            previous_record = None
+            persistence: dict[str, Any] = {
+                "enabled": bool(persist),
+                "status": "disabled" if not persist else "pending",
+            }
+            if persist:
+                try:
+                    previous = self.position_snapshot_history.load(limit=1)
+                    previous_record = previous[0] if previous else None
+                except SnapshotHistoryError as exc:
+                    persistence = {"enabled": True, "status": "failed", "error": str(exc)}
+
             # Rebuild the adapter around the current client so tests and
             # callers that rotate credentials do not retain stale connections.
             tracker = PositionTracker(BybitPositionSnapshotAdapter(self.api))
@@ -375,16 +399,50 @@ class MCPOrchestrator:
                 position_type=position_type,
                 policies=policy_map,
             )
-            return _success_response(
+            if persist and persistence["status"] != "failed":
+                try:
+                    snapshot_id = self.position_snapshot_history.append(report)
+                    current_record = snapshot_record(report, snapshot_id=snapshot_id)
+                    persistence = {
+                        "enabled": True,
+                        "status": "saved",
+                        "snapshot_id": snapshot_id,
+                        "diff": compare_snapshot_records(previous_record, current_record)
+                        if previous_record
+                        else None,
+                    }
+                except SnapshotHistoryError as exc:
+                    persistence = {"enabled": True, "status": "failed", "error": str(exc)}
+
+            result = _success_response(
                 "position_monitoring",
                 report.to_dict(),
                 decisions_summary=report.summary,
                 execution_allowed=False,
                 requires_human_confirmation=True,
             )
+            result["persistence"] = persistence
+            return result
         except Exception as exc:
             logger.error(f"Position monitoring error: {exc}")
             return _error_response(str(exc), "position_monitoring")
+
+    def get_position_monitoring_history(self, limit: int = 20) -> Dict[str, Any]:
+        """Read persisted monitoring snapshots without touching the exchange."""
+        try:
+            records = self.position_snapshot_history.load(limit=limit)
+            latest_diff = (
+                compare_snapshot_records(records[-2], records[-1])
+                if len(records) >= 2
+                else None
+            )
+            return _success_response(
+                "position_monitoring_history",
+                {"records": records, "latest_diff": latest_diff},
+                execution_allowed=False,
+            )
+        except (SnapshotHistoryError, ValueError) as exc:
+            return _error_response(str(exc), "position_monitoring_history")
 
     def _build_scenario_config(
         self, portfolio_data: Dict[str, Any], scenarios: List[Dict[str, Any]]
