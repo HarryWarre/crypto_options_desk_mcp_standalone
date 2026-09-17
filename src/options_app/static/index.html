@@ -27,15 +27,20 @@
             <span class="module-copy"><strong>Scanner</strong><small>Live opportunity scan</small></span>
             <span class="module-status">01</span>
           </a>
+          <a class="module-link" data-workspace-link href="#live-desk" aria-label="Live Desk">
+            <span class="module-icon" aria-hidden="true">◉</span>
+            <span class="module-copy"><strong>Live Desk</strong><small>Realtime option quotes</small></span>
+            <span class="module-status">02</span>
+          </a>
           <a class="module-link" data-workspace-link href="#backtest" aria-label="Backtest">
             <span class="module-icon" aria-hidden="true">↗</span>
             <span class="module-copy"><strong>Backtest</strong><small>Historical replay</small></span>
-            <span class="module-status">02</span>
+            <span class="module-status">03</span>
           </a>
           <a class="module-link" data-workspace-link href="#monitoring" aria-label="Position Monitoring">
             <span class="module-icon" aria-hidden="true">◒</span>
             <span class="module-copy"><strong>Position Monitoring</strong><small>Risk &amp; exit review</small></span>
-            <span class="module-status">03</span>
+            <span class="module-status">04</span>
           </a>
         </nav>
 
@@ -70,135 +75,6 @@
 
         <main class="page-shell">
           <div class="workspace-view" id="scanner-view" data-workspace-view="scanner">
-      <section class="live-desk" aria-labelledby="live-desk-title">
-        <div class="live-desk-topbar">
-          <div class="desk-identity">
-            <div class="desk-mark" aria-hidden="true">F</div>
-            <div>
-              <strong>FLOW<span>SURFACE</span></strong>
-              <small>LIVE OPTIONS DESK / READ-ONLY</small>
-            </div>
-          </div>
-          <div class="desk-actions">
-            <span class="live-connection live-connection-idle" id="live-connection" role="status">
-              <span class="live-connection-dot" aria-hidden="true"></span>
-              <span id="live-connection-label">Live feed đang tắt</span>
-            </span>
-            <button type="button" class="desk-toggle" id="live-toggle">Bật live feed</button>
-          </div>
-        </div>
-
-        <div class="live-desk-hero">
-          <div>
-            <p class="desk-kicker">REALTIME MARKET INTELLIGENCE</p>
-            <h2 id="live-desk-title">Options opportunity matrix</h2>
-            <p class="desk-subtitle">Theo dõi tín hiệu định giá, thanh khoản và nhịp cập nhật trong cùng một màn hình.</p>
-            <div class="desk-meta-line">
-              <span id="live-last-update">Chưa có snapshot live</span>
-              <span class="meta-separator" aria-hidden="true">•</span>
-              <span id="live-update-count">0 cập nhật</span>
-              <span class="meta-separator" aria-hidden="true">•</span>
-              <span>Paper research only</span>
-            </div>
-          </div>
-          <div class="desk-session" aria-label="Trạng thái phiên">
-            <span>MARKET SESSION</span>
-            <strong id="live-session-state">WAITING</strong>
-            <small id="live-next-refresh">Chờ kết nối stream</small>
-          </div>
-        </div>
-
-        <div class="desk-stat-grid" id="live-stats" aria-live="polite">
-          <div class="desk-stat desk-stat-spot">
-            <span>SPOT / UNDERLYING</span>
-            <strong id="live-stat-spot">—</strong>
-            <small id="live-stat-spot-label">Chưa có quote</small>
-          </div>
-          <div class="desk-stat">
-            <span>LIVE OPPORTUNITIES</span>
-            <strong id="live-stat-opportunities">0</strong>
-            <small id="live-stat-opportunities-label">Chưa có tín hiệu</small>
-          </div>
-          <div class="desk-stat">
-            <span>AVG MODEL EDGE</span>
-            <strong id="live-stat-edge">—</strong>
-            <small>Trên các dòng đang hiển thị</small>
-          </div>
-          <div class="desk-stat">
-            <span>NEAREST EXPIRY</span>
-            <strong id="live-stat-dte">—</strong>
-            <small>Ngày còn lại thấp nhất</small>
-          </div>
-          <div class="desk-stat">
-            <span>OPTION CONTRACTS</span>
-            <strong id="live-stat-contracts">—</strong>
-            <small id="live-stat-contracts-label">Chưa có contract inventory</small>
-          </div>
-          <div class="desk-stat">
-            <span>REJECTIONS</span>
-            <strong id="live-stat-rejections">—</strong>
-            <small id="live-stat-rejections-label">Chưa có rejection summary</small>
-          </div>
-        </div>
-
-        <div class="market-strip" id="market-strip" aria-label="Tóm tắt tài sản live">
-          <div class="market-strip-empty">Bật live feed sau khi chọn điều kiện scanner để nhận quote liên tục.</div>
-        </div>
-
-        <article class="desk-panel opportunity-board-panel" aria-labelledby="opportunity-board-title">
-          <div class="desk-panel-heading">
-            <div>
-              <span class="desk-panel-label">OPPORTUNITY BOARD</span>
-              <h3 id="opportunity-board-title">Live ranked opportunities</h3>
-            </div>
-            <span class="desk-panel-note">Click một dòng để xem payoff</span>
-          </div>
-          <div class="live-opportunity-table-wrap">
-            <table class="live-opportunity-table">
-              <thead>
-                <tr><th>Asset / contract</th><th>Strategy</th><th>Model edge</th><th>DTE</th><th>Entry</th><th></th></tr>
-              </thead>
-              <tbody id="live-opportunity-body">
-                <tr><td colspan="6" class="live-board-empty">Chưa có snapshot live.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </article>
-
-        <div class="desk-grid">
-          <article class="desk-panel signal-panel" aria-labelledby="signal-panel-title">
-            <div class="desk-panel-heading">
-              <div>
-                <span class="desk-panel-label">SIGNAL DISTRIBUTION</span>
-                <h3 id="signal-panel-title">Model edge by opportunity</h3>
-              </div>
-              <span class="desk-panel-note" id="live-signal-status">Đang chờ snapshot</span>
-            </div>
-            <div class="signal-chart" id="signal-chart" role="img" aria-label="Phân bổ model edge theo cơ hội">
-              <div class="signal-chart-empty">Các tín hiệu live sẽ xuất hiện ở đây.</div>
-            </div>
-            <div class="signal-axis"><span>LOW EDGE</span><span>HIGH EDGE</span></div>
-          </article>
-
-          <article class="desk-panel feed-panel" aria-labelledby="feed-panel-title">
-            <div class="desk-panel-heading">
-              <div>
-                <span class="desk-panel-label">ACTIVITY LOG</span>
-                <h3 id="feed-panel-title">Latest market events</h3>
-              </div>
-              <span class="live-pulse" aria-hidden="true"></span>
-            </div>
-            <div class="live-feed" id="live-feed" aria-live="polite">
-              <div class="live-feed-empty">Chưa có event. Stream sẽ ghi nhận snapshot mới tại đây.</div>
-            </div>
-            <div class="live-rejection-summary" id="live-rejection-summary" aria-live="polite">
-              <span class="live-rejection-title">REJECTION SUMMARY</span>
-              <strong>Chưa có dữ liệu rejection</strong>
-            </div>
-          </article>
-        </div>
-      </section>
-
       <section class="panel controls-panel">
         <div class="panel-heading">
           <div>
@@ -456,7 +332,132 @@
             </table>
           </div>
         </details>
-      </section>
+          </section>
+          </div>
+
+          <div class="workspace-view" id="live-desk-view" data-workspace-view="live-desk" hidden>
+            <section class="live-desk" aria-labelledby="live-desk-title">
+              <div class="live-desk-topbar">
+                <div class="desk-identity">
+                  <div class="desk-mark" aria-hidden="true">F</div>
+                  <div>
+                    <strong>FLOW<span>SURFACE</span></strong>
+                    <small>LIVE OPTIONS DESK / READ-ONLY</small>
+                  </div>
+                </div>
+                <div class="desk-actions">
+                  <span class="live-connection live-connection-idle" id="live-connection" role="status">
+                    <span class="live-connection-dot" aria-hidden="true"></span>
+                    <span id="live-connection-label">Live feed đang tắt</span>
+                  </span>
+                  <button type="button" class="desk-toggle" id="live-toggle">Bật live feed</button>
+                </div>
+              </div>
+
+              <div class="live-desk-hero">
+                <div>
+                  <p class="desk-kicker">REALTIME MARKET INTELLIGENCE</p>
+                  <h2 id="live-desk-title">Live options market</h2>
+                  <p class="desk-subtitle">Dữ liệu option trực tiếp từ WebSocket, tách biệt khỏi bộ lọc scanner.</p>
+                  <div class="desk-meta-line">
+                    <span id="live-last-update">Chưa có snapshot live</span>
+                    <span class="meta-separator" aria-hidden="true">•</span>
+                    <span id="live-update-count">0 cập nhật</span>
+                    <span class="meta-separator" aria-hidden="true">•</span>
+                    <span>Paper research only</span>
+                  </div>
+                </div>
+                <div class="desk-session" aria-label="Trạng thái phiên">
+                  <span>MARKET SESSION</span>
+                  <strong id="live-session-state">WAITING</strong>
+                  <small id="live-next-refresh">Chờ kết nối stream</small>
+                </div>
+              </div>
+
+              <div class="desk-stat-grid" id="live-stats" aria-live="polite">
+                <div class="desk-stat desk-stat-spot">
+                  <span>SPOT / UNDERLYING</span>
+                  <strong id="live-stat-spot">—</strong>
+                  <small id="live-stat-spot-label">Chưa có quote</small>
+                </div>
+                <div class="desk-stat">
+                  <span>LIVE OPTIONS</span>
+                  <strong id="live-stat-opportunities">0</strong>
+                  <small id="live-stat-opportunities-label">Chưa có option quote</small>
+                </div>
+                <div class="desk-stat">
+                  <span>SELECTED OPTION</span>
+                  <strong id="live-stat-edge">—</strong>
+                  <small id="live-stat-dte">Chưa chọn mã</small>
+                </div>
+                <div class="desk-stat">
+                  <span>OPTION CONTRACTS</span>
+                  <strong id="live-stat-contracts">—</strong>
+                  <small id="live-stat-contracts-label">Chưa có contract inventory</small>
+                </div>
+                <div class="desk-stat">
+                  <span>REJECTIONS</span>
+                  <strong id="live-stat-rejections">—</strong>
+                  <small id="live-stat-rejections-label">Chưa có rejection summary</small>
+                </div>
+              </div>
+
+              <div class="market-strip" id="market-strip" aria-label="Tóm tắt tài sản live">
+                <div class="market-strip-empty">Bật live feed để nhận quote option liên tục.</div>
+              </div>
+
+              <article class="desk-panel opportunity-board-panel" aria-labelledby="option-tape-title">
+                <div class="desk-panel-heading">
+                  <div>
+                    <span class="desk-panel-label">DIRECT OPTION TAPE</span>
+                    <h3 id="option-tape-title">Option quotes from WebSocket</h3>
+                  </div>
+                  <span class="desk-panel-note">Bid / ask / mark từ snapshot mới nhất</span>
+                </div>
+                <div class="live-option-table-wrap">
+                  <table class="live-option-tape" id="live-option-tape">
+                    <thead><tr><th>Asset / contract</th><th>Bid</th><th>Ask</th><th>Mark</th><th>IV</th><th>Quote time</th></tr></thead>
+                    <tbody id="live-option-tape-body"><tr><td colspan="6" class="live-board-empty">Chưa có option quote.</td></tr></tbody>
+                  </table>
+                </div>
+              </article>
+
+              <div class="desk-grid">
+                <article class="desk-panel signal-panel" aria-labelledby="signal-panel-title">
+                  <div class="desk-panel-heading">
+                    <div>
+                      <span class="desk-panel-label">OPTION QUOTE CHART</span>
+                      <h3 id="signal-panel-title">Bid / ask / mark realtime</h3>
+                    </div>
+                    <span class="desk-panel-note" id="live-signal-status">Đang chờ option quote</span>
+                  </div>
+                  <label class="live-option-select-label">Mã option
+                    <select id="live-option-select" aria-label="Chọn option để xem chart"><option>Chưa có option quote</option></select>
+                  </label>
+                  <div class="signal-chart" id="signal-chart" role="img" aria-label="Biểu đồ giá bid ask mark của option live">
+                    <div class="live-option-chart" id="live-option-chart"><div class="signal-chart-empty">Option quotes live sẽ xuất hiện ở đây.</div></div>
+                  </div>
+                  <div class="signal-axis"><span>OLDER SNAPSHOT</span><span>NEWEST SNAPSHOT</span></div>
+                </article>
+
+                <article class="desk-panel feed-panel" aria-labelledby="feed-panel-title">
+                  <div class="desk-panel-heading">
+                    <div>
+                      <span class="desk-panel-label">ACTIVITY LOG</span>
+                      <h3 id="feed-panel-title">Latest option updates</h3>
+                    </div>
+                    <span class="live-pulse" aria-hidden="true"></span>
+                  </div>
+                  <div class="live-feed" id="live-feed" aria-live="polite">
+                    <div class="live-feed-empty">Chưa có event. Stream sẽ ghi nhận snapshot mới tại đây.</div>
+                  </div>
+                  <div class="live-rejection-summary" id="live-rejection-summary" aria-live="polite">
+                    <span class="live-rejection-title">REJECTION SUMMARY</span>
+                    <strong>Chưa có dữ liệu rejection</strong>
+                  </div>
+                </article>
+              </div>
+            </section>
           </div>
 
           <div class="workspace-view" id="backtest-view" data-workspace-view="backtest" hidden>

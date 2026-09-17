@@ -80,9 +80,27 @@
     return count === null ? "—" : Math.round(count).toLocaleString("en-US");
   }
 
-  function edgePercent(item) {
-    const edge = finiteNumber(firstDefined(item?.edge_pct, item?.iv_edge));
-    return edge === null ? null : edge;
+  function normalizeOptionQuote(value) {
+    const object = record(value) || {};
+    const symbol = String(firstDefined(object.symbol, object.instrument, object.option_symbol, "")).trim();
+    if (!symbol) return null;
+    const asset = cardAsset(value, "—");
+    return {
+      asset,
+      symbol,
+      optionType: firstDefined(object.option_type, object.optionType, object.type, "—"),
+      strike: finiteNumber(object.strike),
+      expiryAt: firstDefined(object.expiry_at, object.expiryAt, object.expiry),
+      spot: spotValue(firstDefined(object.spot_price, object.spot, object.underlying_price)),
+      bid: finiteNumber(firstDefined(object.bid_price, object.bid)),
+      ask: finiteNumber(firstDefined(object.ask_price, object.ask)),
+      mark: finiteNumber(firstDefined(object.mark_price, object.mark, object.market_mid)),
+      iv: finiteNumber(firstDefined(object.mark_iv, object.iv, object.market_iv)),
+      delta: finiteNumber(object.delta),
+      volume: finiteNumber(firstDefined(object.volume_24h, object.volume)),
+      openInterest: finiteNumber(firstDefined(object.open_interest, object.oi)),
+      quoteTimestamp: firstDefined(object.quote_timestamp, object.quoteTimestamp, object.timestamp, object.updated_at),
+    };
   }
 
   function uniqueStrings(values) {
@@ -115,7 +133,7 @@
     ));
   }
 
-  function normalizeMarketCard(value, fallbackAsset, opportunityItems) {
+  function normalizeMarketCard(value, fallbackAsset, optionItems) {
     const object = record(value) || {};
     const asset = cardAsset(value, fallbackAsset);
     const spot = spotValue(firstDefined(
@@ -134,14 +152,6 @@
       "contracts",
     ]);
     const validQuoteCount = readCount(object, ["valid_quote_count", "valid_quotes", "quoted_contract_count"]);
-    const opportunityCount = readCount(object, [
-      "opportunity_count",
-      "opportunities_count",
-      "qualified_count",
-      "signal_count",
-      "signals",
-      "opportunities",
-    ]);
     const quoteTimestamp = firstDefined(
       object.quote_timestamp,
       object.data_timestamp,
@@ -154,10 +164,9 @@
       spot,
       contractCount,
       validQuoteCount,
-      opportunityCount: opportunityCount === null ? opportunityItems.length : opportunityCount,
+      quoteCount: optionItems.length,
       quoteTimestamp,
       quoteSource,
-      opportunityItems,
     };
   }
 
@@ -297,19 +306,25 @@
       raw.assets,
       raw.observed_assets,
     );
-    const grouped = new Map();
-    opportunities.forEach((item) => {
-      const asset = String(firstDefined(item?.asset, "—"));
-      const current = grouped.get(asset) || [];
-      current.push(item);
-      grouped.set(asset, current);
-    });
+    const rawOptionQuotes = firstDefined(
+      raw.option_quotes,
+      raw.optionQuotes,
+      raw.options,
+      raw.quotes,
+    );
     const cardRecords = recordsFrom(rawCards);
     const cardAssets = cardRecords.map((item) => cardAsset(item));
-    const assets = uniqueStrings([...selectedAssets, ...cardAssets, ...grouped.keys()]);
+    const optionQuotes = recordsFrom(rawOptionQuotes)
+      .map(normalizeOptionQuote)
+      .filter(Boolean);
+    const assets = uniqueStrings([
+      ...selectedAssets,
+      ...cardAssets,
+      ...optionQuotes.map((quote) => quote.asset),
+    ]);
     const markets = assets.map((asset) => {
       const card = cardRecords.find((item) => cardAsset(item) === asset);
-      return normalizeMarketCard(card || { asset }, asset, grouped.get(asset) || []);
+      return normalizeMarketCard(card || { asset }, asset, optionQuotes.filter((quote) => quote.asset === asset));
     });
     const summary = record(raw.summary) || {};
     const contractCount = firstDefined(
@@ -317,17 +332,12 @@
       readCount(summary, ["contract_count", "contracts_count", "total_contracts", "contracts"]),
       markets.reduce((sum, market) => sum + (market.contractCount || 0), 0) || null,
     );
-    const opportunityCount = firstDefined(
-      readCount(raw, ["opportunity_count", "opportunities_count", "qualified_count", "signal_count"]),
-      readCount(summary, ["opportunity_count", "opportunities_count", "qualified_count", "signal_count"]),
-      opportunities.length,
-    );
     return {
       opportunities,
+      optionQuotes,
       markets,
       spot: spotFromDesk(raw, markets, opportunities, selectedAssets),
       contractCount,
-      opportunityCount,
       rejectionSummary: rejectionSummary(safePayload, raw),
     };
   }
@@ -342,9 +352,6 @@
   function createController(options = {}) {
     const elements = options.elements || {};
     const getSelectedAssets = options.getSelectedAssets || (() => []);
-    const strategyLabel = options.strategyLabel || ((strategy) => String(strategy || "—"));
-    const opportunitySymbol = options.opportunitySymbol || ((item) => String(item?.symbol || "Mã chưa có"));
-    const onOpportunityDetail = options.onOpportunityDetail || (() => {});
     const onLog = options.onLog || (() => {});
     const serviceStatus = elements.serviceStatus;
     let socket = null;
@@ -353,6 +360,16 @@
     let wanted = false;
     let updateCount = 0;
     let state = "idle";
+    let selectedOptionSymbol = null;
+    let latestOptionQuotes = [];
+    const optionHistory = new Map();
+
+    if (elements.liveOptionSelect) {
+      elements.liveOptionSelect.addEventListener("change", () => {
+        selectedOptionSymbol = elements.liveOptionSelect.value || null;
+        renderOptionChart(latestOptionQuotes, selectedOptionSymbol, optionHistory);
+      });
+    }
 
     function setServiceStatus(message, isError = false) {
       if (!serviceStatus) return;
@@ -417,112 +434,171 @@
             ? contractText
             : `${contractText} · ${countLabel(market.validQuoteCount)} valid quotes`);
         }
-        if (market.opportunityCount !== null) detailParts.push(`${countLabel(market.opportunityCount)} signal${market.opportunityCount === 1 ? "" : "s"}`);
-        if (!detailParts.length && market.opportunityItems.length) detailParts.push(strategyLabel(market.opportunityItems[0].strategy));
+        detailParts.push(`${countLabel(market.quoteCount)} option quote${market.quoteCount === 1 ? "" : "s"}`);
         detail.textContent = detailParts.join(" · ") || "Chưa có market data";
         card.append(heading, spot, detail);
         target.appendChild(card);
       });
     }
 
-    function renderSignalChart(opportunities) {
-      const target = elements.signalChart;
-      if (!target) return;
+    function renderOptionSelector(quotes, selectedSymbol) {
+      const target = elements.liveOptionSelect;
+      if (!target) return selectedSymbol;
       target.replaceChildren();
-      const ranked = opportunities
-        .map((item) => ({ item, value: edgePercent(item) }))
-        .filter((entry) => entry.value !== null)
-        .sort((left, right) => right.value - left.value)
-        .slice(0, 8);
-      if (!ranked.length) {
-        const empty = document.createElement("div");
-        empty.className = "signal-chart-empty";
-        empty.textContent = opportunities.length ? "Chưa có model edge để vẽ." : "Không có cơ hội đạt điều kiện hiện tại.";
+      if (!quotes.length) {
+        const empty = document.createElement("option");
+        empty.textContent = "Chưa có option quote";
+        empty.value = "";
         target.appendChild(empty);
-        if (elements.liveSignalStatus) elements.liveSignalStatus.textContent = opportunities.length ? "Có signal · thiếu edge" : "Không có signal";
-        return;
+        return null;
       }
-      const maxValue = Math.max(...ranked.map((entry) => Math.abs(entry.value)), 0.01);
-      ranked.forEach(({ item, value }, index) => {
-        const column = document.createElement("div");
-        column.className = "signal-column";
-        const valueLabel = document.createElement("span");
-        valueLabel.className = "signal-value";
-        valueLabel.textContent = `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
-        const track = document.createElement("div");
-        track.className = "signal-track";
-        const bar = document.createElement("span");
-        bar.className = value >= 0 ? "signal-bar" : "signal-bar signal-bar-negative";
-        bar.style.height = `${Math.max(12, Math.abs(value) / maxValue * 100)}%`;
-        track.appendChild(bar);
-        const label = document.createElement("span");
-        label.className = "signal-label";
-        label.textContent = `${index + 1} · ${item.asset || "—"}`;
-        column.append(valueLabel, track, label);
-        target.appendChild(column);
+      quotes.forEach((quote) => {
+        const option = document.createElement("option");
+        option.value = quote.symbol;
+        option.textContent = `${quote.asset} · ${quote.symbol}`;
+        target.appendChild(option);
       });
-      if (elements.liveSignalStatus) elements.liveSignalStatus.textContent = `${opportunities.length} signal${opportunities.length > 1 ? "s" : ""} · top ${ranked.length}`;
+      const nextSymbol = quotes.some((quote) => quote.symbol === selectedSymbol)
+        ? selectedSymbol
+        : quotes[0].symbol;
+      target.value = nextSymbol;
+      return nextSymbol;
     }
 
-    function renderOpportunityBoard(opportunities) {
-      const target = elements.liveOpportunityBody;
+    function renderOptionTape(quotes) {
+      const target = elements.liveOptionTape;
       if (!target) return;
       target.replaceChildren();
-      const ranked = [...opportunities]
-        .sort((left, right) => (edgePercent(right) || 0) - (edgePercent(left) || 0))
-        .slice(0, 8);
-      if (!ranked.length) {
+      if (!quotes.length) {
         const row = document.createElement("tr");
         const empty = document.createElement("td");
-        empty.className = "live-board-empty";
         empty.colSpan = 6;
-        empty.textContent = "Snapshot đã nhận nhưng chưa có signal phù hợp.";
+        empty.className = "live-board-empty";
+        empty.textContent = "Chưa có option quote từ WebSocket.";
         row.appendChild(empty);
         target.appendChild(row);
         return;
       }
-      ranked.forEach((item) => {
+      quotes.slice(0, 12).forEach((quote) => {
         const row = document.createElement("tr");
         const instrument = document.createElement("td");
         instrument.className = "live-board-instrument";
         const asset = document.createElement("strong");
-        asset.textContent = item.asset || "—";
+        asset.textContent = quote.asset;
         const symbol = document.createElement("span");
-        symbol.textContent = opportunitySymbol(item);
+        symbol.textContent = quote.symbol;
         instrument.append(asset, symbol);
         row.appendChild(instrument);
-        appendCell(row, strategyLabel(item.strategy));
-        const edge = edgePercent(item);
-        appendCell(row, edge === null ? "—" : `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(2)}%`, edge === null || edge < 0 ? "negative" : "positive");
-        appendCell(row, Number.isFinite(Number(item.dte)) ? `${Math.round(Number(item.dte))}d` : "—");
-        appendCell(row, compactNumber(firstDefined(item.estimated_entry, item.market_mid)));
-        const action = document.createElement("td");
-        const detailButton = document.createElement("button");
-        detailButton.type = "button";
-        detailButton.className = "live-board-detail";
-        detailButton.textContent = "Payoff";
-        detailButton.addEventListener("click", () => onOpportunityDetail(item));
-        action.appendChild(detailButton);
-        row.appendChild(action);
+        appendCell(row, compactNumber(quote.bid));
+        appendCell(row, compactNumber(quote.ask));
+        appendCell(row, compactNumber(quote.mark));
+        appendCell(row, quote.iv === null ? "—" : `${(quote.iv * 100).toFixed(2)}%`);
+        appendCell(row, quote.quoteTimestamp ? new Date(quote.quoteTimestamp).toLocaleTimeString("vi-VN") : "—");
         target.appendChild(row);
       });
     }
 
-    function renderFeed(opportunities) {
+    function svgNode(name, attributes = {}) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+      Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
+      return node;
+    }
+
+    function renderOptionChart(quotes, selectedSymbol, history) {
+      const target = elements.liveOptionChart || elements.signalChart;
+      if (!target) return;
+      target.replaceChildren();
+      const quote = quotes.find((item) => item.symbol === selectedSymbol) || quotes[0];
+      if (!quote) {
+        const empty = document.createElement("div");
+        empty.className = "signal-chart-empty";
+        empty.textContent = "Option quotes live sẽ xuất hiện ở đây.";
+        target.appendChild(empty);
+        if (elements.liveSignalStatus) elements.liveSignalStatus.textContent = "Đang chờ option quote";
+        return;
+      }
+      const caption = document.createElement("div");
+      caption.className = "live-option-chart-caption";
+      const symbol = document.createElement("strong");
+      symbol.textContent = quote.symbol;
+      const quoteMeta = document.createElement("span");
+      quoteMeta.textContent = `Bid ${compactNumber(quote.bid)} · Ask ${compactNumber(quote.ask)} · Mark ${compactNumber(quote.mark)} · IV ${quote.iv === null ? "—" : `${(quote.iv * 100).toFixed(2)}%`}`;
+      caption.append(symbol, quoteMeta);
+      target.appendChild(caption);
+
+      const points = history.get(quote.symbol) || [];
+      const values = points.flatMap((point) => [point.bid, point.ask, point.mark]).filter((value) => value !== null);
+      if (!values.length) return;
+      const width = 760;
+      const height = 230;
+      const padding = { top: 18, right: 20, bottom: 28, left: 44 };
+      const minValue = Math.min(...values);
+      const maxValue = Math.max(...values);
+      const range = Math.max(maxValue - minValue, Math.max(Math.abs(maxValue), 1) * 0.01);
+      const lower = minValue - range * 0.12;
+      const upper = maxValue + range * 0.12;
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+      const xFor = (index) => padding.left + (points.length <= 1 ? plotWidth / 2 : index / (points.length - 1) * plotWidth);
+      const yFor = (value) => padding.top + (upper - value) / (upper - lower) * plotHeight;
+      const chart = svgNode("svg", { class: "option-quote-svg", viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `Giá bid ask mark realtime của ${quote.symbol}` });
+      [0, 0.5, 1].forEach((ratio) => {
+        const y = padding.top + ratio * plotHeight;
+        chart.appendChild(svgNode("line", { x1: padding.left, x2: width - padding.right, y1: y, y2: y, class: "option-chart-grid" }));
+        const label = svgNode("text", { x: padding.left - 8, y: y + 4, class: "option-chart-axis-label", "text-anchor": "end" });
+        label.textContent = compactNumber(upper - ratio * (upper - lower));
+        chart.appendChild(label);
+      });
+      const pathFor = (key, className, pointClass) => {
+        const pathPoints = points.map((point, index) => point[key] === null ? null : `${xFor(index)},${yFor(point[key])}`).filter(Boolean);
+        if (!pathPoints.length) return;
+        chart.appendChild(svgNode("path", { d: `M ${pathPoints.join(" L ")}`, class: className }));
+        points.forEach((point, index) => {
+          if (point[key] === null) return;
+          chart.appendChild(svgNode("circle", {
+            cx: xFor(index),
+            cy: yFor(point[key]),
+            r: 3.5,
+            class: pointClass,
+          }));
+        });
+      };
+      pathFor("bid", "option-chart-line option-chart-line-bid", "option-chart-point option-chart-point-bid");
+      pathFor("ask", "option-chart-line option-chart-line-ask", "option-chart-point option-chart-point-ask");
+      pathFor("mark", "option-chart-line option-chart-line-mark", "option-chart-point option-chart-point-mark");
+      target.appendChild(chart);
+      const legend = document.createElement("div");
+      legend.className = "live-option-chart-legend";
+      legend.textContent = `BID / ASK / MARK · ${points.length} snapshots · dữ liệu trực tiếp từ WebSocket`;
+      target.appendChild(legend);
+      if (elements.liveSignalStatus) elements.liveSignalStatus.textContent = `${points.length} snapshot · ${quote.symbol}`;
+    }
+
+    function rememberOptionQuotes(quotes, timestamp) {
+      quotes.forEach((quote) => {
+        const points = optionHistory.get(quote.symbol) || [];
+        points.push({
+          timestamp: firstDefined(quote.quoteTimestamp, timestamp),
+          bid: quote.bid,
+          ask: quote.ask,
+          mark: quote.mark,
+        });
+        optionHistory.set(quote.symbol, points.slice(-32));
+      });
+    }
+
+    function renderFeed(optionQuotes) {
       const target = elements.liveFeed;
       if (!target) return;
       target.replaceChildren();
-      const ranked = [...opportunities]
-        .sort((left, right) => (edgePercent(right) || 0) - (edgePercent(left) || 0))
-        .slice(0, 6);
-      if (!ranked.length) {
+      if (!optionQuotes.length) {
         const empty = document.createElement("div");
         empty.className = "live-feed-empty";
-        empty.textContent = "Snapshot đã nhận nhưng chưa có signal phù hợp.";
+        empty.textContent = "Snapshot đã nhận nhưng chưa có option quote.";
         target.appendChild(empty);
         return;
       }
-      ranked.forEach((item, index) => {
+      optionQuotes.slice(0, 6).forEach((quote, index) => {
         const event = document.createElement("div");
         event.className = "live-event";
         const indexLabel = document.createElement("span");
@@ -531,14 +607,13 @@
         const copy = document.createElement("div");
         copy.className = "live-event-copy";
         const title = document.createElement("strong");
-        title.textContent = `${item.asset || "—"} · ${strategyLabel(item.strategy)}`;
+        title.textContent = `${quote.asset} · Option quote`;
         const symbol = document.createElement("span");
-        symbol.textContent = opportunitySymbol(item);
+        symbol.textContent = `${quote.symbol} · Bid ${compactNumber(quote.bid)} · Ask ${compactNumber(quote.ask)}`;
         copy.append(title, symbol);
         const edge = document.createElement("strong");
-        const edgeValue = edgePercent(item);
-        edge.className = edgeValue === null || edgeValue < 0 ? "live-event-edge negative" : "live-event-edge positive";
-        edge.textContent = edgeValue === null ? "—" : `${edgeValue >= 0 ? "+" : ""}${(edgeValue * 100).toFixed(2)}%`;
+        edge.className = "live-event-edge positive";
+        edge.textContent = compactNumber(quote.mark);
         event.append(indexLabel, copy, edge);
         target.appendChild(event);
       });
@@ -573,9 +648,11 @@
     function renderLiveSnapshot(payload) {
       const model = normalizeSnapshot(payload, getSelectedAssets);
       const opportunities = model.opportunities;
+      latestOptionQuotes = model.optionQuotes;
+      rememberOptionQuotes(latestOptionQuotes, firstDefined(payload?.data_timestamp, payload?.timestamp, Date.now()));
+      selectedOptionSymbol = renderOptionSelector(latestOptionQuotes, selectedOptionSymbol);
       const first = opportunities[0];
-      const edgeValues = opportunities.map(edgePercent).filter((value) => value !== null);
-      const dtes = opportunities.map((item) => Number(item.dte)).filter(Number.isFinite);
+      const selectedQuote = latestOptionQuotes.find((quote) => quote.symbol === selectedOptionSymbol) || latestOptionQuotes[0];
       updateCount += 1;
       if (elements.liveUpdateCountLabel) elements.liveUpdateCountLabel.textContent = `${updateCount} cập nhật`;
       if (elements.liveLastUpdate) {
@@ -589,12 +666,12 @@
         const source = model.spot?.source || (first?.quote_timestamp ? "quote nhận được" : "quote model");
         elements.liveStatSpotLabel.textContent = model.spot || first ? `${spotAsset} · ${source}` : "Chưa có quote phù hợp";
       }
-      if (elements.liveStatOpportunities) elements.liveStatOpportunities.textContent = countLabel(model.opportunityCount);
-      if (elements.liveStatOpportunitiesLabel) elements.liveStatOpportunitiesLabel.textContent = model.opportunityCount ? "Đang đạt bộ lọc" : "Không có signal phù hợp";
-      if (elements.liveStatEdge) elements.liveStatEdge.textContent = edgeValues.length
-        ? `${(edgeValues.reduce((sum, value) => sum + value, 0) / edgeValues.length * 100).toFixed(2)}%`
-        : "—";
-      if (elements.liveStatDte) elements.liveStatDte.textContent = dtes.length ? `${Math.round(Math.min(...dtes))}d` : "—";
+      if (elements.liveStatOpportunities) elements.liveStatOpportunities.textContent = countLabel(latestOptionQuotes.length);
+      if (elements.liveStatOpportunitiesLabel) elements.liveStatOpportunitiesLabel.textContent = latestOptionQuotes.length ? "Option quotes từ WebSocket" : "Chưa có option quote";
+      if (elements.liveStatEdge) elements.liveStatEdge.textContent = compactNumber(selectedQuote?.mark);
+      if (elements.liveStatDte) elements.liveStatDte.textContent = selectedQuote
+        ? `Bid ${compactNumber(selectedQuote.bid)} · Ask ${compactNumber(selectedQuote.ask)}`
+        : "Chưa chọn mã";
       if (elements.liveStatContracts) elements.liveStatContracts.textContent = countLabel(model.contractCount);
       if (elements.liveStatContractsLabel) elements.liveStatContractsLabel.textContent = model.markets.length
         ? `${model.markets.length} market${model.markets.length > 1 ? "s" : ""} trong snapshot`
@@ -604,11 +681,11 @@
         ? `${model.rejectionSummary.reasons[0].reason}`
         : "Không có rejection summary";
       renderMarketStrip(model);
-      renderOpportunityBoard(opportunities);
-      renderSignalChart(opportunities);
-      renderFeed(opportunities);
+      renderOptionChart(latestOptionQuotes, selectedOptionSymbol, optionHistory);
+      renderOptionTape(latestOptionQuotes);
+      renderFeed(latestOptionQuotes);
       renderRejectionSummary(model.rejectionSummary);
-      setConnectionState("live", `Live feed · ${model.opportunityCount} signal`);
+      setConnectionState("live", `Live feed · ${latestOptionQuotes.length} option quotes`);
       setServiceStatus("Live stream đang hoạt động");
     }
 

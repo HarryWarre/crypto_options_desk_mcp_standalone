@@ -105,13 +105,14 @@ def test_live_desk_snapshot_preserves_market_state_without_opportunities() -> No
     )
 
     assert snapshot.selected_assets == ("BTC",)
-    assert snapshot.observed_assets == (
-        snapshot.observed_assets[0],
-    )
+    assert snapshot.observed_assets == (snapshot.observed_assets[0],)
     assert snapshot.observed_assets[0].asset == "BTC"
     assert snapshot.observed_assets[0].spot == 100_000
     assert snapshot.observed_assets[0].contract_count == 2
     assert snapshot.observed_assets[0].valid_quote_count == 1
+    assert snapshot.option_quotes[0].symbol == "BTC-30DEC26-100000-C"
+    assert snapshot.option_quotes[0].bid_price == 100
+    assert snapshot.option_quotes[0].ask_price == 110
     assert snapshot.timestamp == VALUATION_TIME
     assert snapshot.data_timestamp == DATA_TIME
     assert snapshot.source == "fake-bybit-live"
@@ -133,13 +134,16 @@ def test_live_websocket_payload_contains_live_desk_market_state() -> None:
     def scanner(_universe, _request):
         return empty_scan(universe)
 
-    with TestClient(
-        create_app(
-            adapter=FakeLiveAdapter(),
-            scanner=scanner,
-            live_scan_interval_seconds=0,
-        )
-    ) as client, client.websocket_connect("/api/v1/opportunities/stream") as websocket:
+    with (
+        TestClient(
+            create_app(
+                adapter=FakeLiveAdapter(),
+                scanner=scanner,
+                live_scan_interval_seconds=0,
+            )
+        ) as client,
+        client.websocket_connect("/api/v1/opportunities/stream") as websocket,
+    ):
         websocket.send_json(
             {
                 "assets": ["BTC"],
@@ -169,6 +173,40 @@ def test_live_websocket_payload_contains_live_desk_market_state() -> None:
                 "contract_count": 2,
                 "valid_quote_count": 1,
             }
+        ],
+        "option_quotes": [
+            {
+                "asset": "BTC",
+                "symbol": "BTC-30DEC26-100000-C",
+                "option_type": "Call",
+                "strike": 100_000,
+                "expiry_at": "2026-12-30T12:00:00Z",
+                "spot_price": 100_000,
+                "mark_price": 105,
+                "mark_iv": 0.5,
+                "bid_price": 100,
+                "ask_price": 110,
+                "delta": 0.5,
+                "volume_24h": 10,
+                "open_interest": 10,
+                "quote_timestamp": "2026-09-15T11:59:30Z",
+            },
+            {
+                "asset": "BTC",
+                "symbol": "BTC-30DEC26-101000-C",
+                "option_type": "Call",
+                "strike": 100_000,
+                "expiry_at": "2026-12-30T12:00:00Z",
+                "spot_price": 100_000,
+                "mark_price": 105,
+                "mark_iv": 0.5,
+                "bid_price": None,
+                "ask_price": 110,
+                "delta": 0.5,
+                "volume_24h": 10,
+                "open_interest": 10,
+                "quote_timestamp": "2026-09-15T11:59:30Z",
+            },
         ],
         "timestamp": "2026-09-15T12:00:00Z",
         "data_timestamp": "2026-09-15T11:59:30Z",

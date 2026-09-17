@@ -68,8 +68,10 @@ const liveStatContractsLabel = document.querySelector("#live-stat-contracts-labe
 const liveStatRejections = document.querySelector("#live-stat-rejections");
 const liveStatRejectionsLabel = document.querySelector("#live-stat-rejections-label");
 const marketStrip = document.querySelector("#market-strip");
-const liveOpportunityBody = document.querySelector("#live-opportunity-body");
 const signalChart = document.querySelector("#signal-chart");
+const liveOptionChart = document.querySelector("#live-option-chart");
+const liveOptionSelect = document.querySelector("#live-option-select");
+const liveOptionTape = document.querySelector("#live-option-tape-body");
 const liveSignalStatus = document.querySelector("#live-signal-status");
 const liveFeed = document.querySelector("#live-feed");
 const liveRejectionSummary = document.querySelector("#live-rejection-summary");
@@ -101,16 +103,15 @@ const liveDesk = window.FlowSurfaceLiveDesk.createController({
     liveStatRejections,
     liveStatRejectionsLabel,
     marketStrip,
-    liveOpportunityBody,
     signalChart,
+    liveOptionChart,
+    liveOptionSelect,
+    liveOptionTape,
     liveSignalStatus,
     liveFeed,
     liveRejectionSummary,
   },
   getSelectedAssets: () => [...form.querySelectorAll('input[name="assets"]:checked')].map((input) => input.value),
-  opportunitySymbol,
-  strategyLabel,
-  onOpportunityDetail: showOpportunityDetail,
   onLog: appendTerminal,
 });
 
@@ -130,6 +131,11 @@ const WORKSPACE_META = Object.freeze({
     title: "Position Monitoring",
     description: "Kiểm tra lệnh đã mở và nhận quyết định CLOSE, HOLD hoặc REVIEW trước khi đóng thủ công.",
   },
+  "live-desk": {
+    eyebrow: "Realtime market / Live Desk",
+    title: "Live Options Market",
+    description: "Theo dõi option quotes trực tiếp qua WebSocket, độc lập với Scanner.",
+  },
 });
 
 function syncWorkspaceFromHash() {
@@ -145,7 +151,7 @@ function syncWorkspaceFromHash() {
     monitoringSocket = null;
     monitoringRequestKey = null;
   }
-  if (workspace !== "scanner" && liveDesk.isWanted()) liveDesk.stop();
+  if (workspace !== "live-desk" && liveDesk.isWanted()) liveDesk.stop();
 
   workspaceLinks.forEach((link) => {
     const isActive = link.getAttribute("href") === `#${workspace}`;

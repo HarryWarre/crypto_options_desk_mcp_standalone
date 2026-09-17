@@ -34,9 +34,7 @@ class LiveDeskAssetState:
             raise ValueError("asset cannot be empty")
         object.__setattr__(self, "asset", normalized_asset)
         if self.spot is not None and (
-            isinstance(self.spot, bool)
-            or not math.isfinite(float(self.spot))
-            or self.spot <= 0
+            isinstance(self.spot, bool) or not math.isfinite(float(self.spot)) or self.spot <= 0
         ):
             raise ValueError("spot must be a positive finite number or None")
         for name, value in (
@@ -47,6 +45,52 @@ class LiveDeskAssetState:
                 raise ValueError(f"{name} must be a non-negative integer")
         if self.valid_quote_count > self.contract_count:
             raise ValueError("valid_quote_count cannot exceed contract_count")
+
+
+@dataclass(frozen=True)
+class LiveDeskOptionQuote:
+    """A bounded, direct option quote sent with each live-desk snapshot."""
+
+    asset: str
+    symbol: str
+    option_type: str
+    strike: float
+    expiry_at: datetime
+    spot_price: float
+    mark_price: float
+    mark_iv: float
+    bid_price: float | None
+    ask_price: float | None
+    delta: float
+    volume_24h: float
+    open_interest: float
+    quote_timestamp: datetime
+
+    def __post_init__(self) -> None:
+        asset = self.asset.strip().upper()
+        if not asset:
+            raise ValueError("asset cannot be empty")
+        if not self.symbol.strip():
+            raise ValueError("symbol cannot be empty")
+        if not self.option_type.strip():
+            raise ValueError("option_type cannot be empty")
+        object.__setattr__(self, "asset", asset)
+        for name in (
+            "strike",
+            "spot_price",
+            "mark_price",
+            "mark_iv",
+            "delta",
+            "volume_24h",
+            "open_interest",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be finite")
+        for name in ("bid_price", "ask_price"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not math.isfinite(float(value))):
+                raise ValueError(f"{name} must be finite or None")
 
 
 @dataclass(frozen=True)
@@ -62,6 +106,7 @@ class LiveDeskSnapshot:
 
     selected_assets: tuple[str, ...]
     observed_assets: tuple[LiveDeskAssetState, ...]
+    option_quotes: tuple[LiveDeskOptionQuote, ...]
     timestamp: datetime
     data_timestamp: datetime
     source: str
@@ -71,18 +116,24 @@ class LiveDeskSnapshot:
     def __post_init__(self) -> None:
         selected = _normalize_assets(self.selected_assets)
         observed = tuple(self.observed_assets)
+        option_quotes = tuple(self.option_quotes)
         observed_names = [state.asset for state in observed]
         if len(observed_names) != len(set(observed_names)):
             raise ValueError("observed_assets must contain each asset once")
         if any(asset not in selected for asset in observed_names):
             raise ValueError("observed_assets must be selected assets")
+        if any(quote.asset not in selected for quote in option_quotes):
+            raise ValueError("option_quotes must be selected assets")
         if not self.source.strip():
             raise ValueError("source cannot be empty")
         if self.execution_allowed:
             raise ValueError("live desk snapshots are read-only")
         object.__setattr__(self, "selected_assets", selected)
         object.__setattr__(self, "observed_assets", observed)
-        object.__setattr__(self, "rejection_reasons", _normalize_reason_counts(self.rejection_reasons))
+        object.__setattr__(self, "option_quotes", option_quotes)
+        object.__setattr__(
+            self, "rejection_reasons", _normalize_reason_counts(self.rejection_reasons)
+        )
 
     @classmethod
     def from_universe(
@@ -93,17 +144,18 @@ class LiveDeskSnapshot:
         rejection_reasons: Iterable[str] | Mapping[str, int] = (),
         timestamp: datetime | None = None,
         data_timestamp: datetime | None = None,
+        max_option_quotes_per_asset: int = 24,
     ) -> LiveDeskSnapshot:
         """Build a snapshot from normalized market data without ranking it."""
 
         if not isinstance(universe, NormalizedOptionUniverse):
             raise TypeError("universe must be a NormalizedOptionUniverse")
+        if isinstance(max_option_quotes_per_asset, bool) or max_option_quotes_per_asset < 1:
+            raise ValueError("max_option_quotes_per_asset must be at least one")
 
         selected = _selected_assets(universe, selected_assets)
         contracts_by_asset = universe.contracts_by_asset
-        catalog_by_asset = {
-            asset.base_coin.strip().upper(): asset for asset in universe.assets
-        }
+        catalog_by_asset = {asset.base_coin.strip().upper(): asset for asset in universe.assets}
         observed = []
         for asset in selected:
             contracts = contracts_by_asset.get(asset, ())
@@ -131,6 +183,13 @@ class LiveDeskSnapshot:
             for asset in observed
             for contract in contracts_by_asset.get(asset.asset, ())
         ]
+        option_quotes = tuple(
+            _option_quote(contract)
+            for asset in selected
+            for contract in _rank_contracts(contracts_by_asset.get(asset, ()))[
+                :max_option_quotes_per_asset
+            ]
+        )
         resolved_timestamp = timestamp or universe.valuation_time
         resolved_data_timestamp = data_timestamp or min(
             observed_timestamps,
@@ -139,6 +198,7 @@ class LiveDeskSnapshot:
         return cls(
             selected_assets=selected,
             observed_assets=tuple(observed),
+            option_quotes=option_quotes,
             timestamp=resolved_timestamp,
             data_timestamp=resolved_data_timestamp,
             source=universe.source,
@@ -166,9 +226,7 @@ class LiveDeskSnapshot:
 
         rejections = getattr(scan_result, "rejections", ())
         reasons = (
-            reason
-            for rejection in rejections
-            for reason in getattr(rejection, "reasons", ())
+            reason for rejection in rejections for reason in getattr(rejection, "reasons", ())
         )
         return cls.from_universe(
             universe,
@@ -218,11 +276,7 @@ def _normalize_assets(assets: Iterable[str]) -> tuple[str, ...]:
 
 
 def _spot_for(contracts: Iterable[OptionContract]) -> float | None:
-    candidates = [
-        contract
-        for contract in contracts
-        if _positive_finite(contract.spot_price)
-    ]
+    candidates = [contract for contract in contracts if _positive_finite(contract.spot_price)]
     if not candidates:
         return None
     return float(
@@ -236,15 +290,48 @@ def _spot_for(contracts: Iterable[OptionContract]) -> float | None:
 def _has_valid_quote(contract: OptionContract) -> bool:
     bid = contract.bid_price
     ask = contract.ask_price
-    return (
-        _positive_finite(bid)
-        and _positive_finite(ask)
-        and float(ask) >= float(bid)
+    return _positive_finite(bid) and _positive_finite(ask) and float(ask) >= float(bid)
+
+
+def _rank_contracts(contracts: Iterable[OptionContract]) -> list[OptionContract]:
+    return sorted(
+        contracts,
+        key=lambda contract: (
+            not _has_valid_quote(contract),
+            -float(contract.volume_24h),
+            -float(contract.open_interest),
+            -_as_utc(contract.quote_timestamp).timestamp(),
+            contract.symbol,
+        ),
+    )
+
+
+def _option_quote(contract: OptionContract) -> LiveDeskOptionQuote:
+    return LiveDeskOptionQuote(
+        asset=contract.asset,
+        symbol=contract.symbol,
+        option_type=contract.option_type,
+        strike=contract.strike,
+        expiry_at=contract.expiry_at,
+        spot_price=contract.spot_price,
+        mark_price=contract.mark_price,
+        mark_iv=contract.mark_iv,
+        bid_price=contract.bid_price,
+        ask_price=contract.ask_price,
+        delta=contract.delta,
+        volume_24h=contract.volume_24h,
+        open_interest=contract.open_interest,
+        quote_timestamp=contract.quote_timestamp,
     )
 
 
 def _positive_finite(value: float | None) -> bool:
-    return value is not None and not isinstance(value, bool) and math.isfinite(float(value)) and value > 0
+    return (
+        value is not None
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and value > 0
+    )
 
 
 def _count_reasons(reasons: Iterable[str]) -> dict[str, int]:
@@ -270,4 +357,9 @@ def _as_utc(value: datetime) -> datetime:
     return normalized.astimezone(UTC)
 
 
-__all__ = ["LiveDeskAssetState", "LiveDeskSnapshot", "build_live_desk_snapshot"]
+__all__ = [
+    "LiveDeskAssetState",
+    "LiveDeskOptionQuote",
+    "LiveDeskSnapshot",
+    "build_live_desk_snapshot",
+]

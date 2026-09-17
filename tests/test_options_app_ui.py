@@ -32,15 +32,21 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'id="live-connection"' in response.text
     assert 'id="live-stat-opportunities"' in response.text
     assert 'id="market-strip"' in response.text
-    assert 'id="live-opportunity-body"' in response.text
+    assert 'id="live-option-tape"' in response.text
+    assert 'id="live-option-tape-body"' in response.text
+    assert 'id="live-option-select"' in response.text
+    assert 'id="live-option-chart"' in response.text
     assert 'id="signal-chart"' in response.text
     assert 'id="live-feed"' in response.text
     assert 'class="app-shell"' in response.text
     assert 'aria-label="Điều hướng workspace"' in response.text
     assert 'data-workspace-link href="#scanner"' in response.text
+    assert 'data-workspace-link href="#live-desk"' in response.text
     assert 'data-workspace-link href="#backtest"' in response.text
     assert 'data-workspace-link href="#monitoring"' in response.text
     assert 'data-workspace-view="scanner"' in response.text
+    assert 'id="live-desk-view"' in response.text
+    assert 'data-workspace-view="live-desk"' in response.text
     assert 'data-workspace-view="backtest"' in response.text
     assert 'data-workspace-view="monitoring"' in response.text
     assert 'id="position-monitoring-view"' in response.text
@@ -120,6 +126,9 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "observed_assets" in live_javascript.text
     assert "contract_count" in live_javascript.text
     assert "rejection_reasons" in live_javascript.text
+    assert "option_quotes" in live_javascript.text
+    assert "renderOptionChart" in live_javascript.text
+    assert "dữ liệu trực tiếp từ WebSocket" in live_javascript.text
     assert "legs" in javascript.text
     for field in ("symbol", "option_type", "strike", "expiry_at", "position"):
         assert field in javascript.text

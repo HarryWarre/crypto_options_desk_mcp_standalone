@@ -325,9 +325,8 @@ body {
   .page-shell { padding: 16px 12px 32px; }
 }
 
-/* Live options desk: a compact, reference-inspired terminal inside the
-   research workspace.  It intentionally sits above the existing controls so
-   users can scan the current state before changing filters. */
+/* Live options desk: a compact, reference-inspired terminal in its own
+   workspace, separate from scanner controls and result ranking. */
 .live-desk {
   background: #f3f6f2;
   border: 1px solid #c7d1ca;
@@ -412,6 +411,11 @@ body {
 .live-opportunity-table th, .live-opportunity-table td { border-bottom: 1px solid #e5ebe6; color: #627269; font-size: .7rem; padding: 9px 7px; white-space: nowrap; }
 .live-opportunity-table th { color: #8b9b91; font: 800 .57rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; }
 .live-opportunity-table tbody tr:last-child td { border-bottom: 0; }
+.live-option-table-wrap { overflow-x: auto; }
+.live-option-tape { border-collapse: collapse; min-width: 720px; width: 100%; }
+.live-option-tape th, .live-option-tape td { border-bottom: 1px solid #e5ebe6; color: #627269; font-size: .7rem; padding: 9px 7px; white-space: nowrap; }
+.live-option-tape th { color: #8b9b91; font: 800 .57rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
+.live-option-tape tbody tr:last-child td { border-bottom: 0; }
 .live-board-instrument { max-width: 280px; white-space: normal !important; }
 .live-board-instrument strong, .live-board-instrument span { display: block; overflow: hidden; text-overflow: ellipsis; }
 .live-board-instrument strong { color: #30493c; font-size: .72rem; }
@@ -433,6 +437,25 @@ body {
 .signal-bar-negative { background: linear-gradient(180deg, #e9a477, #c96d69); }
 .signal-label { color: #84958b; font: 700 .58rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .signal-chart-empty { align-self: center; color: #98a79d; font-size: .75rem; grid-column: 1 / -1; text-align: center; }
+.signal-chart { display: block; height: auto; min-height: 252px; padding: 10px 8px 0; }
+.live-option-chart { display: grid; gap: 7px; min-height: 232px; }
+.live-option-chart-caption { align-items: baseline; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+.live-option-chart-caption strong { color: #30493c; font: 800 .72rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.live-option-chart-caption span { color: #89998f; font: .63rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.option-quote-svg { display: block; height: 220px; overflow: visible; width: 100%; }
+.option-chart-grid { stroke: #e1e9e2; stroke-width: 1; }
+.option-chart-axis-label { fill: #9aa89e; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.option-chart-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.5; }
+.option-chart-line-bid { stroke: #4d9d73; }
+.option-chart-line-ask { stroke: #d58b61; }
+.option-chart-line-mark { stroke: #6876b8; stroke-dasharray: 5 4; }
+.option-chart-point { stroke: #fff; stroke-width: 1.5; }
+.option-chart-point-bid { fill: #4d9d73; }
+.option-chart-point-ask { fill: #d58b61; }
+.option-chart-point-mark { fill: #6876b8; }
+.live-option-chart-legend { color: #89998f; font: 700 .6rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
+.live-option-select-label { color: #718178; display: grid; font-size: .68rem; gap: 5px; margin: 0 0 8px; }
+.live-option-select-label select { background: #f7faf7; border: 1px solid #d5e0d7; border-radius: 5px; color: #30493c; font: .68rem ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 100%; min-width: 0; padding: 7px 8px; }
 .signal-axis { color: #a1aea5; display: flex; font: 700 .58rem ui-monospace, SFMono-Regular, Menlo, monospace; justify-content: space-between; margin: 6px 8px 0; }
 .live-feed { display: grid; gap: 0; }
 .live-feed-empty { color: #98a79d; font-size: .75rem; line-height: 1.45; padding: 18px 0; }
