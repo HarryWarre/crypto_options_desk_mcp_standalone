@@ -35,6 +35,12 @@ class MetricsOpportunity:
     symbol: str = "BTC-30DEC26-78000-C"
     expiry_at: datetime = datetime(2026, 12, 30, 12, 0, tzinfo=UTC)
     expected_value: float = 12.5
+    valuation_mode: str = "executable"
+    quote_source: str = "live_bid_ask"
+    execution_allowed: bool = False
+    estimated_entry: float | None = None
+    edge_after_costs: float | None = None
+    max_loss: float | None = None
     win_probability: float = 0.62
     risk_reward_ratio: float = 1.8
     payoff_curve: tuple[dict[str, float], ...] = (
@@ -419,10 +425,10 @@ async def test_scan_builds_typed_request_and_preserves_result_metadata() -> None
             "max_spread_pct": None,
             "min_open_interest": 0.0,
             "min_volume_24h": 0.0,
-                "min_edge_after_costs": 0.0,
-                "min_expected_value": 0.0,
-                "assumed_spread_bps": 100.0,
-                "max_results": 10,
+            "min_edge_after_costs": 0.0,
+            "min_expected_value": 0.0,
+            "assumed_spread_bps": 100.0,
+            "max_results": 10,
         },
         "expected_value_filter": {
             "enabled": True,
@@ -536,6 +542,54 @@ async def test_scan_synthetic_mode_round_trips_spread_assumption() -> None:
     assert response.json()["valuation_mode"] == "synthetic"
     assert scan_requests[0].valuation_mode == "synthetic"
     assert scan_requests[0].assumed_spread_bps == pytest.approx(250)
+
+
+@pytest.mark.asyncio
+async def test_scan_serializes_synthetic_quote_metadata_and_context() -> None:
+    synthetic_opportunity = MetricsOpportunity(
+        valuation_mode="synthetic",
+        quote_source="synthetic_mark_or_fair_value",
+        execution_allowed=False,
+        estimated_entry=10.5,
+        edge_after_costs=1.25,
+        max_loss=10.5,
+    )
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(synthetic_opportunity,),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+            valuation_mode=scan_request.valuation_mode,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["XRP"],
+            "strategies": ["long_call"],
+            "valuation_mode": "synthetic",
+            "assumed_spread_bps": 250,
+            "min_expected_value": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    serialized = body["opportunities"][0]
+    assert serialized["valuation_mode"] == "synthetic"
+    assert serialized["quote_source"] == "synthetic_mark_or_fair_value"
+    assert serialized["execution_allowed"] is False
+    assert serialized["estimated_entry"] == pytest.approx(10.5)
+    assert serialized["edge_after_costs"] == pytest.approx(1.25)
+    assert serialized["max_loss"] == pytest.approx(10.5)
+    assert body["scan_context"]["applied_filters"]["assumed_spread_bps"] == pytest.approx(250)
+    assert body["ignored_filters"] == []
 
 
 @pytest.mark.asyncio
@@ -975,9 +1029,9 @@ async def test_scan_accepts_simple_market_view_and_horizon_request() -> None:
         "valuation_mode": "executable",
         "risk_free_rate": 0.05,
         "fee_per_contract": 0.0,
-            "slippage_bps": 0.0,
-            "assumed_spread_bps": 100.0,
-            "quantity": 1.0,
+        "slippage_bps": 0.0,
+        "assumed_spread_bps": 100.0,
+        "quantity": 1.0,
         "contract_multiplier": 1.0,
         "include_unvalidated": True,
     }

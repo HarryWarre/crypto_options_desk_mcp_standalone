@@ -744,7 +744,7 @@ function renderPayoffDetail(item) {
   const quoteAssumption = theoretical
     ? "Theoretical: premium vào lệnh dùng fair value, không phải bid/ask khớp được. "
     : synthetic
-    ? `Synthetic: bid/ask dựng quanh mark/fair value với spread giả định ${number(activeScanContext?.assumptions?.assumed_spread_bps, 0)} bps; không phải quote khớp được. `
+    ? `Synthetic: bid/ask dựng quanh mark/fair value với spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps; không phải quote khớp được. `
     : "";
   pnlChartAssumptions.textContent = `${quoteAssumption}Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất có lãi và RR đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
   if (points.length) {
@@ -893,8 +893,12 @@ function renderScanContext(context) {
   const ignoredText = theoretical && context.ignored_filters?.length
     ? " · Bỏ qua: spread, edge sau phí, lỗ tối đa, EV"
     : "";
+  const assumedSpreadBps = firstDefined(
+    assumptions.assumed_spread_bps,
+    appliedFilters.assumed_spread_bps,
+  );
   const syntheticText = synthetic
-    ? ` · Spread giả định: ${number(assumptions.assumed_spread_bps, 0)} bps`
+    ? ` · Spread giả định: ${number(assumedSpreadBps, 0)} bps`
     : "";
   scanContext.textContent = `${context.summary || `Đã dùng: ${views[context.market_view] || "Tùy chỉnh"} · ${horizons[context.time_horizon] || "Thời hạn tùy chỉnh"}`} · Mode: ${valuationModeLabel(context.valuation_mode || activeScanValuationMode)} · Chiến lược: ${strategies || "mặc định"} · Lỗ tối đa: ${maxLoss}${theoretical ? "" : edgeText}${expectedValueText}${ignoredText}${syntheticText} · Lãi suất: ${percent(assumptions.risk_free_rate ?? context.risk_free_rate)} · Phí: ${number(assumptions.fee_per_contract, 2)} mỗi chiều · Trượt giá: ${number(assumptions.slippage_bps, 0)} bps`;
   scanContext.hidden = false;
@@ -1082,8 +1086,10 @@ function renderResults(payload) {
     const theoretical = isTheoreticalMode(item.valuation_mode || activeScanValuationMode);
     const synthetic = isSyntheticMode(item.valuation_mode || activeScanValuationMode);
     const modelMode = theoretical || synthetic;
-    const hasPositiveQuote = Number(item.bid_price) > 0 && Number(item.ask_price) > 0;
-    const quoteLabel = hasPositiveQuote
+    const hasQuote = synthetic
+      ? Number.isFinite(Number(item.bid_price)) && Number.isFinite(Number(item.ask_price))
+      : Number(item.bid_price) > 0 && Number(item.ask_price) > 0;
+    const quoteLabel = hasQuote
       ? synthetic
         ? `Giả định ${number(item.market_mid)} · spread tổng hợp`
         : `Tham khảo ${number(item.market_mid)} · không dùng để khớp`
