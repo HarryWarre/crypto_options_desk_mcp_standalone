@@ -227,6 +227,75 @@ function firstDefined(...values) {
   return values.find((value) => value !== null && value !== undefined && value !== "");
 }
 
+function metricValue(item, names) {
+  const sources = [item, item?.metrics, item?.decision_metrics, item?.valuation_metrics];
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const value = firstDefined(...names.map((name) => source[name]));
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function modelProbability(item) {
+  // win_rate is a legacy alias for this app's model probability.  It is not
+  // treated as historical evidence and is never used by historicalWinRate.
+  return metricValue(item, [
+    "model_probability",
+    "model_win_probability",
+    "win_probability",
+    "probability_of_profit",
+    "win_rate",
+  ]);
+}
+
+function historicalWinRate(item) {
+  return metricValue(item, [
+    "historical_win_rate",
+    "realized_win_rate",
+    "validated_win_rate",
+    "out_of_sample_win_rate",
+    "backtest_win_rate",
+  ]);
+}
+
+function conventionalRewardRisk(item) {
+  return metricValue(item, [
+    "reward_risk_ratio",
+    "conventional_reward_risk_ratio",
+    "conventional_risk_reward",
+    "risk_reward_ratio",
+  ]);
+}
+
+function payoffContributionRatio(item) {
+  return metricValue(item, ["payoff_contribution_ratio", "risk_reward"]);
+}
+
+function breakEvenWinProbability(item) {
+  return metricValue(item, [
+    "break_even_win_probability",
+    "break_even_probability",
+    "breakeven_probability",
+  ]);
+}
+
+function expectancyAfterCosts(item) {
+  return metricValue(item, ["expectancy_after_costs", "expectancy_after_cost", "expectancy"]);
+}
+
+function fairValueEdge(item) {
+  return metricValue(item, ["fair_value_edge", "edge_after_costs"]);
+}
+
+function evidenceStatus(item) {
+  return metricValue(item, ["evidence_status"]);
+}
+
+function rejectionReason(item) {
+  return metricValue(item, ["rejection_reason", "rejection_reasons", "reasons"]);
+}
+
 function legSymbol(leg) {
   return firstDefined(leg?.symbol, leg?.contract_symbol, "Mã chưa có");
 }
@@ -456,10 +525,10 @@ function syncValuationModeInputs() {
 function strategyTakeaway(item, legs) {
   const asset = firstDefined(item?.asset, "tài sản");
   if (isSyntheticMode(item?.valuation_mode || activeScanValuationMode)) {
-    return `Đây là định giá với bid/ask tổng hợp cho ${asset}; edge, payoff, EV, xác suất và RR được tính theo spread giả định, không khẳng định giá khớp thực tế.`;
+    return `Đây là định giá với bid/ask tổng hợp cho ${asset}; edge, payoff, EV, xác suất và reward/risk được tính theo spread giả định, không khẳng định giá khớp thực tế.`;
   }
   if (isTheoreticalMode(item?.valuation_mode || activeScanValuationMode)) {
-    return `Đây là định giá mô hình của ${asset}; payoff, EV, xác suất và RR được tính từ fair value nhưng không khẳng định giá khớp hay lợi nhuận thực tế.`;
+    return `Đây là định giá mô hình của ${asset}; payoff, EV, xác suất và reward/risk được tính từ fair value nhưng không khẳng định giá khớp hay lợi nhuận thực tế.`;
   }
   const strategy = normalizedStrategy(item?.strategy);
   const strikes = legs
@@ -567,18 +636,29 @@ function renderOpportunityExplanation(item, index) {
 
   const executablePrice = firstDefined(item?.estimated_entry, item?.executable_entry, item?.market_mid);
   const fairPrice = firstDefined(item?.fair_price);
-  const edge = Number(item?.edge_after_costs);
+  const edge = Number(fairValueEdge(item));
   const facts = document.createElement("div");
   facts.className = "explanation-facts";
   facts.append(
     explanationFact(synthetic ? "Giá vào mô hình" : "Tiền vào/ra ước tính", theoretical ? "Không có giá khớp" : signedPriceLabel(executablePrice), modelMode ? "theoretical-value" : ""),
     explanationFact("Mô hình định giá", signedPriceLabel(fairPrice), modelMode ? "theoretical-value" : ""),
-    explanationFact("Edge sau phí", theoretical ? "Không tính" : Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "—", modelMode ? "theoretical-value" : edge >= 0 ? "positive" : "negative"),
+    explanationFact("Edge fair value sau phí", theoretical ? "Không tính" : Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "Không có dữ liệu", modelMode ? "theoretical-value" : edge >= 0 ? "positive" : "negative"),
     explanationFact(modelMode ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), modelMode ? "theoretical-value" : ""),
-    explanationFact(modelMode ? "Xác suất có lãi (mô hình)" : "Xác suất có lãi", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), modelMode ? "theoretical-value" : ""),
-    explanationFact(modelMode ? "RR (mô hình)" : "RR", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), modelMode ? "theoretical-value" : ""),
+    explanationFact("Expectancy sau chi phí", estimatedNumber(expectancyAfterCosts(item)), modelMode ? "theoretical-value" : ""),
+    explanationFact("Xác suất mô hình", estimateProbability(modelProbability(item)), modelMode ? "theoretical-value" : ""),
+    explanationFact("R:R thông thường", estimateRatio(conventionalRewardRisk(item)), modelMode ? "theoretical-value" : ""),
+    explanationFact("Xác suất hòa vốn", estimateProbability(breakEvenWinProbability(item)), modelMode ? "theoretical-value" : ""),
     explanationFact(modelMode ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), modelMode ? "theoretical-value" : "negative"),
+    explanationFact("Evidence", evidenceStatusLabel(evidenceStatus(item)), ""),
   );
+  const historicalRate = historicalWinRate(item);
+  if (historicalRate !== undefined) {
+    facts.append(explanationFact("Win rate lịch sử", estimateProbability(historicalRate), ""));
+  }
+  const contributionRatio = payoffContributionRatio(item);
+  if (contributionRatio !== undefined) {
+    facts.append(explanationFact("Tỷ lệ đóng góp payoff", estimateRatio(contributionRatio), ""));
+  }
   card.appendChild(facts);
 
   const extra = document.createElement("p");
@@ -630,6 +710,23 @@ function estimateProbability(value) {
 function estimateRatio(value) {
   const amount = Number(value);
   return Number.isFinite(amount) ? `${number(amount, 2)} : 1` : "Không có dữ liệu";
+}
+
+function evidenceStatusLabel(value) {
+  if (value === null || value === undefined || value === "") return "Không có dữ liệu";
+  const labels = {
+    insufficient_evidence: "Chưa đủ bằng chứng lịch sử",
+    not_validated: "Chưa kiểm định lịch sử",
+    historically_validated: "Đã kiểm định lịch sử",
+    validated: "Đã kiểm định",
+    model_estimate: "Ước tính mô hình",
+  };
+  return labels[String(value)] || String(value);
+}
+
+function reasonLabel(value) {
+  if (Array.isArray(value)) return value.join(" · ") || "Không có dữ liệu";
+  return value === null || value === undefined || value === "" ? "Không có dữ liệu" : String(value);
 }
 
 function estimatedNumber(value, digits = 2) {
@@ -817,12 +914,24 @@ function renderPayoffDetail(item) {
   detailMetrics.append(
     metric("Ngày đáo hạn", opportunityExpiry(item) ? expiryLabel(item) : "Không có dữ liệu"),
     metric(modelMode ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), modelMode ? "theoretical-value" : ""),
-    metric(modelMode ? "Xác suất có lãi (mô hình)" : "Xác suất có lãi (ước tính)", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), modelMode ? "theoretical-value" : ""),
-    metric(modelMode ? "RR (mô hình)" : "RR (ước tính)", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), modelMode ? "theoretical-value" : ""),
+    metric("Expectancy sau chi phí", estimatedNumber(expectancyAfterCosts(item)), modelMode ? "theoretical-value" : ""),
+    metric("Xác suất mô hình", estimateProbability(modelProbability(item)), modelMode ? "theoretical-value" : ""),
+    metric("R:R thông thường", estimateRatio(conventionalRewardRisk(item)), modelMode ? "theoretical-value" : ""),
+    metric("Xác suất hòa vốn", estimateProbability(breakEvenWinProbability(item)), modelMode ? "theoretical-value" : ""),
+    metric("Edge fair value sau phí", estimatedNumber(fairValueEdge(item)), modelMode ? "theoretical-value" : ""),
     metric(modelMode ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), modelMode ? "theoretical-value" : "negative"),
     metric(modelMode ? "Lãi tối đa (mô hình)" : "Lãi tối đa", estimatedNumber(item?.max_profit), modelMode ? "theoretical-value" : "positive"),
     metric("Điểm hòa vốn", (Array.isArray(item?.breakevens) ? item.breakevens : []).map((value) => number(value, 2)).join(", ") || "Không có dữ liệu"),
+    metric("Evidence", evidenceStatusLabel(evidenceStatus(item))),
   );
+  const historicalRate = historicalWinRate(item);
+  if (historicalRate !== undefined) {
+    detailMetrics.append(metric("Win rate lịch sử", estimateProbability(historicalRate)));
+  }
+  const contributionRatio = payoffContributionRatio(item);
+  if (contributionRatio !== undefined) {
+    detailMetrics.append(metric("Tỷ lệ đóng góp payoff", estimateRatio(contributionRatio)));
+  }
   points.forEach((point) => {
     const row = document.createElement("tr");
     cell(row, number(point.underlyingPrice, 2));
@@ -834,7 +943,7 @@ function renderPayoffDetail(item) {
     : synthetic
     ? `Synthetic: bid/ask dựng quanh mark/fair value với spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps; không phải quote khớp được. `
     : "";
-  pnlChartAssumptions.textContent = `${quoteAssumption}Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất có lãi và RR đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
+  pnlChartAssumptions.textContent = `${quoteAssumption}Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất mô hình và reward/risk đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
   if (points.length) {
     setScenarioState(`Hiển thị ${points.length} điểm payoff tại đáo hạn do API trả về.`);
   } else {
@@ -1102,8 +1211,8 @@ function renderValuationModeNotice(mode) {
     : "Theoretical mode — chỉ định giá mô hình";
   const explanation = document.createElement("span");
   explanation.textContent = isSyntheticMode(mode)
-    ? "Bid/ask được dựng quanh mark/fair value theo spread giả định nên hệ thống tính đủ premium, edge, EV, xác suất, RR và lỗ tối đa; các con số vẫn là ước tính, không phải giá khớp thật."
-    : "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value làm giá vào mô hình; payoff, EV, xác suất, RR và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
+    ? "Bid/ask được dựng quanh mark/fair value theo spread giả định nên hệ thống tính đủ premium, edge fair value, EV, xác suất mô hình, reward/risk và lỗ tối đa; các con số vẫn là ước tính, không phải giá khớp thật."
+    : "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value làm giá vào mô hình; payoff, EV, xác suất mô hình, reward/risk và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
   valuationModeNotice.append(title, explanation);
   valuationModeNotice.hidden = false;
 }
@@ -1136,6 +1245,19 @@ function renderHistoricalContext(contexts) {
   });
   historicalContext.appendChild(details);
   historicalContext.hidden = false;
+}
+
+function renderScanRejections(rejections) {
+  const items = Array.isArray(rejections) ? rejections : [];
+  items.forEach((rejection) => {
+    const item = document.createElement("div");
+    const symbol = firstDefined(rejection?.symbol, rejection?.asset, "candidate");
+    const reason = rejectionReason(rejection);
+    const messages = Array.isArray(rejection?.messages) ? rejection.messages.join(" · ") : "";
+    item.textContent = `Loại ${symbol}: ${reasonLabel(reason)}${messages ? ` — ${messages}` : ""}`;
+    item.className = "error";
+    secondaryResults.appendChild(item);
+  });
 }
 
 async function getJson(path, options = {}) {
@@ -1605,10 +1727,10 @@ function renderResults(payload) {
   const guide = resultsGuide.querySelector("span");
   if (guide) {
     guide.textContent = isSyntheticMode(activeScanValuationMode)
-      ? "Các dòng dưới đây dùng bid/ask tổng hợp từ mark/fair value và spread giả định. Edge, EV, RR và lỗ tối đa đã được tính nhưng vẫn là ước tính, không phải khả năng khớp lệnh."
+      ? "Các dòng dưới đây dùng bid/ask tổng hợp từ mark/fair value và spread giả định. Edge fair value, EV, xác suất mô hình và reward/risk vẫn là ước tính, không phải khả năng khớp lệnh."
       : isTheoreticalMode(activeScanValuationMode)
-      ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, RR và lỗ tối đa chỉ là ước tính mô hình, còn edge giao dịch và khả năng khớp không được suy ra."
-      : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
+      ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, xác suất mô hình và reward/risk chỉ là ước tính, còn edge giao dịch và khả năng khớp không được suy ra."
+      : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Xác suất mô hình và edge fair value chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
   }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
   else if (isTheoreticalMode(activeScanValuationMode)) setState(`${opportunities.length} định giá lý thuyết đạt điều kiện; không phải cơ hội giao dịch.`);
@@ -1634,7 +1756,8 @@ function renderResults(payload) {
     cell(row, modelMode ? quoteLabel : number(item.market_mid), modelMode ? "theoretical-value" : "");
     cell(row, number(item.fair_price), modelMode ? "theoretical-value" : "");
     cell(row, percent(item.iv_edge), item.iv_edge >= 0 ? "positive" : "negative");
-    cell(row, theoretical ? "Không tính" : number(item.edge_after_costs), theoretical ? "theoretical-value" : item.edge_after_costs >= 0 ? "positive" : "negative");
+    const edge = Number(fairValueEdge(item));
+    cell(row, theoretical ? "Không tính" : Number.isFinite(edge) ? number(edge) : "Không có dữ liệu", theoretical ? "theoretical-value" : Number.isFinite(edge) && edge >= 0 ? "positive" : "negative");
     cell(row, theoretical ? `Mô hình ${number(item.max_loss)}` : synthetic ? `Ước tính ${number(item.max_loss)}` : number(item.max_loss), modelMode ? "theoretical-value" : "");
     cell(row, `OI ${number(item.open_interest, 0)} · Vol ${number(item.volume_24h, 0)}`);
     const actionCell = document.createElement("td");
@@ -1663,6 +1786,7 @@ function renderResults(payload) {
     item.className = "error";
     secondaryResults.appendChild(item);
   });
+  renderScanRejections(payload.rejections);
   dataStatus.textContent = payload.data_timestamp ? `Dữ liệu: ${new Date(payload.data_timestamp).toLocaleString("vi-VN")}` : "Đã nhận dữ liệu";
 }
 

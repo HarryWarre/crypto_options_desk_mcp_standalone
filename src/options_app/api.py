@@ -9,7 +9,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import fields, is_dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -123,6 +123,57 @@ _OPPORTUNITY_METRIC_ALIASES = {
     "risk_reward_status": ("risk_reward_status",),
     "assumptions": ("assumptions", "payoff_metrics_assumptions"),
     "limitations": ("limitations", "payoff_metrics_limitations"),
+}
+
+# Phase 5 exposes decision metrics under names that carry their basis.  The
+# old fields above remain in the wire response for existing clients.  In
+# particular, ``win_rate`` was the legacy API alias for the scanner's model
+# probability; it is therefore a compatibility input for ``model_probability``
+# only, never for ``historical_win_rate``.
+_OPPORTUNITY_DECISION_METRIC_ALIASES = {
+    "model_probability": (
+        "model_probability",
+        "model_win_probability",
+        "win_probability",
+        "probability_of_profit",
+        "win_rate",
+    ),
+    "historical_win_rate": (
+        "historical_win_rate",
+        "realized_win_rate",
+        "validated_win_rate",
+        "out_of_sample_win_rate",
+        "backtest_win_rate",
+    ),
+    "reward_risk_ratio": (
+        "reward_risk_ratio",
+        "conventional_reward_risk_ratio",
+        "conventional_risk_reward",
+        "risk_reward_ratio",
+    ),
+    "payoff_contribution_ratio": (
+        "payoff_contribution_ratio",
+        "risk_reward",
+    ),
+    "break_even_win_probability": (
+        "break_even_win_probability",
+        "break_even_probability",
+        "breakeven_probability",
+    ),
+    "expectancy_after_costs": (
+        "expectancy_after_costs",
+        "expectancy_after_cost",
+        "expectancy",
+    ),
+    "fair_value_edge": (
+        "fair_value_edge",
+        "edge_after_costs",
+    ),
+    "evidence_status": ("evidence_status",),
+    "rejection_reason": (
+        "rejection_reason",
+        "rejection_reasons",
+    ),
 }
 
 
@@ -1222,9 +1273,11 @@ def _serialize_scan_result(
             for context in result.historical_volatility_contexts.contexts
         ]
         opportunities = result.scan.opportunities
+        rejections = result.scan.rejections
     else:
         payload = _serialize(result)
         opportunities = result.opportunities
+        rejections = result.rejections
     theoretical = scan_request.valuation_mode == "theoretical"
     synthetic = scan_request.valuation_mode == "synthetic"
     payload["opportunities"] = [
@@ -1232,6 +1285,7 @@ def _serialize_scan_result(
         for opportunity in opportunities
         if theoretical or _passes_expected_value_filter(opportunity, filters.min_expected_value)
     ]
+    payload["rejections"] = [_serialize_rejection(rejection) for rejection in rejections]
     applied_filters = {
         "min_dte": scan_request.min_dte,
         "max_dte": scan_request.max_dte,
@@ -1334,7 +1388,7 @@ def _serialize_historical_context(context: HistoricalVolatilityContext) -> dict[
 
 
 def _serialize_opportunity(opportunity: Any) -> dict[str, Any]:
-    """Serialize an opportunity with stable metrics and a UTC expiry instant."""
+    """Serialize an opportunity with explicit metric bases and UTC expiry."""
 
     payload = _serialize(opportunity)
     if not isinstance(payload, dict):
@@ -1354,6 +1408,33 @@ def _serialize_opportunity(opportunity: Any) -> dict[str, Any]:
             payload[output_name] = _serialize(metric)
         else:
             payload.setdefault(output_name, None)
+    for output_name, aliases in _OPPORTUNITY_DECISION_METRIC_ALIASES.items():
+        metric = _opportunity_value(opportunity, aliases)
+        if metric is not None:
+            payload[output_name] = _serialize(metric)
+        else:
+            payload.setdefault(output_name, None)
+    return payload
+
+
+def _serialize_rejection(rejection: Any) -> dict[str, Any]:
+    """Serialize a rejection with one explicit, compatibility-safe reason key."""
+
+    payload = _serialize(rejection)
+    if not isinstance(payload, dict):
+        return {"value": payload, "rejection_reason": None}
+
+    reason = _opportunity_value(rejection, ("rejection_reason", "reason"))
+    reasons = _opportunity_value(rejection, ("rejection_reasons", "reasons"))
+    if reason is None:
+        # Existing scanner rejections carry a tuple of reason codes.  Keep
+        # that complete list rather than inventing a single preferred cause.
+        reason = reasons
+    payload["rejection_reason"] = _serialize(reason)
+    if reasons is not None:
+        payload["rejection_reasons"] = _serialize(reasons)
+    else:
+        payload.setdefault("rejection_reasons", None)
     return payload
 
 
@@ -1371,11 +1452,23 @@ def _passes_expected_value_filter(opportunity: Any, minimum: float | None) -> bo
 
 
 def _opportunity_value(opportunity: Any, names: tuple[str, ...]) -> Any | None:
-    for name in names:
-        value = getattr(opportunity, name, None)
-        if value is not None:
-            return value
+    sources = [opportunity]
+    for container_name in ("metrics", "decision_metrics", "valuation_metrics"):
+        container = _object_value(opportunity, container_name)
+        if container is not None:
+            sources.append(container)
+    for source in sources:
+        for name in names:
+            value = _object_value(source, name)
+            if value is not None:
+                return value
     return None
+
+
+def _object_value(value: Any, name: str) -> Any | None:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
 
 
 __all__ = [
