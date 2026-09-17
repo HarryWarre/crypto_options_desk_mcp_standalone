@@ -100,6 +100,66 @@ const syntheticOpportunity = {
 };
 
 async function mockApi(page) {
+  await page.addInitScript(() => {
+    class MockWebSocket extends EventTarget {
+      static OPEN = 1;
+
+      constructor(url) {
+        super();
+        this.url = url;
+        this.readyState = 0;
+        setTimeout(() => {
+          this.readyState = MockWebSocket.OPEN;
+          this.dispatchEvent(new Event("open"));
+        }, 0);
+      }
+
+      send(payload) {
+        window.__monitoringRequest = JSON.parse(payload);
+        setTimeout(() => {
+          this.dispatchEvent(new MessageEvent("message", {
+            data: JSON.stringify({ type: "stream_status", status: "connected" }),
+          }));
+          this.dispatchEvent(new MessageEvent("message", {
+            data: JSON.stringify({
+              type: "snapshot",
+              payload: {
+                captured_at: "2026-09-15T14:46:33Z",
+                source: "bybit-websocket",
+                reconciliation_status: "complete",
+                issues: [],
+                positions: [{
+                  symbol: "BTCUSDT",
+                  side: "long",
+                  quantity: 1,
+                  avg_entry_price: 65000,
+                  mark_price: 70000,
+                  unrealized_pnl: 5000,
+                }],
+                decisions: [{
+                  symbol: "BTCUSDT",
+                  action: "close",
+                  severity: "high",
+                  reasons: ["take_profit_price_triggered"],
+                }],
+                summary: { close: 1, hold: 0, review: 0 },
+              },
+              persistence: { enabled: true, status: "saved" },
+              execution_allowed: false,
+            }),
+          }));
+        }, 0);
+      }
+
+      close() {
+        this.readyState = 3;
+        this.dispatchEvent(new Event("close"));
+      }
+    }
+
+    window.WebSocket = MockWebSocket;
+  });
+
   await page.route("**/api/v1/assets", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -484,15 +544,11 @@ test("exposes position monitoring from the module sidebar", async ({ page }) => 
 test("runs a read-only position check and renders the exit decision", async ({ page }) => {
   const sidebar = page.getByRole("complementary", { name: "Điều hướng workspace" });
   await sidebar.getByRole("link", { name: "Position Monitoring" }).click();
-  await page.getByLabel("Symbol policy (tuỳ chọn)").fill("BTCUSDT");
-  await page.getByLabel("Take-profit price").fill("70000");
-
-  const request = page.waitForRequest((candidate) => candidate.url().includes("/api/v1/positions/monitor"));
   await page.getByRole("button", { name: "Cập nhật theo dõi" }).click();
-  expect((await request).postDataJSON()).toMatchObject({
+  await expect.poll(() => page.evaluate(() => window.__monitoringRequest)).toMatchObject({
     base_coin: "BTC",
     position_type: "all",
-    policies: [{ symbol: "BTCUSDT", take_profit_price: 70000 }],
+    policies: [],
     persist: true,
   });
 
@@ -500,6 +556,23 @@ test("runs a read-only position check and renders the exit decision", async ({ p
   await expect(page.locator("#monitoring-metrics")).toContainText("CLOSE");
   await expect(page.locator("#monitoring-decisions-body")).toContainText("CLOSE · Cần đóng thủ công");
   await expect(page.locator("#monitoring-decisions-body")).toContainText("take_profit_price_triggered");
+});
+
+test("uses observed-symbol and policy dropdowns without manual symbol entry", async ({ page }) => {
+  await page.getByRole("link", { name: "Position Monitoring" }).click();
+  await page.locator("#monitoring-submit").click();
+  await expect(page.locator("#monitoring-symbol option[value='BTCUSDT']")).toHaveCount(1);
+
+  await page.locator("#monitoring-symbol").selectOption("BTCUSDT");
+  await page.locator("#monitoring-policy-profile").selectOption("day_trade");
+  await page.locator("#monitoring-submit").click();
+
+  await expect.poll(() => page.evaluate(() => window.__monitoringRequest)).toMatchObject({
+    policies: [{
+      symbol: "BTCUSDT",
+      max_holding_hours: 24,
+    }],
+  });
 });
 
 test("switches between scanner and backtest without stacking workspaces", async ({ page }) => {

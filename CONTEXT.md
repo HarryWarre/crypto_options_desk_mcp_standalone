@@ -64,3 +64,21 @@ A human-reviewable description of the opposite side and current broker
 quantity to use if a CLOSE decision is accepted. The application does not
 submit it in the read-only monitoring phase.
 _Avoid_: close order, executed close
+
+**Monitoring snapshot**:
+A point-in-time, source-stamped observation of positions, orders, reconciliation
+status, and exit decisions. It is immutable evidence for later comparison, not
+the current truth after a newer observation arrives.
+_Avoid_: cached balance, predicted position
+
+**Live observation**:
+An exchange event that updates a monitoring snapshot after the initial state
+has been loaded. It is valid for decision display only when its stream is
+authenticated, connected, and reconciliation has not been invalidated.
+_Avoid_: confirmed database state, completed fill
+
+**Decision queue**:
+The ordered set of positions needing attention, with `CLOSE` first, then
+`REVIEW`, then `HOLD`. It reduces attention cost without changing the
+underlying risk decision.
+_Avoid_: trade queue, execution queue

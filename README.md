@@ -86,12 +86,16 @@ See [`docs/options-backtest.md`](docs/options-backtest.md) for setup and the
 optional NautilusTrader catalog bridge.
 
 The `Position Monitoring` workspace is available from the sidebar at
-`#monitoring`. It calls `POST /api/v1/positions/monitor` to read manually
-executed positions, open orders, and recent order history, then displays
-deterministic `CLOSE`, `HOLD`, or `REVIEW` decisions. The endpoint is
-read-only: it never submits or closes an order; a `CLOSE` result is a manual
-instruction that requires human confirmation. Private Bybit credentials are
-required for live monitoring.
+`#monitoring`. Its primary choices are dropdowns for asset, category, observed
+symbol, and policy preset. The workspace first bootstraps from REST and then
+uses the server-owned Bybit private WebSocket to track positions, orders, and
+executions live. It displays deterministic `CLOSE`, `HOLD`, or `REVIEW`
+decisions and stores immutable reports in SQLite. The WebSocket endpoint is
+`/api/v1/positions/stream`; the existing `POST /api/v1/positions/monitor`
+endpoint remains available for one-shot API clients. Both paths are read-only:
+they never submit or close an order; a `CLOSE` result is a manual instruction
+that requires human confirmation. Private Bybit credentials are required for
+live monitoring.
 
 Historical option data is intentionally split by data quality. The
 `BybitPublicClient.get_option_mark_price_history()` method downloads historical
@@ -351,7 +355,8 @@ Desktop it appears in the prompt picker; just pass an asset like `BTC`.
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | — | Required for user-position and live monitoring tools (read-only key recommended) |
-| `POSITION_MONITORING_SNAPSHOT_FILE` | `data/position_monitoring/snapshots.jsonl` | Local append-only position-monitoring history file |
+| `POSITION_MONITORING_SNAPSHOT_FILE` | unset | Optional legacy JSONL history path; setting it keeps JSONL compatibility |
+| `POSITION_MONITORING_DATABASE` | `data/position_monitoring/monitoring.sqlite3` | SQLite snapshots and raw private-stream events for live monitoring |
 | `MCP_LOG_FILE` | `/tmp/mcp-trading.log` | Where the server logs (never stdout — stdio is the JSON-RPC channel) |
 | `DEBUG_MCP` | unset | Set to `1` for DEBUG-level logs |
 

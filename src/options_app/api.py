@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -618,6 +618,7 @@ def create_app(
     historical_volatility_loader: HistoricalVolatilityLoader | None = None,
     backtest_runner: Callable[[BacktestRequest], Any] | None = None,
     monitoring_runner: Callable[[PositionMonitoringRequest], Any] | None = None,
+    monitoring_stream_factory: Callable[[PositionMonitoringRequest], Any] | None = None,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
 
@@ -632,6 +633,7 @@ def create_app(
         history_loader = historical_volatility_loader
     run_backtest = backtest_runner or _default_backtest_runner
     run_monitoring = monitoring_runner or _default_monitoring_runner
+    build_monitoring_stream = monitoring_stream_factory or _default_monitoring_stream
     app = FastAPI(title="Crypto Options Scanner API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -867,6 +869,44 @@ def create_app(
             raise ApiError(500, "position_monitoring_failed", "Position monitoring failed") from exc
         return JSONResponse(content=_serialize(result))
 
+    @app.websocket("/api/v1/positions/stream")
+    async def monitor_position_stream(websocket: WebSocket) -> None:
+        """Stream sanitized monitoring snapshots to the browser."""
+
+        await websocket.accept()
+        try:
+            request = PositionMonitoringRequest.model_validate(await websocket.receive_json())
+            session = await _maybe_await(build_monitoring_stream(request))
+            await websocket.send_json(
+                {
+                    "type": "stream_status",
+                    "status": "starting",
+                    "execution_allowed": False,
+                }
+            )
+            async for event in session.events():
+                await websocket.send_json(_serialize(event))
+        except WebSocketDisconnect:
+            return
+        except (TypeError, ValueError) as exc:
+            await websocket.send_json(
+                {"type": "error", "code": "position_monitoring_invalid", "message": str(exc)}
+            )
+            await websocket.close(code=1008)
+        except Exception:
+            logger.exception("[OPTIONS] live position monitoring failed")
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "position_monitoring_failed",
+                        "message": "Position monitoring stream failed",
+                    }
+                )
+                await websocket.close(code=1011)
+            except Exception:
+                logger.debug("Could not send the live monitoring error envelope", exc_info=True)
+
     return app
 
 
@@ -889,6 +929,37 @@ async def _default_monitoring_runner(request: PositionMonitoringRequest) -> Any:
         request.position_type,
         [policy.to_domain() for policy in request.policies],
         request.persist,
+    )
+
+
+def _default_monitoring_stream(request: PositionMonitoringRequest) -> Any:
+    """Build the server-owned Bybit private-stream session lazily."""
+
+    from mcp_trading.orchestrator import get_orchestrator
+    from position_monitoring import (
+        BybitPositionSnapshotAdapter,
+        BybitPrivateWebSocket,
+        LiveMonitoringSession,
+        PositionTracker,
+    )
+
+    orchestrator = get_orchestrator()
+    adapter = BybitPositionSnapshotAdapter(orchestrator.api)
+    policies: dict[str, PositionExitPolicy] = {}
+    for policy in request.policies:
+        domain_policy = policy.to_domain()
+        if domain_policy.symbol in policies:
+            raise ValueError(f"Duplicate exit policy for {domain_policy.symbol}")
+        policies[domain_policy.symbol] = domain_policy
+    return LiveMonitoringSession(
+        adapter=adapter,
+        tracker=PositionTracker(adapter),
+        stream=BybitPrivateWebSocket.from_client(orchestrator.api),
+        history=orchestrator.position_snapshot_history,
+        base_coin=request.base_coin,
+        position_type=request.position_type,
+        policies=policies,
+        persist=request.persist,
     )
 
 

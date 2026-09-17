@@ -37,6 +37,8 @@ const backtestDteField = document.querySelector("#backtest-dte-field");
 const monitoringForm = document.querySelector("#monitoring-form");
 const monitoringBaseCoin = document.querySelector("#monitoring-base-coin");
 const monitoringPositionType = document.querySelector("#monitoring-position-type");
+const monitoringSymbol = document.querySelector("#monitoring-symbol");
+const monitoringPolicyProfile = document.querySelector("#monitoring-policy-profile");
 const monitoringState = document.querySelector("#monitoring-state");
 const monitoringMetrics = document.querySelector("#monitoring-metrics");
 const monitoringDecisionGuide = document.querySelector("#monitoring-decision-guide");
@@ -51,6 +53,8 @@ const moduleDescription = document.querySelector("#module-description");
 let selectedOpportunity = null;
 let activeScanContext = null;
 let activeScanValuationMode = "executable";
+let monitoringSocket = null;
+let monitoringRequestKey = null;
 
 const WORKSPACE_META = Object.freeze({
   scanner: {
@@ -77,6 +81,12 @@ function syncWorkspaceFromHash() {
     : "scanner";
   if (!window.location.hash) window.history.replaceState(null, "", "#scanner");
   const meta = WORKSPACE_META[workspace];
+
+  if (workspace !== "monitoring" && monitoringSocket) {
+    monitoringSocket.close();
+    monitoringSocket = null;
+    monitoringRequestKey = null;
+  }
 
   workspaceLinks.forEach((link) => {
     const isActive = link.getAttribute("href") === `#${workspace}`;
@@ -830,6 +840,7 @@ function showOpportunityDetail(item) {
 function renderAssets(payload) {
   assetList.replaceChildren();
   backtestAsset.replaceChildren();
+  monitoringBaseCoin.replaceChildren();
   const assets = payload.assets || [];
   if (!assets.length) {
     const empty = document.createElement("span");
@@ -837,9 +848,17 @@ function renderAssets(payload) {
     empty.textContent = "Không tìm thấy tài sản đang giao dịch.";
     assetList.appendChild(empty);
     backtestAsset.disabled = true;
+    const allAssetsOption = document.createElement("option");
+    allAssetsOption.value = "ALL";
+    allAssetsOption.textContent = "Tất cả tài sản";
+    monitoringBaseCoin.appendChild(allAssetsOption);
     return;
   }
   const preferredAsset = assets.find((asset) => asset.base_coin === "BTC") || assets[0];
+  const allAssetsOption = document.createElement("option");
+  allAssetsOption.value = "ALL";
+  allAssetsOption.textContent = "Tất cả tài sản";
+  monitoringBaseCoin.appendChild(allAssetsOption);
   assets.forEach((asset) => {
     const label = document.createElement("label");
     label.className = "asset-choice";
@@ -855,6 +874,11 @@ function renderAssets(payload) {
     option.textContent = `${asset.base_coin} (${asset.contract_count})`;
     option.selected = asset === preferredAsset;
     backtestAsset.appendChild(option);
+    const monitoringOption = document.createElement("option");
+    monitoringOption.value = asset.base_coin;
+    monitoringOption.textContent = asset.base_coin;
+    monitoringOption.selected = asset === preferredAsset;
+    monitoringBaseCoin.appendChild(monitoringOption);
   });
   backtestAsset.disabled = false;
   return (payload.issues || []).length;
@@ -929,11 +953,27 @@ function monitoringDecisionLabel(action) {
 function renderMonitoringResult(payload) {
   if (payload?.success === false) throw new Error(payload.error || "Không thể theo dõi vị thế");
 
-  const report = payload?.data || {};
+  const report = payload?.payload || payload?.data || {};
   const positions = report.positions || [];
   const decisions = report.decisions || [];
   const positionBySymbol = new Map(positions.map((position) => [position.symbol, position]));
   const summary = report.summary || {};
+
+  const selectedSymbol = monitoringSymbol.value;
+  monitoringSymbol.replaceChildren();
+  const allPositionsOption = document.createElement("option");
+  allPositionsOption.value = "";
+  allPositionsOption.textContent = "Tất cả vị thế · REVIEW nếu chưa có policy";
+  monitoringSymbol.appendChild(allPositionsOption);
+  [...new Set(positions.map((position) => position.symbol).filter(Boolean))].sort().forEach((symbol) => {
+    const option = document.createElement("option");
+    option.value = symbol;
+    option.textContent = symbol;
+    monitoringSymbol.appendChild(option);
+  });
+  monitoringSymbol.value = [...monitoringSymbol.options].some((option) => option.value === selectedSymbol)
+    ? selectedSymbol
+    : "";
 
   monitoringMetrics.replaceChildren();
   [
@@ -1348,43 +1388,94 @@ updateBacktestExitFields();
 monitoringForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(monitoringForm);
-  const baseCoin = String(data.get("base_coin") || "").trim().toUpperCase();
-  if (!baseCoin) {
-    setMonitoringState("Hãy nhập base coin hoặc ALL.", "error");
-    return;
+  const request = monitoringRequest(data);
+  const requestKey = JSON.stringify(request);
+  if (monitoringSocket && monitoringSocket.readyState <= 1) {
+    if (requestKey === monitoringRequestKey) {
+      monitoringSocket.close();
+      monitoringSocket = null;
+      monitoringRequestKey = null;
+      document.querySelector("#monitoring-submit").textContent = "Cập nhật theo dõi";
+      setMonitoringState("Đã dừng live monitoring. Không có lệnh nào được gửi.");
+      return;
+    }
+    monitoringSocket.close();
+    monitoringSocket = null;
   }
-
-  const symbol = String(data.get("symbol") || "").trim();
-  const policy = symbol
-    ? {
-        symbol,
-        thesis_status: data.get("thesis_status") || "unknown",
-        stop_loss_price: optionalNumber(data, "stop_loss_price"),
-        take_profit_price: optionalNumber(data, "take_profit_price"),
-        max_holding_hours: optionalNumber(data, "max_holding_hours"),
-      }
-    : null;
-  const button = document.querySelector("#monitoring-submit");
-  button.disabled = true;
-  setMonitoringState("Đang đọc vị thế, lệnh mở và lịch sử khớp ở chế độ read-only…");
-  try {
-    const payload = await getJson("/api/v1/positions/monitor", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        base_coin: baseCoin,
-        position_type: data.get("position_type") || "all",
-        policies: policy ? [policy] : [],
-        persist: true,
-      }),
-    });
-    renderMonitoringResult(payload);
-  } catch (error) {
-    setMonitoringState(error.message, "error");
-  } finally {
-    button.disabled = false;
-  }
+  connectMonitoringStream(request, requestKey);
 });
+
+function monitoringRequest(formData) {
+  const baseCoin = String(formData.get("base_coin") || "").trim().toUpperCase();
+  const symbol = String(formData.get("symbol") || "").trim();
+  const profile = formData.get("policy_profile");
+  const profileHours = { day_trade: 24, swing: 24 * 7 };
+  const maxHoldingHours = optionalNumber(formData, "max_holding_hours") ?? profileHours[profile];
+  const stopLoss = optionalNumber(formData, "stop_loss_price");
+  const takeProfit = optionalNumber(formData, "take_profit_price");
+  const thesisStatus = formData.get("thesis_status") || "unknown";
+  const hasPolicy = symbol && (
+    profile !== "review" ||
+    stopLoss !== null ||
+    takeProfit !== null ||
+    maxHoldingHours !== null ||
+    thesisStatus === "invalid"
+  );
+  return {
+    base_coin: baseCoin || "ALL",
+    position_type: formData.get("position_type") || "all",
+    policies: hasPolicy ? [{
+      symbol,
+      thesis_status: thesisStatus,
+      stop_loss_price: stopLoss,
+      take_profit_price: takeProfit,
+      max_holding_hours: maxHoldingHours ?? null,
+    }] : [],
+    persist: true,
+  };
+}
+
+function connectMonitoringStream(request, requestKey = JSON.stringify(request)) {
+  const button = document.querySelector("#monitoring-submit");
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${protocol}://${window.location.host}/api/v1/positions/stream`);
+  monitoringSocket = socket;
+  monitoringRequestKey = requestKey;
+  button.textContent = "Đang kết nối…";
+  setMonitoringState("Đang kết nối live monitoring ở chế độ read-only…");
+
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify(request));
+    button.textContent = "Dừng live";
+  });
+  socket.addEventListener("message", (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.type === "snapshot") {
+      renderMonitoringResult(payload);
+      return;
+    }
+    if (payload.type === "error") {
+      setMonitoringState(payload.message || "Live monitoring gặp lỗi.", "error");
+      return;
+    }
+    const statusMessages = {
+      starting: "Đang khởi tạo live monitoring…",
+      connected: "Đã kết nối Bybit private stream; đang nhận cập nhật live…",
+      reconciled: "Đã reconnect và reconcile lại với REST; tiếp tục nhận cập nhật live.",
+      disconnected: "Mất kết nối Bybit; đang thử reconnect…",
+    };
+    if (payload.status && statusMessages[payload.status]) setMonitoringState(statusMessages[payload.status]);
+  });
+  socket.addEventListener("error", () => {
+    setMonitoringState("Không thể kết nối live monitoring. Kiểm tra credential và server.", "error");
+  });
+  socket.addEventListener("close", () => {
+    if (monitoringSocket !== socket) return;
+    monitoringSocket = null;
+    monitoringRequestKey = null;
+    button.textContent = "Cập nhật theo dõi";
+  });
+}
 
 backtestForm.addEventListener("submit", async (event) => {
   event.preventDefault();

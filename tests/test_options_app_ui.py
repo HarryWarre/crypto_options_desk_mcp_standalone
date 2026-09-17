@@ -23,8 +23,8 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/app.js?v=20260917-3" defer></script>' in response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-3">' in response.text
+    assert '<script src="/static/app.js?v=20260917-4" defer></script>' in response.text
+    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-4">' in response.text
     assert 'id="service-status"' in response.text
     assert 'class="app-shell"' in response.text
     assert 'aria-label="Điều hướng workspace"' in response.text
