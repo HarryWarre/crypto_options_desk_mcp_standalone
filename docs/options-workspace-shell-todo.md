@@ -8,5 +8,5 @@
 - [x] Add responsive sidebar/content layout and focus states.
 - [x] Run Python UI/static tests.
 - [x] Run Playwright functional and visual QA at desktop and mobile sizes.
-- [ ] Review the branch against `main` on Standards and Spec axes.
+- [x] Review the branch against `main` on Standards and Spec axes.
 - [ ] Rebase onto `main` and merge the completed branch.
