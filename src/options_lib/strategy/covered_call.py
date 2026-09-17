@@ -18,8 +18,8 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from ..flow.types import (
     OptionsChainData,
@@ -28,6 +28,12 @@ from ..flow.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
 
 
 @dataclass
@@ -49,6 +55,7 @@ class StrikeCandidate:
     otm_pct: float  # how far OTM as % of underlying
     spread_pct: float  # bid-ask spread as % of mid
     score: float  # composite ranking score
+    quote_status: str = "unavailable"
 
 
 @dataclass
@@ -84,6 +91,12 @@ class CoveredCallSignal:
     candidates: List[StrikeCandidate] = field(default_factory=list)
 
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    evidence_status: str = "insufficient_evidence"
+    signal_status: str = "manual_review"
+    execution_allowed: bool = False
+    rejection_reasons: List[str] = field(default_factory=list)
+    as_of: Optional[datetime] = None
+    rv_window_bars: Optional[int] = None
 
 
 class CoveredCallAnalyzer:
@@ -109,6 +122,7 @@ class CoveredCallAnalyzer:
         klines: list,
         asset: str = "BTC",
         rv_window: int = 30,
+        as_of: Optional[datetime] = None,
     ) -> IVRVSpread:
         """Compute IV-RV spread from live chain and kline data.
 
@@ -148,6 +162,7 @@ class CoveredCallAnalyzer:
             spread=spread,
             spread_ratio=atm_iv / rv if rv > 0 else 0,
             rv_estimator="garman_klass",
+            timestamp=_as_utc(as_of) or datetime.now(UTC),
         )
 
     @staticmethod
@@ -290,6 +305,13 @@ class CoveredCallAnalyzer:
                     otm_pct=otm_pct,
                     spread_pct=spread_pct,
                     score=score,
+                    quote_status=(
+                        "executable"
+                        if opt.bid_price > 0
+                        and opt.ask_price > 0
+                        and opt.ask_price >= opt.bid_price
+                        else "mark_fallback"
+                    ),
                 )
             )
 
@@ -308,6 +330,15 @@ class CoveredCallAnalyzer:
         delta_range: tuple = DEFAULT_DELTA_RANGE,
         min_dte: int = DEFAULT_MIN_DTE,
         max_dte: int = DEFAULT_MAX_DTE,
+        *,
+        underlying_position: Optional[float] = None,
+        fee_per_contract: Optional[float] = None,
+        slippage_bps: Optional[float] = None,
+        payoff_evidence: Optional[Dict[str, Any]] = None,
+        as_of: Optional[datetime] = None,
+        rv_window: int = 30,
+        min_expectancy: float = 0.0,
+        min_probability_margin: float = 0.0,
     ) -> CoveredCallSignal:
         """Evaluate whether to enter a covered call position.
 
@@ -334,10 +365,16 @@ class CoveredCallAnalyzer:
 
         reasons = []
         go = True
+        valuation_time = _as_utc(as_of) or datetime.now(UTC)
 
         # 1. IV-RV spread
         iv_rv = CoveredCallAnalyzer.compute_iv_rv_spread(
-            chain, underlying_price, klines, asset
+            chain,
+            underlying_price,
+            klines,
+            asset,
+            rv_window=rv_window,
+            as_of=valuation_time,
         )
         if iv_rv.spread < iv_rv_threshold:
             go = False
@@ -410,6 +447,45 @@ class CoveredCallAnalyzer:
                 f"OTM={best_strike.otm_pct * 100:.1f}%, spread={best_strike.spread_pct * 100:.1f}%)"
             )
 
+        # IV-RV is context only.  A covered call also needs the underlying
+        # position, executable cost assumptions, and an outcome/payoff record.
+        evidence_reasons: List[str] = []
+        if underlying_position is None or underlying_position <= 0:
+            evidence_reasons.append("underlying_position_required")
+        if fee_per_contract is None or slippage_bps is None:
+            evidence_reasons.append("execution_costs_required")
+        if payoff_evidence is None:
+            evidence_reasons.append("payoff_evidence_required")
+        if best_strike is not None and best_strike.quote_status != "executable":
+            evidence_reasons.append("non_executable_quote")
+
+        evidence_status = "insufficient_evidence"
+        if payoff_evidence is not None:
+            evidence_status = str(
+                payoff_evidence.get("evidence_status", "insufficient_evidence")
+            )
+            payoff_expectancy = payoff_evidence.get("expectancy")
+            payoff_probability = payoff_evidence.get("model_probability")
+            break_even_probability = payoff_evidence.get("break_even_win_probability")
+            reward_risk = payoff_evidence.get("reward_risk_ratio")
+            if payoff_expectancy is None or float(payoff_expectancy) < min_expectancy:
+                evidence_reasons.append("expectancy_below_minimum")
+            if (
+                payoff_probability is None
+                or break_even_probability is None
+                or reward_risk is None
+            ):
+                evidence_reasons.append("reward_risk_comparison_unavailable")
+            elif float(payoff_probability) < float(break_even_probability) + min_probability_margin:
+                evidence_reasons.append("probability_below_break_even")
+            if evidence_status != "historically_validated":
+                evidence_reasons.append("evidence_not_validated")
+
+        rejection_reasons = list(dict.fromkeys(evidence_reasons))
+        if rejection_reasons:
+            go = False
+            reasons.extend(f"Evidence gate: {reason}" for reason in rejection_reasons)
+
         return CoveredCallSignal(
             asset=asset,
             go=go,
@@ -421,6 +497,12 @@ class CoveredCallAnalyzer:
             skew_direction=skew_direction,
             strike=best_strike,
             candidates=candidates[:5],  # top 5
+            evidence_status=evidence_status,
+            signal_status="validated" if go else "manual_review",
+            execution_allowed=False,
+            rejection_reasons=rejection_reasons,
+            as_of=valuation_time,
+            rv_window_bars=rv_window,
         )
 
     @staticmethod
@@ -454,6 +536,12 @@ class CoveredCallAnalyzer:
             "go": signal.go,
             "reasons": signal.reasons,
             "timestamp": signal.timestamp.isoformat(),
+            "signal_status": signal.signal_status,
+            "evidence_status": signal.evidence_status,
+            "execution_allowed": signal.execution_allowed,
+            "rejection_reasons": signal.rejection_reasons,
+            "as_of": signal.as_of.isoformat() if signal.as_of else None,
+            "rv_window_bars": signal.rv_window_bars,
         }
         if signal.iv_rv_spread:
             result["iv_rv"] = {

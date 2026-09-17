@@ -527,21 +527,24 @@ class MCPOrchestrator:
                     f"No kline data for {base_coin}USDT", "iv_rv_spread"
                 )
 
+            as_of = datetime.now(tz=UTC)
             iv_rv = CoveredCallAnalyzer.compute_iv_rv_spread(
                 chain_data,
                 price,
                 klines,
                 asset=base_coin,
                 rv_window=rv_window * 6,
+                as_of=as_of,
             )
 
-            signal = (
+            legacy_signal = (
                 "SELL_VOL"
                 if iv_rv.spread > 10
                 else "HOLD"
                 if iv_rv.spread > 5
                 else "NO_EDGE"
             )
+            signal = "MANUAL_REVIEW" if legacy_signal != "NO_EDGE" else "NO_EDGE"
             return _success_response(
                 "iv_rv_spread",
                 {
@@ -552,7 +555,18 @@ class MCPOrchestrator:
                     "spread_ratio": round(iv_rv.spread_ratio, 2),
                     "rv_estimator": iv_rv.rv_estimator,
                     "rv_window_days": rv_window,
+                    "rv_window_bars": rv_window * 6,
+                    "as_of": as_of.isoformat(),
                     "signal": signal,
+                    "legacy_signal": legacy_signal,
+                    "signal_status": "manual_review" if signal == "MANUAL_REVIEW" else "no_edge",
+                    "evidence_status": "insufficient_evidence",
+                    "execution_allowed": False,
+                    "rejection_reasons": [
+                        "payoff_evidence_required",
+                        "underlying_position_required",
+                        "execution_costs_required",
+                    ] if signal == "MANUAL_REVIEW" else [],
                     "spot_price": price,
                 },
                 symbol=base_coin,
@@ -588,6 +602,7 @@ class MCPOrchestrator:
                     f"No kline data for {base_coin}USDT", "covered_call_signal"
                 )
 
+            as_of = datetime.now(tz=UTC)
             signal = CoveredCallAnalyzer.evaluate_signal(
                 chain_data,
                 price,
@@ -596,6 +611,8 @@ class MCPOrchestrator:
                 iv_rv_threshold=iv_rv_threshold,
                 target_delta=target_delta,
                 max_dte=max_dte,
+                as_of=as_of,
+                rv_window=30 * 6,
             )
 
             return _success_response(

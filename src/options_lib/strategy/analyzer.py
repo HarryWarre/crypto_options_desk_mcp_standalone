@@ -5,12 +5,15 @@ Comprehensive analysis of option strategies including profitability,
 risk metrics, and recommendations.
 """
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+import math
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
 from .classifier import StrategyClassifier, StrategyType
+from ..payoff_metrics import PayoffMetrics, calculate_payoff_metrics
+from ..scenario_engine import ExecutionAssumptions, OptionLeg, StrategyDefinition
 
 
 @dataclass
@@ -44,6 +47,35 @@ class StrategyMetrics:
     avg_bid_ask_spread: float
     total_open_interest: float
     liquidity_score: float
+
+    # Canonical payoff contract.  ``prob_profit`` remains the compatibility
+    # name, but it is explicitly a model probability, never historical win rate.
+    model_probability: Optional[float] = None
+    historical_win_rate: Optional[float] = None
+    average_win: Optional[float] = None
+    average_loss: Optional[float] = None
+    reward_risk_ratio_standard: Optional[float] = None
+    break_even_win_probability: Optional[float] = None
+    payoff_contribution_ratio: Optional[float] = None
+    expectancy: Optional[float] = None
+    probability_basis: Optional[str] = None
+    expectancy_basis: Optional[str] = None
+    evidence_status: str = "unavailable"
+    quote_status: str = "unavailable"
+    quality_gate_status: str = "unavailable"
+    rejection_reasons: List[str] = field(default_factory=list)
+
+    @property
+    def win_probability(self) -> Optional[float]:
+        """Canonical model probability; completed outcomes are not supplied here."""
+
+        return self.model_probability
+
+    @property
+    def reward_risk_ratio(self) -> Optional[float]:
+        """Canonical conditional average-win / average-loss ratio."""
+
+        return self.reward_risk_ratio_standard
 
 
 @dataclass
@@ -133,6 +165,69 @@ def _find_option_in_chain(options_chain: List[Dict], symbol: str) -> Optional[Di
     return None
 
 
+def _number(option: Optional[Dict], *keys: str) -> Optional[float]:
+    """Return the first finite numeric field without turning missing into zero."""
+
+    if not option:
+        return None
+    for key in keys:
+        value = option.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return number
+    return None
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    """Normalize legacy ISO/Bybit expiry and timestamp values to UTC."""
+
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC)
+    except ValueError:
+        pass
+    for fmt in ("%d%b%y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text.upper(), fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def _quote(option: Optional[Dict], position: int) -> tuple[Optional[float], Optional[float], str]:
+    """Return bid/ask for a leg, with explicit mark fallback provenance."""
+
+    bid = _number(option, "bid_price", "bid1Price", "bid")
+    ask = _number(option, "ask_price", "ask1Price", "ask")
+    if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
+        return bid, ask, "executable_bid_ask"
+
+    mark = _number(option, "mark_price", "markPrice", "mid_price", "midPrice")
+    if mark is not None and mark > 0:
+        return mark, mark, "mark_price_fallback"
+    return None, None, "unavailable"
+
+
+def _quote_status(sources: List[str]) -> str:
+    if not sources or any(source == "unavailable" for source in sources):
+        return "unavailable"
+    if all(source == "executable_bid_ask" for source in sources):
+        return "executable"
+    return "mark_fallback"
+
+
 class StrategyAnalyzer:
     """Analyzes option strategies for profitability and risk.
 
@@ -141,9 +236,224 @@ class StrategyAnalyzer:
                      'rv_7d', 'rv_30d', 'vol_risk_premium'.
     """
 
-    def __init__(self, vol_context: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        vol_context: Optional[Dict[str, Any]] = None,
+        *,
+        risk_free_rate: float = 0.0,
+        fee_per_contract: float = 0.0,
+        slippage_bps: float = 0.0,
+        contract_multiplier: float = 1.0,
+        as_of: Optional[datetime] = None,
+        min_expectancy: float = 0.0,
+        min_reward_risk_margin: float = 0.0,
+    ):
         self.classifier = StrategyClassifier()
         self.vol_context = vol_context
+        self.risk_free_rate = risk_free_rate
+        self.fee_per_contract = fee_per_contract
+        self.slippage_bps = slippage_bps
+        self.contract_multiplier = contract_multiplier
+        self.as_of = as_of
+        self.min_expectancy = min_expectancy
+        self.min_reward_risk_margin = min_reward_risk_margin
+
+    def _canonical_payoff(
+        self,
+        config: Dict[str, Any],
+        underlying_price: float,
+        options_chain: Optional[List[Dict]],
+        strategy_type: str,
+        *,
+        as_of: Optional[datetime] = None,
+    ) -> tuple[Optional[PayoffMetrics], str, List[str]]:
+        """Adapt one legacy config to the canonical payoff module.
+
+        The classifier owns discovery; this Adapter owns only translation to
+        ``OptionLeg``/``StrategyDefinition``.  All probability, payoff, and
+        expectancy math remains behind ``calculate_payoff_metrics``.
+        """
+
+        raw_legs = list(config.get("legs") or [])
+        if not raw_legs:
+            symbols = (
+                (config.get("call_symbol"), config.get("put_symbol"))
+                if strategy_type in {"straddle", "strangle"}
+                else (config.get("long_symbol"), config.get("short_symbol"))
+            )
+            raw_legs = [
+                option
+                for symbol in symbols
+                if symbol
+                for option in [_find_option_in_chain(options_chain or [], symbol)]
+                if option is not None
+            ]
+
+        if strategy_type in {"straddle", "strangle"}:
+            positions = (1, 1)
+        else:
+            positions = (1, -1)
+
+        if len(raw_legs) != len(positions):
+            return None, "unavailable", ["required_option_legs_unavailable"]
+
+        valuation_time = (
+            _as_utc(as_of)
+            or _as_utc(config.get("as_of"))
+            or _as_utc(raw_legs[0].get("timestamp"))
+            or datetime.now(UTC)
+        )
+        canonical_legs: list[OptionLeg] = []
+        quote_sources: list[str] = []
+        reasons: list[str] = []
+        for raw, position in zip(raw_legs, positions):
+            expiry = _as_utc(
+                raw.get("expiry_at")
+                or raw.get("expiry")
+                or raw.get("expiry_date")
+                or config.get("expiry")
+            )
+            iv = _number(raw, "mark_iv", "iv", "implied_volatility")
+            strike = _number(raw, "strike")
+            spot = _number(raw, "underlying_price", "spot") or underlying_price
+            bid, ask, quote_source = _quote(raw, position)
+            if expiry is None:
+                reasons.append(f"missing_expiry:{raw.get('symbol', 'unknown')}")
+            if strike is None or strike <= 0 or spot <= 0:
+                reasons.append(f"invalid_payoff_inputs:{raw.get('symbol', 'unknown')}")
+            if iv is None or iv <= 0:
+                reasons.append(f"missing_iv:{raw.get('symbol', 'unknown')}")
+            if bid is None or ask is None:
+                reasons.append(f"missing_quote:{raw.get('symbol', 'unknown')}")
+            quote_sources.append(quote_source)
+            if expiry is None or strike is None or iv is None or bid is None or ask is None:
+                continue
+            canonical_legs.append(
+                OptionLeg(
+                    symbol=str(raw.get("symbol", "legacy-leg")),
+                    option_type=str(raw.get("option_type", "C")),
+                    strike=float(strike),
+                    expiry=expiry,
+                    valuation_time=valuation_time,
+                    spot=float(spot),
+                    iv=float(iv),
+                    risk_free_rate=float(self.risk_free_rate),
+                    bid=float(bid),
+                    ask=float(ask),
+                    position=position,
+                )
+            )
+
+        if reasons or len(canonical_legs) != len(positions):
+            return None, _quote_status(quote_sources), reasons or ["canonical_leg_build_failed"]
+
+        canonical_strategy = {
+            "straddle": "long_straddle",
+            "strangle": "long_strangle",
+            "bull_call_spread": "bull_call_vertical",
+            "bull_put_spread": "bull_put_vertical",
+        }.get(strategy_type, strategy_type)
+        metrics = calculate_payoff_metrics(
+            StrategyDefinition(
+                strategy_type=canonical_strategy,  # type: ignore[arg-type]
+                legs=tuple(canonical_legs),
+            ),
+            ExecutionAssumptions(
+                fee_per_contract=self.fee_per_contract,
+                slippage_bps=self.slippage_bps,
+                contract_multiplier=self.contract_multiplier,
+            ),
+            entry_price_source=(
+                "executable_bid_ask"
+                if all(source == "executable_bid_ask" for source in quote_sources)
+                else "mark_price_fallback"
+            ),
+        )
+        if metrics.status == "unavailable":
+            return metrics, _quote_status(quote_sources), list(metrics.limitations)
+        if any(source != "executable_bid_ask" for source in quote_sources):
+            reasons.extend(["mark_price_fallback", "non_executable_quote"])
+        return metrics, _quote_status(quote_sources), list(dict.fromkeys(reasons))
+
+    def _metric_fields(
+        self,
+        metrics: Optional[PayoffMetrics],
+        quote_status: str,
+        reasons: List[str],
+    ) -> Dict[str, Any]:
+        """Map canonical names while retaining legacy analyzer names."""
+
+        if metrics is None:
+            return {
+                "model_probability": None,
+                "prob_profit": None,
+                "average_win": None,
+                "average_loss": None,
+                "reward_risk_ratio_standard": None,
+                "risk_reward_ratio": None,
+                "break_even_win_probability": None,
+                "payoff_contribution_ratio": None,
+                "expectancy": None,
+                "expected_return": None,
+                "probability_basis": None,
+                "expectancy_basis": None,
+                "evidence_status": "unavailable",
+                "quote_status": quote_status,
+                "quality_gate_status": "manual_review",
+                "rejection_reasons": list(dict.fromkeys(reasons)),
+                "canonical_metrics": None,
+            }
+
+        gate_reasons = list(reasons)
+        if metrics.expectancy is None:
+            gate_reasons.append("expectancy_unavailable")
+        elif metrics.expectancy < self.min_expectancy:
+            gate_reasons.append("expectancy_below_minimum")
+        if (
+            metrics.reward_risk_ratio is None
+            or metrics.break_even_win_probability is None
+            or metrics.win_probability is None
+        ):
+            gate_reasons.append("reward_risk_comparison_unavailable")
+        elif metrics.win_probability < (
+            metrics.break_even_win_probability + self.min_reward_risk_margin
+        ):
+            gate_reasons.append("probability_below_break_even")
+        if quote_status != "executable":
+            gate_reasons.append("quote_evidence_not_executable")
+        unique_reasons = list(dict.fromkeys(gate_reasons))
+        quality_gate_status = (
+            "model_qualified"
+            if not unique_reasons
+            else "manual_review"
+            if quote_status != "executable"
+            else "rejected"
+        )
+        return {
+            "model_probability": metrics.win_probability,
+            "prob_profit": metrics.win_probability,
+            "average_win": metrics.average_win,
+            "average_loss": metrics.average_loss,
+            "reward_risk_ratio_standard": metrics.reward_risk_ratio,
+            "risk_reward_ratio": metrics.reward_risk_ratio,
+            "break_even_win_probability": metrics.break_even_win_probability,
+            "payoff_contribution_ratio": metrics.payoff_contribution_ratio,
+            "expectancy": metrics.expectancy,
+            "expected_return": metrics.expectancy,
+            "probability_basis": metrics.probability_basis,
+            "expectancy_basis": metrics.expectancy_basis,
+            "evidence_status": metrics.evidence_status,
+            "quote_status": quote_status,
+            "quality_gate_status": quality_gate_status,
+            "rejection_reasons": unique_reasons,
+            "canonical_metrics": metrics,
+        }
+
+    @staticmethod
+    def _apply_metric_fields(target: Dict[str, Any], fields: Dict[str, Any]) -> None:
+        """Keep the mapping local to the legacy dataclass constructors."""
+
+        target.update({key: value for key, value in fields.items() if key != "canonical_metrics"})
 
     # ── Straddles ──
 
@@ -188,7 +498,7 @@ class StrategyAnalyzer:
                                vol_context: Optional[Dict],
                                options_chain: Optional[List[Dict]] = None) -> StrategyMetrics:
         strike = config['strike']
-        cost = config['cost']
+        cost = _safe_float(config.get('cost'))
         expiry = config['expiry']
 
         breakevens = [strike - cost, strike + cost]
@@ -227,21 +537,30 @@ class StrategyAnalyzer:
         if vol_context and avg_iv > 0:
             iv_rv_spread = avg_iv - vol_context.get('rv_30d', 0)
 
-        # Probability of profit estimate based on ATM distance
-        atm_distance_pct = config.get('atm_distance_pct', 0)
-        prob_profit = max(0.1, 0.6 - (atm_distance_pct / 100))
+        canonical, quote_status, rejection_reasons = self._canonical_payoff(
+            config,
+            underlying_price,
+            options_chain,
+            "straddle",
+        )
+        canonical_fields = self._metric_fields(canonical, quote_status, rejection_reasons)
+        canonical_cost = (
+            canonical.assumptions.net_entry_cash_flow
+            if canonical and canonical.assumptions
+            else None
+        )
 
         return StrategyMetrics(
             strategy_name=f"Straddle @ {strike}",
             strategy_type=StrategyType.STRADDLE,
-            net_cost=cost,
-            max_profit=None,
-            max_loss=cost,
-            breakeven_points=breakevens,
+            net_cost=canonical_cost if canonical_cost is not None else cost,
+            max_profit=canonical.max_profit if canonical else None,
+            max_loss=canonical.max_loss if canonical else cost,
+            breakeven_points=list(canonical.breakevens) if canonical else breakevens,
             profit_range=profit_range,
-            prob_profit=prob_profit,
-            expected_return=None,
-            risk_reward_ratio=None,
+            prob_profit=canonical_fields["prob_profit"],
+            expected_return=canonical_fields["expected_return"],
+            risk_reward_ratio=canonical_fields["risk_reward_ratio"],
             net_delta=net_delta,
             net_gamma=net_gamma,
             net_theta=net_theta,
@@ -251,10 +570,38 @@ class StrategyAnalyzer:
             days_to_expiry=days,
             avg_bid_ask_spread=avg_spread,
             total_open_interest=total_oi,
-            liquidity_score=_compute_liquidity_score(avg_spread, total_oi, cost)
+            liquidity_score=_compute_liquidity_score(avg_spread, total_oi, cost),
+            model_probability=canonical_fields["model_probability"],
+            average_win=canonical_fields["average_win"],
+            average_loss=canonical_fields["average_loss"],
+            reward_risk_ratio_standard=canonical_fields["reward_risk_ratio_standard"],
+            break_even_win_probability=canonical_fields["break_even_win_probability"],
+            payoff_contribution_ratio=canonical_fields["payoff_contribution_ratio"],
+            expectancy=canonical_fields["expectancy"],
+            probability_basis=canonical_fields["probability_basis"],
+            expectancy_basis=canonical_fields["expectancy_basis"],
+            evidence_status=canonical_fields["evidence_status"],
+            quote_status=canonical_fields["quote_status"],
+            quality_gate_status=canonical_fields["quality_gate_status"],
+            rejection_reasons=canonical_fields["rejection_reasons"],
         )
 
     def _score_straddle(self, metrics: StrategyMetrics, vol_context: Optional[Dict]) -> Dict[str, Any]:
+        if metrics.quality_gate_status != "model_qualified":
+            return {
+                "score": 0,
+                "pros": [],
+                "cons": [
+                    f"Canonical quality gate: {reason}"
+                    for reason in metrics.rejection_reasons
+                ]
+                or ["Canonical payoff evidence is unavailable"],
+                "risk_level": "high",
+                "outlook": "not_tradeable",
+                "qualified": False,
+                "quality_gate_status": metrics.quality_gate_status,
+                "rejection_reasons": metrics.rejection_reasons,
+            }
         score = 50
         pros = []
         cons = []
@@ -293,7 +640,9 @@ class StrategyAnalyzer:
             cons.append("Low liquidity")
 
         return {'score': max(0, min(100, score)), 'pros': pros, 'cons': cons,
-                'risk_level': 'medium', 'outlook': 'volatile'}
+                'risk_level': 'medium', 'outlook': 'volatile', 'qualified': True,
+                'quality_gate_status': metrics.quality_gate_status,
+                'rejection_reasons': metrics.rejection_reasons}
 
     def _create_straddle_summary(self, analyzed: List[Dict], vol_context: Optional[Dict]) -> Dict[str, Any]:
         if not analyzed:
@@ -359,7 +708,7 @@ class StrategyAnalyzer:
                                options_chain: Optional[List[Dict]] = None) -> StrategyMetrics:
         put_strike = config['put_strike']
         call_strike = config['call_strike']
-        cost = config['cost']
+        cost = _safe_float(config.get('cost'))
         expiry = config.get('expiry', '')
         breakevens = config['breakevens']
 
@@ -384,21 +733,30 @@ class StrategyAnalyzer:
         if vol_context and avg_iv > 0:
             iv_rv_spread = avg_iv - vol_context.get('rv_30d', 0)
 
-        # Width-based prob estimate: wider strangle = lower probability but cheaper
-        width_pct = abs(call_strike - put_strike) / underlying_price
-        prob_profit = max(0.1, min(0.5, 0.55 - width_pct))
+        canonical, quote_status, rejection_reasons = self._canonical_payoff(
+            config,
+            underlying_price,
+            options_chain,
+            "strangle",
+        )
+        canonical_fields = self._metric_fields(canonical, quote_status, rejection_reasons)
+        canonical_cost = (
+            canonical.assumptions.net_entry_cash_flow
+            if canonical and canonical.assumptions
+            else None
+        )
 
         return StrategyMetrics(
             strategy_name=f"Strangle {put_strike}/{call_strike}",
             strategy_type=StrategyType.STRANGLE,
-            net_cost=cost,
-            max_profit=None,
-            max_loss=cost,
-            breakeven_points=breakevens,
+            net_cost=canonical_cost if canonical_cost is not None else cost,
+            max_profit=canonical.max_profit if canonical else None,
+            max_loss=canonical.max_loss if canonical else cost,
+            breakeven_points=list(canonical.breakevens) if canonical else breakevens,
             profit_range=(breakevens[0], breakevens[1]),
-            prob_profit=prob_profit,
-            expected_return=None,
-            risk_reward_ratio=None,
+            prob_profit=canonical_fields["prob_profit"],
+            expected_return=canonical_fields["expected_return"],
+            risk_reward_ratio=canonical_fields["risk_reward_ratio"],
             net_delta=cd + pd,
             net_gamma=cg + pg,
             net_theta=ct + pt,
@@ -408,10 +766,38 @@ class StrategyAnalyzer:
             days_to_expiry=days,
             avg_bid_ask_spread=avg_spread,
             total_open_interest=total_oi,
-            liquidity_score=_compute_liquidity_score(avg_spread, total_oi, cost)
+            liquidity_score=_compute_liquidity_score(avg_spread, total_oi, cost),
+            model_probability=canonical_fields["model_probability"],
+            average_win=canonical_fields["average_win"],
+            average_loss=canonical_fields["average_loss"],
+            reward_risk_ratio_standard=canonical_fields["reward_risk_ratio_standard"],
+            break_even_win_probability=canonical_fields["break_even_win_probability"],
+            payoff_contribution_ratio=canonical_fields["payoff_contribution_ratio"],
+            expectancy=canonical_fields["expectancy"],
+            probability_basis=canonical_fields["probability_basis"],
+            expectancy_basis=canonical_fields["expectancy_basis"],
+            evidence_status=canonical_fields["evidence_status"],
+            quote_status=canonical_fields["quote_status"],
+            quality_gate_status=canonical_fields["quality_gate_status"],
+            rejection_reasons=canonical_fields["rejection_reasons"],
         )
 
     def _score_strangle(self, metrics: StrategyMetrics, vol_context: Optional[Dict]) -> Dict[str, Any]:
+        if metrics.quality_gate_status != "model_qualified":
+            return {
+                "score": 0,
+                "pros": [],
+                "cons": [
+                    f"Canonical quality gate: {reason}"
+                    for reason in metrics.rejection_reasons
+                ]
+                or ["Canonical payoff evidence is unavailable"],
+                "risk_level": "high",
+                "outlook": "not_tradeable",
+                "qualified": False,
+                "quality_gate_status": metrics.quality_gate_status,
+                "rejection_reasons": metrics.rejection_reasons,
+            }
         score = 45
         pros = []
         cons = []
@@ -451,7 +837,9 @@ class StrategyAnalyzer:
             cons.append("Low liquidity")
 
         return {'score': max(0, min(100, score)), 'pros': pros, 'cons': cons,
-                'risk_level': 'medium', 'outlook': 'volatile'}
+                'risk_level': 'medium', 'outlook': 'volatile', 'qualified': True,
+                'quality_gate_status': metrics.quality_gate_status,
+                'rejection_reasons': metrics.rejection_reasons}
 
     def _create_strangle_summary(self, analyzed: List[Dict], vol_context: Optional[Dict]) -> Dict[str, Any]:
         if not analyzed:
@@ -515,17 +903,17 @@ class StrategyAnalyzer:
         if 'call' in strategy_type:
             long_strike = config['long_strike']
             short_strike = config['short_strike']
-            net_cost = config.get('net_cost', 0)
-            max_profit = config.get('max_profit', 0)
-            max_loss = config.get('max_loss', net_cost)
-            breakeven = config.get('breakeven', long_strike + net_cost)
+            net_cost = _safe_float(config.get('net_cost'))
+            max_profit = _safe_float(config.get('max_profit'))
+            max_loss = _safe_float(config.get('max_loss'), net_cost)
+            breakeven = _safe_float(config.get('breakeven'), long_strike + net_cost)
         else:
             long_strike = config['long_strike']
             short_strike = config['short_strike']
-            net_credit = config.get('net_credit', 0)
-            max_profit = config.get('max_profit', net_credit)
-            max_loss = config.get('max_loss', 0)
-            breakeven = config.get('breakeven', short_strike - net_credit)
+            net_credit = _safe_float(config.get('net_credit'))
+            max_profit = _safe_float(config.get('max_profit'), net_credit)
+            max_loss = _safe_float(config.get('max_loss'))
+            breakeven = _safe_float(config.get('breakeven'), short_strike - net_credit)
             net_cost = -net_credit
 
         # Look up real Greeks from chain — spreads have a long and short leg
@@ -556,23 +944,32 @@ class StrategyAnalyzer:
         s_iv = _safe_float(short_opt.get('mark_iv')) if short_opt else 0
         avg_iv = (l_iv + s_iv) / 2 if (l_iv > 0 and s_iv > 0) else max(l_iv, s_iv)
 
-        # Probability: approximate from delta of the long leg
-        # For a bull call spread, P(profit) ≈ delta of long call
-        prob_profit = abs(ld) if ld != 0 else 0.5
+        canonical, quote_status, rejection_reasons = self._canonical_payoff(
+            config,
+            underlying_price,
+            options_chain,
+            strategy_type,
+        )
+        canonical_fields = self._metric_fields(canonical, quote_status, rejection_reasons)
+        canonical_cost = (
+            canonical.assumptions.net_entry_cash_flow
+            if canonical and canonical.assumptions
+            else None
+        )
 
         mark = abs(net_cost) if net_cost != 0 else (max_loss if max_loss else 1)
 
         return StrategyMetrics(
             strategy_name=f"{strategy_type.replace('_', ' ').title()} {long_strike}/{short_strike}",
             strategy_type=StrategyType.CALL_SPREAD if 'call' in strategy_type else StrategyType.PUT_SPREAD,
-            net_cost=net_cost,
-            max_profit=max_profit,
-            max_loss=max_loss,
-            breakeven_points=[breakeven],
-            profit_range=(0, max_profit) if max_profit else (0, 0),
-            prob_profit=prob_profit,
-            expected_return=None,
-            risk_reward_ratio=max_profit / max_loss if max_loss and max_loss > 0 else None,
+            net_cost=canonical_cost if canonical_cost is not None else net_cost,
+            max_profit=canonical.max_profit if canonical else max_profit,
+            max_loss=canonical.max_loss if canonical else max_loss,
+            breakeven_points=list(canonical.breakevens) if canonical else [breakeven],
+            profit_range=(0, canonical.max_profit) if canonical and canonical.max_profit else (0, max_profit) if max_profit else (0, 0),
+            prob_profit=canonical_fields["prob_profit"],
+            expected_return=canonical_fields["expected_return"],
+            risk_reward_ratio=canonical_fields["risk_reward_ratio"],
             net_delta=net_delta,
             net_gamma=net_gamma,
             net_theta=net_theta,
@@ -582,10 +979,38 @@ class StrategyAnalyzer:
             days_to_expiry=days,
             avg_bid_ask_spread=avg_spread,
             total_open_interest=total_oi,
-            liquidity_score=_compute_liquidity_score(avg_spread, total_oi, mark)
+            liquidity_score=_compute_liquidity_score(avg_spread, total_oi, mark),
+            model_probability=canonical_fields["model_probability"],
+            average_win=canonical_fields["average_win"],
+            average_loss=canonical_fields["average_loss"],
+            reward_risk_ratio_standard=canonical_fields["reward_risk_ratio_standard"],
+            break_even_win_probability=canonical_fields["break_even_win_probability"],
+            payoff_contribution_ratio=canonical_fields["payoff_contribution_ratio"],
+            expectancy=canonical_fields["expectancy"],
+            probability_basis=canonical_fields["probability_basis"],
+            expectancy_basis=canonical_fields["expectancy_basis"],
+            evidence_status=canonical_fields["evidence_status"],
+            quote_status=canonical_fields["quote_status"],
+            quality_gate_status=canonical_fields["quality_gate_status"],
+            rejection_reasons=canonical_fields["rejection_reasons"],
         )
 
     def _score_spread(self, metrics: StrategyMetrics, underlying_price: float) -> Dict[str, Any]:
+        if metrics.quality_gate_status != "model_qualified":
+            return {
+                "score": 0,
+                "pros": [],
+                "cons": [
+                    f"Canonical quality gate: {reason}"
+                    for reason in metrics.rejection_reasons
+                ]
+                or ["Canonical payoff evidence is unavailable"],
+                "risk_level": "high",
+                "outlook": "not_tradeable",
+                "qualified": False,
+                "quality_gate_status": metrics.quality_gate_status,
+                "rejection_reasons": metrics.rejection_reasons,
+            }
         score = 50
         pros = []
         cons = []
@@ -621,7 +1046,9 @@ class StrategyAnalyzer:
         return {
             'score': max(0, min(100, score)), 'pros': pros, 'cons': cons,
             'risk_level': 'low' if metrics.max_loss and metrics.max_loss < 100 else 'medium',
-            'outlook': 'directional'
+            'outlook': 'directional', 'qualified': True,
+            'quality_gate_status': metrics.quality_gate_status,
+            'rejection_reasons': metrics.rejection_reasons,
         }
 
     def _create_spread_summary(self, analyzed: List[Dict]) -> Dict[str, Any]:

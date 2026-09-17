@@ -239,6 +239,19 @@ class Opportunity:
     valuation_mode: ValuationMode = "executable"
     mark_price: float | None = None
     quote_source: str = "live_bid_ask"
+    # Canonical payoff fields.  The legacy fields above remain serialized for
+    # compatibility, but callers must not infer historical outcomes from them.
+    model_probability: float | None = None
+    average_win: float | None = None
+    average_loss: float | None = None
+    reward_risk_ratio: float | None = None
+    break_even_win_probability: float | None = None
+    payoff_contribution_ratio: float | None = None
+    expectancy: float | None = None
+    probability_basis: str | None = None
+    expectancy_basis: str | None = None
+    quality_gate_status: str = "unavailable"
+    rejection_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -664,12 +677,49 @@ def _with_payoff_metrics(
             else "long ask / short bid"
         ),
     )
+    quality_reasons = list(metrics.limitations if metrics.status == "unavailable" else ())
+    if opportunity.requires_underlying_position:
+        quality_reasons.append("underlying_position_required")
+    if metrics.expectancy is None:
+        quality_reasons.append("expectancy_unavailable")
+    elif metrics.expectancy < 0:
+        quality_reasons.append("expectancy_below_zero")
+    if (
+        metrics.win_probability is None
+        or metrics.reward_risk_ratio is None
+        or metrics.break_even_win_probability is None
+    ):
+        quality_reasons.append("reward_risk_comparison_unavailable")
+    elif metrics.win_probability < metrics.break_even_win_probability:
+        quality_reasons.append("probability_below_break_even")
+    if opportunity.valuation_mode != "executable":
+        quality_reasons.append("non_executable_valuation")
+    unique_reasons = tuple(dict.fromkeys(quality_reasons))
+    quality_gate_status = (
+        "model_qualified"
+        if not unique_reasons
+        else "manual_review"
+        if opportunity.valuation_mode != "executable"
+        or opportunity.requires_underlying_position
+        else "rejected"
+    )
     return replace(
         opportunity,
         payoff_curve=metrics.payoff_curve,
         expected_value=metrics.expected_value,
         win_probability=metrics.win_probability,
         risk_reward=metrics.risk_reward,
+        model_probability=metrics.win_probability,
+        average_win=metrics.average_win,
+        average_loss=metrics.average_loss,
+        reward_risk_ratio=metrics.reward_risk_ratio,
+        break_even_win_probability=metrics.break_even_win_probability,
+        payoff_contribution_ratio=metrics.payoff_contribution_ratio,
+        expectancy=metrics.expectancy,
+        probability_basis=metrics.probability_basis,
+        expectancy_basis=metrics.expectancy_basis,
+        quality_gate_status=quality_gate_status,
+        rejection_reasons=unique_reasons,
         payoff_metrics_status=metrics.status,
         expected_value_status=metrics.expected_value_status,
         win_probability_status=metrics.win_probability_status,
