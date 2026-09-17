@@ -23,8 +23,9 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/app.js?v=20260917-4" defer></script>' in response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-4">' in response.text
+    assert '<script src="/static/live-desk.js?v=20260917-5" defer></script>' in response.text
+    assert '<script src="/static/app.js?v=20260917-5" defer></script>' in response.text
+    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-5">' in response.text
     assert 'id="service-status"' in response.text
     assert 'id="live-desk-title"' in response.text
     assert 'id="live-toggle"' in response.text
@@ -99,17 +100,26 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     app = create_app()
 
     javascript = await request(app, "GET", "/static/app.js")
+    live_javascript = await request(app, "GET", "/static/live-desk.js")
     stylesheet = await request(app, "GET", "/static/styles.css")
 
     assert javascript.status_code == 200
     assert javascript.headers["content-type"].startswith("text/javascript")
+    assert live_javascript.status_code == 200
+    assert live_javascript.headers["content-type"].startswith("text/javascript")
     assert '"/api/v1/assets"' in javascript.text
     assert "syncWorkspaceFromHash" in javascript.text
     assert 'window.addEventListener("hashchange"' in javascript.text
     assert "/api/v1/opportunities/scan/stream" in javascript.text
-    assert "/api/v1/opportunities/stream" in javascript.text
-    assert "connectLiveFeed" in javascript.text
-    assert "renderLiveSnapshot" in javascript.text
+    assert "FlowSurfaceLiveDesk" in javascript.text
+    assert "createController" in javascript.text
+    assert "/api/v1/opportunities/stream" in live_javascript.text
+    assert "connectLiveFeed" in live_javascript.text
+    assert "renderLiveSnapshot" in live_javascript.text
+    assert "live_desk" in live_javascript.text
+    assert "observed_assets" in live_javascript.text
+    assert "contract_count" in live_javascript.text
+    assert "rejection_reasons" in live_javascript.text
     assert "legs" in javascript.text
     for field in ("symbol", "option_type", "strike", "expiry_at", "position"):
         assert field in javascript.text
@@ -154,6 +164,7 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "leg-summary" in javascript.text
     assert "textContent" in javascript.text
     assert "innerHTML" not in javascript.text
+    assert "innerHTML" not in live_javascript.text
     assert "warningText" not in javascript.text
     assert "appendTerminal" in javascript.text
     assert "streamJson" in javascript.text
@@ -183,4 +194,4 @@ async def test_static_assets_are_served_from_same_origin() -> None:
 
 
 def test_static_directory_contains_only_the_expected_ui_files() -> None:
-    assert {path.name for path in STATIC_DIR.iterdir()} == {"index.html", "app.js", "styles.css"}
+    assert {path.name for path in STATIC_DIR.iterdir()} == {"index.html", "app.js", "live-desk.js", "styles.css"}

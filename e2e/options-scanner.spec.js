@@ -132,11 +132,28 @@ async function mockApi(page) {
                   timestamp: "2026-09-15T14:46:33Z",
                   data_timestamp: "2026-09-15T14:46:33Z",
                   valuation_mode: "executable",
-                  opportunities: [liveOpportunity],
+                  opportunities: window.__emptyLiveSnapshot ? [] : [liveOpportunity],
                   rejections: [],
                   asset_failures: [],
                   issues: [],
                   scan_context: {},
+                  live_desk: {
+                    selected_assets: ["BTC"],
+                    observed_assets: [{
+                      asset: "BTC",
+                      spot: 76227.9,
+                      contract_count: 700,
+                      valid_quote_count: 35,
+                    }],
+                    timestamp: "2026-09-15T14:46:33Z",
+                    data_timestamp: "2026-09-15T14:46:33Z",
+                    source: "mock-live-market",
+                    rejection_reasons: {
+                      spread_above_maximum: 4,
+                      low_liquidity: 2,
+                    },
+                    execution_allowed: false,
+                  },
                 },
                 execution_allowed: false,
               }),
@@ -332,7 +349,11 @@ test("connects the live options feed and updates the desk dashboard", async ({ p
   await expect(page.locator("#live-session-state")).toHaveText("LIVE");
   await expect(page.locator("#live-stat-spot")).toHaveText("76.2k");
   await expect(page.locator("#live-stat-opportunities")).toHaveText("1");
+  await expect(page.locator("#live-stat-contracts")).toHaveText("700");
+  await expect(page.locator("#live-stat-rejections")).toHaveText("6");
   await expect(page.locator("#market-strip")).toContainText("BTC");
+  await expect(page.locator("#market-strip")).toContainText("700 contracts");
+  await expect(page.locator("#live-rejection-summary")).toContainText("spread_above_maximum");
   await expect(page.locator("#live-opportunity-body")).toContainText("Mua call");
   await expect(page.locator("#live-feed")).toContainText("Mua call");
   await expect(page.locator("#signal-chart")).toContainText("+");
@@ -341,6 +362,21 @@ test("connects the live options feed and updates the desk dashboard", async ({ p
 
   await page.getByRole("button", { name: "Dừng live feed" }).click();
   await expect(page.locator("#live-connection")).toContainText("Live feed đang tắt");
+});
+
+test("renders live market context when the snapshot has no opportunities", async ({ page }) => {
+  await page.evaluate(() => { window.__emptyLiveSnapshot = true; });
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("100");
+  await page.getByRole("button", { name: "Bật live feed" }).click();
+
+  await expect(page.locator("#live-session-state")).toHaveText("LIVE");
+  await expect(page.locator("#live-stat-spot")).toHaveText("76.2k");
+  await expect(page.locator("#live-stat-opportunities")).toHaveText("0");
+  await expect(page.locator("#live-stat-contracts")).toHaveText("700");
+  await expect(page.locator("#live-stat-rejections")).toHaveText("6");
+  await expect(page.locator("#market-strip")).toContainText("700 contracts");
+  await expect(page.locator("#live-opportunity-body")).toContainText("chưa có signal phù hợp");
+  await expect(page.locator("#live-rejection-summary")).toContainText("low_liquidity");
 });
 
 test("shows strategy checkbox cards and keeps all strategy choices available", async ({ page }) => {

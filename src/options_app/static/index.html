@@ -4,8 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Crypto Options Scanner</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260917-4">
-    <script src="/static/app.js?v=20260917-4" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260917-5">
+    <script src="/static/live-desk.js?v=20260917-5" defer></script>
+    <script src="/static/app.js?v=20260917-5" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -129,6 +130,16 @@
             <strong id="live-stat-dte">—</strong>
             <small>Ngày còn lại thấp nhất</small>
           </div>
+          <div class="desk-stat">
+            <span>OPTION CONTRACTS</span>
+            <strong id="live-stat-contracts">—</strong>
+            <small id="live-stat-contracts-label">Chưa có contract inventory</small>
+          </div>
+          <div class="desk-stat">
+            <span>REJECTIONS</span>
+            <strong id="live-stat-rejections">—</strong>
+            <small id="live-stat-rejections-label">Chưa có rejection summary</small>
+          </div>
         </div>
 
         <div class="market-strip" id="market-strip" aria-label="Tóm tắt tài sản live">
@@ -180,6 +191,10 @@
             </div>
             <div class="live-feed" id="live-feed" aria-live="polite">
               <div class="live-feed-empty">Chưa có event. Stream sẽ ghi nhận snapshot mới tại đây.</div>
+            </div>
+            <div class="live-rejection-summary" id="live-rejection-summary" aria-live="polite">
+              <span class="live-rejection-title">REJECTION SUMMARY</span>
+              <strong>Chưa có dữ liệu rejection</strong>
             </div>
           </article>
         </div>
