@@ -33,8 +33,9 @@ MetricStatus = Literal[
 METHODOLOGY = (
     "Risk-neutral lognormal expiry distribution using the stated spot, annualized IV, "
     "risk-free rate, and time to expiry. Payoff uses ask prices for long legs, bid prices "
-    "for short legs, and stated opening fees/slippage. EV and win probability are model "
-    "estimates because historical outcomes were not supplied."
+    "for short legs, and stated opening fees/slippage. Expiry expectancy and win probability "
+    "are model estimates because historical outcomes were not supplied. Expiry expectancy is "
+    "undiscounted expiry P&L; present-value edge is reported separately when used."
 )
 
 
@@ -66,12 +67,26 @@ class PayoffAssumptions:
     costs_included: str = "opening_fees_and_slippage"
     win_definition: str = "expiry_pnl_strictly_positive"
     risk_reward_definition: str = "expected_positive_pnl_divided_by_absolute_expected_negative_pnl"
+    reward_risk_definition: str = "average_win_divided_by_average_loss"
+    payoff_contribution_definition: str = (
+        "probability_weighted_positive_pnl_divided_by_probability_weighted_negative_pnl"
+    )
+    probability_basis: str = "risk_neutral_model"
+    expectancy_basis: str = "expiry_pnl"
+    present_value_edge_basis: str = "discounted_expiry_payoff_minus_entry_cash_flow"
     historical_outcomes_used: bool = False
 
 
 @dataclass(frozen=True)
 class PayoffMetrics:
-    """Chart data, payoff bounds, and explicitly qualified decision metrics."""
+    """Chart data and explicitly qualified expiry-payoff decision metrics.
+
+    ``average_win`` and ``average_loss`` are conditional P&L magnitudes, with
+    ``average_loss`` stored as a positive number. ``reward_risk_ratio`` uses
+    those conditional values. The legacy ``risk_reward`` and
+    ``expected_value`` fields remain available as aliases for the historical
+    contribution-ratio and expiry-expectancy meanings, respectively.
+    """
 
     payoff_curve: tuple[PayoffPoint, ...]
     expected_value: float | None
@@ -89,12 +104,81 @@ class PayoffMetrics:
     methodology: str
     assumptions: PayoffAssumptions | None
     limitations: tuple[str, ...]
+    average_win: float | None = None
+    average_loss: float | None = None
+    reward_risk_ratio: float | None = None
+    break_even_win_probability: float | None = None
+    payoff_contribution_ratio: float | None = None
+    expectancy: float | None = None
+    expiry_expectancy: float | None = None
+    present_value_edge: float | None = None
+    average_win_status: MetricStatus = "unavailable"
+    average_loss_status: MetricStatus = "unavailable"
+    reward_risk_ratio_status: MetricStatus = "unavailable"
+    break_even_win_probability_status: MetricStatus = "unavailable"
+    payoff_contribution_ratio_status: MetricStatus = "unavailable"
+    expectancy_status: MetricStatus = "unavailable"
+    present_value_edge_status: MetricStatus = "unavailable"
 
     @property
     def metrics_status(self) -> MetricStatus:
         """Compatibility name for consumers that label the aggregate status."""
 
         return self.status
+
+    @property
+    def risk_reward_ratio(self) -> float | None:
+        """Compatibility spelling for the conventional reward/risk ratio."""
+
+        return self.reward_risk_ratio
+
+    @property
+    def breakeven_win_probability(self) -> float | None:
+        """Compatibility spelling for the canonical break-even probability."""
+
+        return self.break_even_win_probability
+
+    @property
+    def break_even_probability(self) -> float | None:
+        """Short compatibility spelling for the canonical break-even probability."""
+
+        return self.break_even_win_probability
+
+    @property
+    def fair_value_edge(self) -> float | None:
+        """Compatibility spelling for the explicitly present-value edge."""
+
+        return self.present_value_edge
+
+    @property
+    def probability_basis(self) -> str | None:
+        """Return the probability basis without requiring callers to unpack assumptions."""
+
+        return self.assumptions.probability_basis if self.assumptions is not None else None
+
+    @property
+    def win_probability_basis(self) -> str | None:
+        """Explicit basis for ``win_probability``; this is not historical evidence."""
+
+        return self.probability_basis
+
+    @property
+    def expectancy_basis(self) -> str | None:
+        """Return the basis for the canonical expiry expectancy."""
+
+        return self.assumptions.expectancy_basis if self.assumptions is not None else None
+
+    @property
+    def present_value_edge_basis(self) -> str | None:
+        """Return the basis for the separately named present-value edge."""
+
+        return self.assumptions.present_value_edge_basis if self.assumptions is not None else None
+
+    @property
+    def evidence_status(self) -> MetricStatus:
+        """Canonical evidence label while preserving the legacy aggregate status value."""
+
+        return "model_estimate" if self.status == "estimated" else self.status
 
 
 def calculate_payoff_metrics(
@@ -106,13 +190,14 @@ def calculate_payoff_metrics(
     entry_price_source: str = "long ask / short bid",
     curve_points: int = 101,
 ) -> PayoffMetrics:
-    """Return expiry payoff and model-estimated EV, win probability, and RR.
+    """Return an expiry payoff and a qualified canonical metric contract.
 
     All legs must describe the same underlying, valuation time, and expiry.
     Calendar strategies therefore return an explicit ``unavailable``
     result rather than pretending that they have a single expiry payoff.
-    ``risk_reward`` is expected positive P&L divided by the absolute expected
-    negative P&L under the same model distribution.
+    ``reward_risk_ratio`` is conditional average win divided by the absolute
+    conditional average loss. The legacy ``risk_reward`` field remains the
+    probability-weighted payoff contribution ratio.
     """
 
     execution = execution or ExecutionAssumptions()
@@ -153,7 +238,13 @@ def calculate_payoff_metrics(
         spot=float(first.spot),
         point_count=curve_points,
     )
-    expected_value, win_probability, expected_gain, expected_loss = _distribution_metrics(
+    (
+        expected_value,
+        win_probability,
+        expected_gain,
+        expected_loss,
+        loss_probability,
+    ) = _distribution_metrics(
         legs,
         payoff,
         breakevens,
@@ -163,6 +254,32 @@ def calculate_payoff_metrics(
         time_to_expiry=time_to_expiry,
         scale=scale,
     )
+
+    average_win = (
+        expected_gain / win_probability
+        if win_probability > 1e-12 and math.isfinite(expected_gain)
+        else None
+    )
+    average_loss = (
+        expected_loss / loss_probability
+        if loss_probability > 1e-12 and math.isfinite(expected_loss)
+        else None
+    )
+    average_win_status = "available" if average_win is not None else "unavailable_insufficient_data"
+    average_loss_status = (
+        "available" if average_loss is not None else "unavailable_insufficient_data"
+    )
+    if average_win is not None and average_loss is not None and average_loss > 1e-12:
+        reward_risk_ratio = average_win / average_loss
+        break_even_win_probability = average_loss / (average_win + average_loss)
+        reward_risk_ratio_status = "available"
+        break_even_win_probability_status = "available"
+    else:
+        reward_risk_ratio = None
+        break_even_win_probability = None
+        reward_risk_ratio_status = "unavailable_insufficient_data"
+        break_even_win_probability_status = "unavailable_insufficient_data"
+
     if expected_loss > 1e-12 and math.isfinite(expected_gain) and math.isfinite(expected_loss):
         risk_reward = expected_gain / expected_loss
         risk_reward_status = "available"
@@ -172,6 +289,14 @@ def calculate_payoff_metrics(
     else:
         risk_reward = None
         risk_reward_status = "unavailable_zero_max_loss"
+
+    payoff_contribution_ratio = risk_reward
+    present_value_edge = _present_value_edge(
+        expected_expiry_pnl=expected_value,
+        net_entry_cash_flow=net_debit,
+        risk_free_rate=float(first.risk_free_rate),
+        time_to_expiry=time_to_expiry,
+    )
 
     return PayoffMetrics(
         payoff_curve=curve,
@@ -193,6 +318,7 @@ def calculate_payoff_metrics(
             "These are model estimates, not historical results; no completed outcomes were supplied.",
             "The risk-neutral distribution is a pricing model, not a forecast of realized returns.",
             "Expiry payoff includes opening costs but no early-exit or assignment costs.",
+            "Expectancy is undiscounted expiry P&L; present_value_edge is the separately discounted terminal payoff edge.",
         )
         + (
             (
@@ -210,6 +336,21 @@ def calculate_payoff_metrics(
             if entry_price_source == "synthetic_bid_ask"
             else ()
         ),
+        average_win=average_win,
+        average_loss=average_loss,
+        reward_risk_ratio=reward_risk_ratio,
+        break_even_win_probability=break_even_win_probability,
+        payoff_contribution_ratio=payoff_contribution_ratio,
+        expectancy=expected_value,
+        expiry_expectancy=expected_value,
+        present_value_edge=present_value_edge,
+        average_win_status=average_win_status,
+        average_loss_status=average_loss_status,
+        reward_risk_ratio_status=reward_risk_ratio_status,
+        break_even_win_probability_status=break_even_win_probability_status,
+        payoff_contribution_ratio_status=risk_reward_status,
+        expectancy_status="model_estimate",
+        present_value_edge_status="model_estimate",
     )
 
 
@@ -334,6 +475,20 @@ def _net_debit(
     return premium + fees + slippage
 
 
+def _present_value_edge(
+    *,
+    expected_expiry_pnl: float,
+    net_entry_cash_flow: float,
+    risk_free_rate: float,
+    time_to_expiry: float,
+) -> float:
+    """Discount terminal gross payoff before comparing it with entry cash flow."""
+
+    expected_terminal_payoff = expected_expiry_pnl + net_entry_cash_flow
+    discount_factor = math.exp(-risk_free_rate * time_to_expiry)
+    return discount_factor * expected_terminal_payoff - net_entry_cash_flow
+
+
 def _expiry_pnl(
     underlying_price: float,
     legs: tuple[OptionLeg, ...],
@@ -424,10 +579,16 @@ def _distribution_metrics(
     risk_free_rate: float,
     time_to_expiry: float,
     scale: float,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     if time_to_expiry == 0.0:
         pnl = payoff(spot)
-        return pnl, float(pnl > 0.0), max(pnl, 0.0), max(-pnl, 0.0)
+        return (
+            pnl,
+            float(pnl > 0.0),
+            max(pnl, 0.0),
+            max(-pnl, 0.0),
+            float(pnl < 0.0),
+        )
 
     strikes = {float(leg.strike) for leg in legs}
     finite_boundaries = sorted({0.0, *strikes, *breakevens})
@@ -436,6 +597,7 @@ def _distribution_metrics(
 
     expected_value = 0.0
     win_probability = 0.0
+    loss_probability = 0.0
     expected_gain = 0.0
     expected_loss = 0.0
     for lower, upper in intervals:
@@ -456,8 +618,9 @@ def _distribution_metrics(
             win_probability += probability
             expected_gain += interval_value
         elif payoff(sample) < 0.0:
+            loss_probability += probability
             expected_loss -= interval_value
-    return expected_value, win_probability, expected_gain, expected_loss
+    return expected_value, win_probability, expected_gain, expected_loss, loss_probability
 
 
 def _payoff_slope(price: float, legs: tuple[OptionLeg, ...], scale: float) -> float:
