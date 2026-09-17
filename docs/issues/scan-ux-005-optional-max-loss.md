@@ -1,6 +1,6 @@
 # SCAN-UX-005 — Optional unconstrained maximum loss in options scanner
 
-Status: ready for implementation, local draft  
+Status: implemented, verified, and merged to main  
 Branch: `feat/scanner-optional-max-loss`  
 Target: `main`
 
@@ -51,18 +51,18 @@ Make maximum loss completely optional in the scanner:
 
 ## Acceptance criteria
 
-- [ ] `POST /api/v1/opportunities/scan` accepts simple scan requests with `max_loss` omitted or `null` across all valuation modes (`executable`, `theoretical`, `synthetic`).
-- [ ] `ScanFilters.validate_ranges` in `src/options_app/api.py` no longer raises `ValueError("max_loss is required for a simple scan")`.
-- [ ] When `max_loss` is `None`, the underlying `opportunity_scanner.py` does not filter out opportunities based on maximum loss.
-- [ ] When `max_loss` is provided as a positive number, the scanner continues to filter out candidates where `opportunity.max_loss > request.max_loss`.
-- [ ] Negative `max_loss` values continue to be rejected by schema validation (`ge=0`).
-- [ ] In `src/options_app/static/app.js`, `scanPayloadFromForm` allows `quick_max_loss` to be empty without returning a client-side validation error, sending `max_loss: null`.
-- [ ] In `src/options_app/static/index.html`, `quick_max_loss` input has placeholder `"Không giới hạn"` and updated field help explaining that leaving the field blank means no loss limit is applied.
-- [ ] The scan summary and scan context display `"không giới hạn"` when `max_loss` is omitted or null.
-- [ ] Live WebSocket streaming endpoint (`WS /api/v1/opportunities/stream`) accepts requests without `max_loss` and functions identically.
-- [ ] Each opportunity card, table row, and payoff detail continues to report the candidate's actual maximum loss according to `CONTEXT.md`.
-- [ ] Backend API tests (`tests/test_options_app_api.py`) verify acceptance of simple scan requests without `max_loss`.
-- [ ] Playwright browser tests (`e2e/options-scanner.spec.js`) verify scanning with empty `quick_max_loss` succeeds and sends `max_loss: null`.
+- [x] `POST /api/v1/opportunities/scan` accepts simple scan requests with `max_loss` omitted or `null` across all valuation modes (`executable`, `theoretical`, `synthetic`).
+- [x] `ScanFilters.validate_ranges` in `src/options_app/api.py` no longer raises `ValueError("max_loss is required for a simple scan")`.
+- [x] When `max_loss` is `None`, the underlying `opportunity_scanner.py` does not filter out opportunities based on maximum loss.
+- [x] When `max_loss` is provided as a positive number, the scanner continues to filter out candidates where `opportunity.max_loss > request.max_loss`.
+- [x] Negative `max_loss` values continue to be rejected by schema validation (`ge=0`).
+- [x] In `src/options_app/static/app.js`, `scanPayloadFromForm` allows `quick_max_loss` to be empty without returning a client-side validation error, sending `max_loss: null`.
+- [x] In `src/options_app/static/index.html`, `quick_max_loss` input has placeholder `"Không giới hạn"` and updated field help explaining that leaving the field blank means no loss limit is applied.
+- [x] The scan summary and scan context display `"không giới hạn"` when `max_loss` is omitted or null.
+- [x] Live WebSocket streaming endpoint (`WS /api/v1/opportunities/stream`) accepts requests without `max_loss` and functions identically.
+- [x] Each opportunity card, table row, and payoff detail continues to report the candidate's actual maximum loss according to `CONTEXT.md`.
+- [x] Backend API tests (`tests/test_options_app_api.py`) verify acceptance of simple scan requests without `max_loss`.
+- [x] Playwright browser tests (`e2e/options-scanner.spec.js`) verify scanning with empty `quick_max_loss` succeeds and sends `max_loss: null`.
 
 ## Public seams under test
 
