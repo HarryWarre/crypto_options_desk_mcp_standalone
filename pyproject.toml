@@ -39,6 +39,7 @@ packages = [
     "src/options_lib",
     "src/options_app",
     "src/portfolio_lib",
+    "src/position_monitoring",
 ]
 
 [tool.ruff]

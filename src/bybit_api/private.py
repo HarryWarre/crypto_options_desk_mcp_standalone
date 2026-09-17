@@ -264,6 +264,7 @@ class BybitPrivateClient(BaseClient):
         base_coin: str = None,
         order_id: str = None,
         client_order_id: str = None,
+        settle_coin: str = None,
     ) -> List[Dict[str, Any]]:
         """Get open orders."""
         params = {"category": category}
@@ -271,6 +272,8 @@ class BybitPrivateClient(BaseClient):
             params["symbol"] = symbol
         if base_coin:
             params["baseCoin"] = base_coin
+        if settle_coin:
+            params["settleCoin"] = settle_coin
         if order_id:
             params["orderId"] = order_id
         if client_order_id:
@@ -288,6 +291,7 @@ class BybitPrivateClient(BaseClient):
         start_time: datetime = None,
         end_time: datetime = None,
         limit: int = 50,
+        settle_coin: str = None,
     ) -> List[Dict[str, Any]]:
         """Order execution history."""
         params = {"category": category, "limit": min(limit, 50)}
@@ -295,6 +299,8 @@ class BybitPrivateClient(BaseClient):
             params["symbol"] = symbol
         if base_coin:
             params["baseCoin"] = base_coin
+        if settle_coin:
+            params["settleCoin"] = settle_coin
         if order_id:
             params["orderId"] = order_id
         if start_time:

@@ -6,6 +6,7 @@ def test_bundled_libs_import():
     import indicators_lib  # noqa: F401
     import options_lib  # noqa: F401
     import portfolio_lib  # noqa: F401
+    import position_monitoring  # noqa: F401
 
 
 def test_server_imports_and_registers_tools():

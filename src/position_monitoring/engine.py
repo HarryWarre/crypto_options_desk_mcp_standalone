@@ -29,6 +29,7 @@ class RiskMonitor:
         policy: ExitPolicy | None,
         *,
         as_of: datetime | None = None,
+        observation_warnings: tuple[str, ...] = (),
     ) -> RiskAssessment:
         now = as_of or datetime.now(tz=UTC)
         if now.tzinfo is None:
@@ -36,7 +37,7 @@ class RiskMonitor:
         else:
             now = now.astimezone(UTC)
 
-        warnings: list[str] = []
+        warnings: list[str] = list(observation_warnings)
         rules: list[RiskRuleResult] = []
         loss_pct: float | None = None
         holding_hours: float | None = None
@@ -197,8 +198,14 @@ class ExitDecisionEngine:
         policy: ExitPolicy | None,
         *,
         as_of: datetime | None = None,
+        observation_warnings: tuple[str, ...] = (),
     ) -> ExitDecision:
-        assessment = self.risk_monitor.assess(position, policy, as_of=as_of)
+        assessment = self.risk_monitor.assess(
+            position,
+            policy,
+            as_of=as_of,
+            observation_warnings=observation_warnings,
+        )
         reasons = [rule.rule for rule in assessment.triggered_rules]
         reasons.extend(assessment.warnings)
 
