@@ -23,8 +23,9 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<title>Crypto Options Scanner</title>' in response.text
-    assert '<script src="/static/app.js?v=20260917-4" defer></script>' in response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-4">' in response.text
+    assert '<script src="/static/live-desk.js?v=20260918-1" defer></script>' in response.text
+    assert '<script src="/static/app.js?v=20260918-1" defer></script>' in response.text
+    assert '<link rel="stylesheet" href="/static/styles.css?v=20260918-1">' in response.text
     assert 'id="service-status"' in response.text
     assert 'id="live-desk-title"' in response.text
     assert 'id="live-toggle"' in response.text
@@ -49,8 +50,8 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'id="scan-terminal"' in response.text
     assert 'id="clear-terminal"' in response.text
     assert 'id="historical-context"' in response.text
-    assert "Biến động lịch sử 30 ngày" in response.text
-    assert "không tải lịch sử mark-price" in response.text
+    assert "Biến động lịch sử 30 ngày" not in response.text
+    assert "không tải lịch sử mark-price" not in response.text
     assert "Không đặt lệnh" not in response.text
     assert "Chưa kiểm định" not in response.text
     assert "include_unvalidated" not in response.text
@@ -64,7 +65,7 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'name="strategies" value="put_vertical"' in response.text
     assert "Đường payoff tại đáo hạn" in response.text
     assert "Giá cơ sở tại đáo hạn" in response.text
-    assert "Ước tính payoff dựa trên các điểm do API trả về" in response.text
+    assert "Ước tính payoff dựa trên các điểm do API trả về" not in response.text
     assert 'name="min_expected_value"' in response.text
     assert "EV ước tính không âm" in response.text
     for strategy in (
@@ -90,7 +91,7 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'name="valuation_mode" value="synthetic"' in response.text
     assert "Synthetic — spread giả định" in response.text
     assert 'name="assumed_spread_bps"' in response.text
-    assert "tính đủ edge, EV, RR và lỗ tối đa" in response.text
+    assert "Synthetic dùng spread giả định" in response.text
     assert "Khi nào nên chọn" in response.text
 
 
@@ -99,17 +100,26 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     app = create_app()
 
     javascript = await request(app, "GET", "/static/app.js")
+    live_javascript = await request(app, "GET", "/static/live-desk.js")
     stylesheet = await request(app, "GET", "/static/styles.css")
 
     assert javascript.status_code == 200
     assert javascript.headers["content-type"].startswith("text/javascript")
+    assert live_javascript.status_code == 200
+    assert live_javascript.headers["content-type"].startswith("text/javascript")
     assert '"/api/v1/assets"' in javascript.text
     assert "syncWorkspaceFromHash" in javascript.text
     assert 'window.addEventListener("hashchange"' in javascript.text
     assert "/api/v1/opportunities/scan/stream" in javascript.text
-    assert "/api/v1/opportunities/stream" in javascript.text
-    assert "connectLiveFeed" in javascript.text
-    assert "renderLiveSnapshot" in javascript.text
+    assert "FlowSurfaceLiveDesk" in javascript.text
+    assert "createController" in javascript.text
+    assert "/api/v1/opportunities/stream" in live_javascript.text
+    assert "connectLiveFeed" in live_javascript.text
+    assert "renderLiveSnapshot" in live_javascript.text
+    assert "live_desk" in live_javascript.text
+    assert "observed_assets" in live_javascript.text
+    assert "contract_count" in live_javascript.text
+    assert "rejection_reasons" in live_javascript.text
     assert "legs" in javascript.text
     for field in ("symbol", "option_type", "strike", "expiry_at", "position"):
         assert field in javascript.text
@@ -165,20 +175,20 @@ async def test_static_assets_are_served_from_same_origin() -> None:
         assert strategy in javascript.text
     assert "strategyLabel" in javascript.text
     assert "historical_volatility_contexts" in javascript.text
-    assert "anchor/quality" in javascript.text
-    assert "không tải lịch sử mark-price" in javascript.text
+    assert "anchor/quality" not in javascript.text
+    assert "không tải lịch sử mark-price" not in javascript.text
     assert "opportunityLegs" in javascript.text
     assert "leg-summary" in javascript.text
     assert "textContent" in javascript.text
     assert "innerHTML" not in javascript.text
+    assert "innerHTML" not in live_javascript.text
     assert "warningText" not in javascript.text
     assert "appendTerminal" in javascript.text
     assert "streamJson" in javascript.text
     assert "valuation_mode" in javascript.text
     assert "Theoretical mode" in javascript.text
-    assert "Synthetic bid/ask" in javascript.text
+    assert "Synthetic mode" in javascript.text
     assert "assumed_spread_bps" in javascript.text
-    assert "Thiếu bid/ask" in javascript.text
     assert "Xem payoff mô hình" in javascript.text
     assert "EV mô hình" in javascript.text
 
@@ -200,4 +210,4 @@ async def test_static_assets_are_served_from_same_origin() -> None:
 
 
 def test_static_directory_contains_only_the_expected_ui_files() -> None:
-    assert {path.name for path in STATIC_DIR.iterdir()} == {"index.html", "app.js", "styles.css"}
+    assert {path.name for path in STATIC_DIR.iterdir()} == {"index.html", "app.js", "live-desk.js", "styles.css"}

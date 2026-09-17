@@ -4,6 +4,7 @@ const assetList = document.querySelector("#asset-list");
 const form = document.querySelector("#scan-form");
 const resultState = document.querySelector("#result-state");
 const resultsBody = document.querySelector("#results-body");
+const resultsTableWrap = document.querySelector("#results-table-wrap");
 const secondaryResults = document.querySelector("#secondary-results");
 const resultsGuide = document.querySelector("#results-guide");
 const valuationModeNotice = document.querySelector("#valuation-mode-notice");
@@ -62,22 +63,56 @@ const liveStatOpportunities = document.querySelector("#live-stat-opportunities")
 const liveStatOpportunitiesLabel = document.querySelector("#live-stat-opportunities-label");
 const liveStatEdge = document.querySelector("#live-stat-edge");
 const liveStatDte = document.querySelector("#live-stat-dte");
+const liveStatContracts = document.querySelector("#live-stat-contracts");
+const liveStatContractsLabel = document.querySelector("#live-stat-contracts-label");
+const liveStatRejections = document.querySelector("#live-stat-rejections");
+const liveStatRejectionsLabel = document.querySelector("#live-stat-rejections-label");
 const marketStrip = document.querySelector("#market-strip");
 const liveOpportunityBody = document.querySelector("#live-opportunity-body");
 const signalChart = document.querySelector("#signal-chart");
 const liveSignalStatus = document.querySelector("#live-signal-status");
 const liveFeed = document.querySelector("#live-feed");
+const liveRejectionSummary = document.querySelector("#live-rejection-summary");
 
 let selectedOpportunity = null;
 let activeScanContext = null;
 let activeScanValuationMode = "executable";
 let monitoringSocket = null;
 let monitoringRequestKey = null;
-let liveScanSocket = null;
-let liveScanRequest = null;
-let liveReconnectTimer = null;
-let liveUpdateCount = 0;
-let liveFeedWanted = false;
+
+const liveDesk = window.FlowSurfaceLiveDesk.createController({
+  elements: {
+    serviceStatus,
+    liveToggle,
+    liveConnection,
+    liveConnectionLabel,
+    liveLastUpdate,
+    liveUpdateCountLabel,
+    liveSessionState,
+    liveNextRefresh,
+    liveStatSpot,
+    liveStatSpotLabel,
+    liveStatOpportunities,
+    liveStatOpportunitiesLabel,
+    liveStatEdge,
+    liveStatDte,
+    liveStatContracts,
+    liveStatContractsLabel,
+    liveStatRejections,
+    liveStatRejectionsLabel,
+    marketStrip,
+    liveOpportunityBody,
+    signalChart,
+    liveSignalStatus,
+    liveFeed,
+    liveRejectionSummary,
+  },
+  getSelectedAssets: () => [...form.querySelectorAll('input[name="assets"]:checked')].map((input) => input.value),
+  opportunitySymbol,
+  strategyLabel,
+  onOpportunityDetail: showOpportunityDetail,
+  onLog: appendTerminal,
+});
 
 const WORKSPACE_META = Object.freeze({
   scanner: {
@@ -110,7 +145,7 @@ function syncWorkspaceFromHash() {
     monitoringSocket = null;
     monitoringRequestKey = null;
   }
-  if (workspace !== "scanner" && liveFeedWanted) stopLiveFeed();
+  if (workspace !== "scanner" && liveDesk.isWanted()) liveDesk.stop();
 
   workspaceLinks.forEach((link) => {
     const isActive = link.getAttribute("href") === `#${workspace}`;
@@ -614,12 +649,6 @@ function renderOpportunityExplanation(item, index) {
   takeaway.className = "explanation-takeaway";
   takeaway.textContent = strategyTakeaway(item, legs);
   card.appendChild(takeaway);
-  if (item?.risk_note) {
-    const riskNote = document.createElement("p");
-    riskNote.className = "explanation-extra muted";
-    riskNote.textContent = `Lưu ý: ${item.risk_note}`;
-    card.appendChild(riskNote);
-  }
 
   const legList = document.createElement("div");
   legList.className = "explanation-legs";
@@ -939,9 +968,9 @@ function renderPayoffDetail(item) {
     scenarioResultsBody.appendChild(row);
   });
   const quoteAssumption = theoretical
-    ? "Theoretical: premium vào lệnh dùng fair value, không phải bid/ask khớp được. "
+    ? "Theoretical: premium vào lệnh dùng fair value. "
     : synthetic
-    ? `Synthetic: bid/ask dựng quanh mark/fair value với spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps; không phải quote khớp được. `
+    ? `Synthetic: spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps. `
     : "";
   pnlChartAssumptions.textContent = `${quoteAssumption}Phương pháp / giả định API: ${methodologyNote(item)} Payoff, EV, xác suất mô hình và reward/risk đều là ước tính, không phải dự đoán hay lợi nhuận đảm bảo.`;
   if (points.length) {
@@ -1207,11 +1236,11 @@ function renderValuationModeNotice(mode) {
   }
   const title = document.createElement("strong");
   title.textContent = isSyntheticMode(mode)
-    ? "Synthetic bid/ask — quote giả định"
-    : "Theoretical mode — chỉ định giá mô hình";
+    ? "Synthetic mode"
+    : "Theoretical mode";
   const explanation = document.createElement("span");
   explanation.textContent = isSyntheticMode(mode)
-    ? "Bid/ask được dựng quanh mark/fair value theo spread giả định nên hệ thống tính đủ premium, edge fair value, EV, xác suất mô hình, reward/risk và lỗ tối đa; các con số vẫn là ước tính, không phải giá khớp thật."
+    ? `Bid/ask được dựng quanh mark/fair value theo spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps nên hệ thống tính premium, edge fair value, EV, xác suất mô hình, reward/risk và lỗ tối đa; các con số vẫn là ước tính, không phải giá khớp thật.`
     : "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value làm giá vào mô hình; payoff, EV, xác suất mô hình, reward/risk và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
   valuationModeNotice.append(title, explanation);
   valuationModeNotice.hidden = false;
@@ -1232,15 +1261,11 @@ function renderHistoricalContext(contexts) {
     historicalContext.hidden = true;
     return;
   }
-  const summary = document.createElement("div");
-  summary.className = "historical-context-summary";
-  summary.textContent = "Ngữ cảnh chất lượng: HV lịch sử 30 ngày chỉ là anchor/quality, không thay đổi IV hoặc giá định giá hiện tại; live scan không tải lịch sử mark-price.";
-  historicalContext.appendChild(summary);
   const details = document.createElement("div");
   details.className = "historical-context-items";
   items.forEach((context) => {
     const item = document.createElement("span");
-    item.textContent = `${context.asset || "—"}: ${historicalContextStatus(context)}${context.historical_volatility == null ? "" : ` · ${percent(context.historical_volatility)}`}`;
+    item.textContent = `${context.asset || "—"}: ${historicalContextStatus(context)}${context.historical_volatility == null ? "" : ` · HV30 ${percent(context.historical_volatility)}`}`;
     details.appendChild(item);
   });
   historicalContext.appendChild(details);
@@ -1373,8 +1398,8 @@ function scanPayloadFromForm() {
   const maxLoss = useAdvancedFilters
     ? optionalNumber(data, "max_loss")
     : optionalNumber(data, "quick_max_loss");
-  if (!useAdvancedFilters && maxLoss === null && valuationMode !== "theoretical") {
-    return { error: "Hãy nhập mức lỗ tối đa cho mỗi ý tưởng." };
+  if (maxLoss !== null && maxLoss < 0) {
+    return { error: "Mức lỗ tối đa không được âm." };
   }
 
   const payload = {
@@ -1419,298 +1444,6 @@ function scanPayloadFromForm() {
   return { payload };
 }
 
-function liveCompactNumber(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return "—";
-  if (Math.abs(amount) >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}m`;
-  if (Math.abs(amount) >= 1_000) return `${(amount / 1_000).toFixed(1)}k`;
-  return amount.toLocaleString("en-US", { maximumFractionDigits: 2 });
-}
-
-function liveEdgePercent(item) {
-  const edge = Number(firstDefined(item?.edge_pct, item?.iv_edge));
-  return Number.isFinite(edge) ? edge : null;
-}
-
-function liveConnectionState(state, label) {
-  if (!liveConnection) return;
-  liveConnection.className = `live-connection live-connection-${state}`;
-  liveConnectionLabel.textContent = label;
-  liveSessionState.textContent = state === "live" ? "LIVE" : state === "connecting" ? "SYNC" : state === "stale" ? "STALE" : "WAITING";
-  liveToggle.textContent = state === "live" || state === "connecting" ? "Dừng live feed" : state === "stale" ? "Kết nối lại" : "Bật live feed";
-}
-
-function renderMarketStrip(payload) {
-  marketStrip.replaceChildren();
-  const opportunities = Array.isArray(payload.opportunities) ? payload.opportunities : [];
-  const selectedAssets = [...form.querySelectorAll('input[name="assets"]:checked')].map((input) => input.value);
-  const assets = [...new Set([...selectedAssets, ...opportunities.map((item) => item.asset).filter(Boolean)])];
-  const grouped = new Map();
-  opportunities.forEach((item) => {
-    const key = item.asset || "—";
-    const current = grouped.get(key) || [];
-    current.push(item);
-    grouped.set(key, current);
-  });
-  if (!assets.length) {
-    const empty = document.createElement("div");
-    empty.className = "market-strip-empty";
-    empty.textContent = "Chọn tài sản trong bộ lọc scanner để xem ticker live.";
-    marketStrip.appendChild(empty);
-    return;
-  }
-  assets.forEach((asset) => {
-    const items = grouped.get(asset) || [];
-    const first = items[0];
-    const card = document.createElement("div");
-    card.className = "market-card";
-    const heading = document.createElement("div");
-    heading.className = "market-card-heading";
-    const name = document.createElement("strong");
-    name.textContent = asset;
-    const dot = document.createElement("span");
-    dot.className = items.length ? "market-card-dot" : "market-card-dot market-card-dot-muted";
-    dot.setAttribute("aria-hidden", "true");
-    heading.append(name, dot);
-    card.appendChild(heading);
-    const spot = document.createElement("strong");
-    spot.className = "market-card-price";
-    spot.textContent = first ? liveCompactNumber(first.spot_price) : "—";
-    card.appendChild(spot);
-    const detail = document.createElement("span");
-    detail.className = "market-card-detail";
-    detail.textContent = items.length ? `${items.length} signal${items.length > 1 ? "s" : ""} · ${strategyLabel(first.strategy)}` : "Chưa có signal";
-    card.appendChild(detail);
-    marketStrip.appendChild(card);
-  });
-}
-
-function renderSignalChart(opportunities) {
-  signalChart.replaceChildren();
-  if (!opportunities.length) {
-    const empty = document.createElement("div");
-    empty.className = "signal-chart-empty";
-    empty.textContent = "Không có cơ hội đạt điều kiện hiện tại.";
-    signalChart.appendChild(empty);
-    liveSignalStatus.textContent = "Không có signal";
-    return;
-  }
-  const ranked = opportunities
-    .map((item) => ({ item, value: liveEdgePercent(item) }))
-    .filter((entry) => entry.value !== null)
-    .sort((left, right) => right.value - left.value)
-    .slice(0, 8);
-  const maxValue = Math.max(...ranked.map((entry) => Math.abs(entry.value)), 0.01);
-  ranked.forEach(({ item, value }, index) => {
-    const column = document.createElement("div");
-    column.className = "signal-column";
-    const valueLabel = document.createElement("span");
-    valueLabel.className = "signal-value";
-    valueLabel.textContent = `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
-    const track = document.createElement("div");
-    track.className = "signal-track";
-    const bar = document.createElement("span");
-    bar.className = value >= 0 ? "signal-bar" : "signal-bar signal-bar-negative";
-    bar.style.height = `${Math.max(12, Math.abs(value) / maxValue * 100)}%`;
-    track.appendChild(bar);
-    const label = document.createElement("span");
-    label.className = "signal-label";
-    label.textContent = `${index + 1} · ${item.asset || "—"}`;
-    column.append(valueLabel, track, label);
-    signalChart.appendChild(column);
-  });
-  liveSignalStatus.textContent = `${opportunities.length} signal${opportunities.length > 1 ? "s" : ""} · top ${ranked.length}`;
-}
-
-function renderLiveOpportunityBoard(opportunities) {
-  liveOpportunityBody.replaceChildren();
-  const ranked = [...opportunities]
-    .sort((left, right) => (liveEdgePercent(right) || 0) - (liveEdgePercent(left) || 0))
-    .slice(0, 8);
-  if (!ranked.length) {
-    const row = document.createElement("tr");
-    const empty = document.createElement("td");
-    empty.className = "live-board-empty";
-    empty.colSpan = 6;
-    empty.textContent = "Snapshot đã nhận nhưng chưa có signal phù hợp.";
-    row.appendChild(empty);
-    liveOpportunityBody.appendChild(row);
-    return;
-  }
-  ranked.forEach((item) => {
-    const row = document.createElement("tr");
-    const instrument = document.createElement("td");
-    instrument.className = "live-board-instrument";
-    const asset = document.createElement("strong");
-    asset.textContent = item.asset || "—";
-    const symbol = document.createElement("span");
-    symbol.textContent = opportunitySymbol(item);
-    instrument.append(asset, symbol);
-    row.appendChild(instrument);
-    cell(row, strategyLabel(item.strategy));
-    const edge = liveEdgePercent(item);
-    cell(row, edge === null ? "—" : `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(2)}%`, edge === null || edge < 0 ? "negative" : "positive");
-    cell(row, Number.isFinite(Number(item.dte)) ? `${Math.round(Number(item.dte))}d` : "—");
-    cell(row, liveCompactNumber(firstDefined(item.estimated_entry, item.market_mid)));
-    const action = document.createElement("td");
-    const detailButton = document.createElement("button");
-    detailButton.type = "button";
-    detailButton.className = "live-board-detail";
-    detailButton.textContent = "Payoff";
-    detailButton.addEventListener("click", () => showOpportunityDetail(item));
-    action.appendChild(detailButton);
-    row.appendChild(action);
-    liveOpportunityBody.appendChild(row);
-  });
-}
-
-function renderLiveFeed(payload) {
-  liveFeed.replaceChildren();
-  const opportunities = [...(payload.opportunities || [])]
-    .sort((left, right) => (liveEdgePercent(right) || 0) - (liveEdgePercent(left) || 0))
-    .slice(0, 6);
-  if (!opportunities.length) {
-    const empty = document.createElement("div");
-    empty.className = "live-feed-empty";
-    empty.textContent = "Snapshot đã nhận nhưng chưa có signal phù hợp.";
-    liveFeed.appendChild(empty);
-    return;
-  }
-  opportunities.forEach((item, index) => {
-    const event = document.createElement("div");
-    event.className = "live-event";
-    const indexLabel = document.createElement("span");
-    indexLabel.className = "live-event-index";
-    indexLabel.textContent = String(index + 1).padStart(2, "0");
-    const copy = document.createElement("div");
-    copy.className = "live-event-copy";
-    const title = document.createElement("strong");
-    title.textContent = `${item.asset || "—"} · ${strategyLabel(item.strategy)}`;
-    const symbol = document.createElement("span");
-    symbol.textContent = opportunitySymbol(item);
-    copy.append(title, symbol);
-    const edge = document.createElement("strong");
-    edge.className = liveEdgePercent(item) >= 0 ? "live-event-edge positive" : "live-event-edge negative";
-    const edgeValue = liveEdgePercent(item);
-    edge.textContent = edgeValue === null ? "—" : `${edgeValue >= 0 ? "+" : ""}${(edgeValue * 100).toFixed(2)}%`;
-    event.append(indexLabel, copy, edge);
-    liveFeed.appendChild(event);
-  });
-}
-
-function renderLiveSnapshot(payload) {
-  const opportunities = Array.isArray(payload.opportunities) ? payload.opportunities : [];
-  const first = opportunities[0];
-  const edgeValues = opportunities.map(liveEdgePercent).filter((value) => value !== null);
-  const dtes = opportunities.map((item) => Number(item.dte)).filter(Number.isFinite);
-  liveUpdateCount += 1;
-  liveUpdateCountLabel.textContent = `${liveUpdateCount} cập nhật`;
-  liveLastUpdate.textContent = `Cập nhật ${new Date(payload.data_timestamp || payload.timestamp || Date.now()).toLocaleTimeString("vi-VN")}`;
-  liveNextRefresh.textContent = "Snapshot mới mỗi 8 giây · quote server-side";
-  liveStatSpot.textContent = first ? liveCompactNumber(first.spot_price) : "—";
-  liveStatSpotLabel.textContent = first ? `${first.asset || "Underlying"} · ${first.quote_timestamp ? "quote nhận được" : "quote model"}` : "Chưa có quote phù hợp";
-  liveStatOpportunities.textContent = String(opportunities.length);
-  liveStatOpportunitiesLabel.textContent = opportunities.length ? "Đang đạt bộ lọc" : "Không có signal phù hợp";
-  liveStatEdge.textContent = edgeValues.length ? `${(edgeValues.reduce((sum, value) => sum + value, 0) / edgeValues.length * 100).toFixed(2)}%` : "—";
-  liveStatDte.textContent = dtes.length ? `${Math.round(Math.min(...dtes))}d` : "—";
-  renderMarketStrip(payload);
-  renderLiveOpportunityBoard(opportunities);
-  renderSignalChart(opportunities);
-  renderLiveFeed(payload);
-  liveConnectionState("live", `Live feed · ${opportunities.length} signal`);
-  serviceStatus.classList.remove("error");
-  serviceStatus.textContent = "Live stream đang hoạt động";
-}
-
-function scheduleLiveReconnect() {
-  if (!liveFeedWanted || liveReconnectTimer) return;
-  liveReconnectTimer = window.setTimeout(() => {
-    liveReconnectTimer = null;
-    if (liveFeedWanted && liveScanRequest) connectLiveFeed(liveScanRequest, true);
-  }, 1800);
-  liveNextRefresh.textContent = "Đang thử kết nối lại…";
-}
-
-function connectLiveFeed(request, isReconnect = false) {
-  if (liveReconnectTimer) {
-    window.clearTimeout(liveReconnectTimer);
-    liveReconnectTimer = null;
-  }
-  if (liveScanSocket) liveScanSocket.close();
-  liveFeedWanted = true;
-  liveScanRequest = request;
-  liveUpdateCount = isReconnect ? liveUpdateCount : 0;
-  liveConnectionState("connecting", isReconnect ? "Đang reconnect live feed…" : "Đang kết nối live feed…");
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${window.location.host}/api/v1/opportunities/stream`);
-  liveScanSocket = socket;
-  socket.addEventListener("open", () => {
-    socket.send(JSON.stringify(request));
-    liveNextRefresh.textContent = "Đã mở kênh · chờ snapshot đầu tiên";
-  });
-  socket.addEventListener("message", (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data);
-    } catch (_error) {
-      appendTerminal("[LIVE] Nhận event không hợp lệ.", "error");
-      return;
-    }
-    if (payload.type === "snapshot") {
-      renderLiveSnapshot(payload.payload || {});
-      return;
-    }
-    if (payload.type === "log") {
-      appendTerminal(`[LIVE] ${payload.message || "Đang cập nhật…"}`);
-      return;
-    }
-    if (payload.type === "error") {
-      liveConnectionState("error", payload.message || "Live feed gặp lỗi");
-      serviceStatus.textContent = "Live stream gặp lỗi";
-      serviceStatus.classList.add("error");
-      appendTerminal(`[LIVE] LỖI: ${payload.message || "Live feed gặp lỗi"}`, "error");
-      return;
-    }
-    if (payload.status === "starting") liveConnectionState("connecting", "Đang dựng snapshot live…");
-    if (payload.status === "connected" && liveScanSocket === socket && liveUpdateCount === 0) {
-      liveConnectionState("connecting", "Đã kết nối · đang chờ dữ liệu");
-    }
-  });
-  socket.addEventListener("error", () => {
-    if (liveScanSocket !== socket) return;
-    liveConnectionState("stale", "Không kết nối được · đang thử lại");
-    serviceStatus.textContent = "Live stream không sẵn sàng";
-    serviceStatus.classList.add("error");
-  });
-  socket.addEventListener("close", () => {
-    if (liveScanSocket !== socket) return;
-    liveScanSocket = null;
-    if (liveFeedWanted) {
-      liveConnectionState("stale", "Stream bị ngắt · đang thử lại");
-      scheduleLiveReconnect();
-    } else {
-      liveConnectionState("idle", "Live feed đang tắt");
-    }
-  });
-}
-
-function stopLiveFeed() {
-  liveFeedWanted = false;
-  liveScanRequest = null;
-  if (liveReconnectTimer) {
-    window.clearTimeout(liveReconnectTimer);
-    liveReconnectTimer = null;
-  }
-  if (liveScanSocket) {
-    liveScanSocket.close();
-    liveScanSocket = null;
-  }
-  liveConnectionState("idle", "Live feed đang tắt");
-  liveNextRefresh.textContent = "Chờ kết nối stream";
-  serviceStatus.classList.remove("error");
-  serviceStatus.textContent = "API đang hoạt động";
-}
-
 function renderResults(payload) {
   activeScanValuationMode = payload.valuation_mode || payload.scan_context?.valuation_mode || "executable";
   activeScanContext = payload.scan_context || null;
@@ -1723,18 +1456,21 @@ function renderResults(payload) {
   detailPanel.hidden = true;
   selectedOpportunity = null;
   const opportunities = payload.opportunities || [];
-  resultsGuide.hidden = !opportunities.length;
-  const guide = resultsGuide.querySelector("span");
-  if (guide) {
-    guide.textContent = isSyntheticMode(activeScanValuationMode)
-      ? "Các dòng dưới đây dùng bid/ask tổng hợp từ mark/fair value và spread giả định. Edge fair value, EV, xác suất mô hình và reward/risk vẫn là ước tính, không phải khả năng khớp lệnh."
-      : isTheoreticalMode(activeScanValuationMode)
-      ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, xác suất mô hình và reward/risk chỉ là ước tính, còn edge giao dịch và khả năng khớp không được suy ra."
-      : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Xác suất mô hình và edge fair value chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
+  if (resultsGuide) {
+    resultsGuide.hidden = !opportunities.length;
+    const guide = resultsGuide.querySelector("span");
+    if (guide) {
+      guide.textContent = isSyntheticMode(activeScanValuationMode)
+        ? "Các dòng dưới đây dùng bid/ask tổng hợp từ mark/fair value và spread giả định. Edge fair value, EV, xác suất mô hình và reward/risk vẫn là ước tính, không phải khả năng khớp lệnh."
+        : isTheoreticalMode(activeScanValuationMode)
+        ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, xác suất mô hình và reward/risk chỉ là ước tính, còn edge giao dịch và khả năng khớp không được suy ra."
+        : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Xác suất mô hình và edge fair value chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
+    }
+  }
+  if (resultsTableWrap) {
+    resultsTableWrap.hidden = !opportunities.length;
   }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
-  else if (isTheoreticalMode(activeScanValuationMode)) setState(`${opportunities.length} định giá lý thuyết đạt điều kiện; không phải cơ hội giao dịch.`);
-  else if (isSyntheticMode(activeScanValuationMode)) setState(`${opportunities.length} cơ hội theo quote tổng hợp; không phải giá khớp thật.`);
   else setState(`${opportunities.length} cơ hội đạt điều kiện.`);
   opportunities.forEach((item, index) => {
     opportunityExplanations.appendChild(renderOpportunityExplanation(item, index));
@@ -1750,9 +1486,9 @@ function renderResults(payload) {
       : Number(item.bid_price) > 0 && Number(item.ask_price) > 0;
     const quoteLabel = hasQuote
       ? synthetic
-        ? `Giả định ${number(item.market_mid)} · spread tổng hợp`
-        : `Tham khảo ${number(item.market_mid)} · không dùng để khớp`
-      : "Thiếu bid/ask · không có giá khớp";
+        ? `Giả định ${number(item.market_mid)}`
+        : `Tham khảo ${number(item.market_mid)}`
+      : "—";
     cell(row, modelMode ? quoteLabel : number(item.market_mid), modelMode ? "theoretical-value" : "");
     cell(row, number(item.fair_price), modelMode ? "theoretical-value" : "");
     cell(row, percent(item.iv_edge), item.iv_edge >= 0 ? "positive" : "negative");
@@ -1766,11 +1502,9 @@ function renderResults(payload) {
     detailButton.className = "secondary-button compact-button";
     if (synthetic) {
       detailButton.textContent = "Xem payoff tổng hợp";
-      detailButton.title = "Payoff, EV và risk/reward dùng bid/ask dựng theo spread giả định; không phải P&L theo giá khớp.";
       detailButton.addEventListener("click", () => showOpportunityDetail(item));
     } else if (theoretical) {
       detailButton.textContent = "Xem payoff mô hình";
-      detailButton.title = "Payoff, EV và risk/reward dùng fair value mô hình; không phải P&L theo giá khớp.";
       detailButton.addEventListener("click", () => showOpportunityDetail(item));
     } else {
       detailButton.textContent = "Xem payoff / P&L";
@@ -1808,7 +1542,7 @@ async function loadAssets() {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = form.querySelector("button[type=submit]");
-  if (liveFeedWanted) stopLiveFeed();
+  if (liveDesk.isWanted()) liveDesk.stop();
   const scanInput = scanPayloadFromForm();
   if (scanInput.error) {
     setState(scanInput.error, "error");
@@ -1830,16 +1564,12 @@ form.addEventListener("submit", async (event) => {
 });
 
 liveToggle.addEventListener("click", () => {
-  if (liveFeedWanted) {
-    const canRetry = liveScanRequest && (
-      liveConnection.classList.contains("live-connection-stale")
-      || liveConnection.classList.contains("live-connection-error")
-    );
-    if (canRetry) {
-      connectLiveFeed(liveScanRequest, true);
+  if (liveDesk.isWanted()) {
+    if (liveDesk.canRetry()) {
+      liveDesk.reconnect();
       return;
     }
-    stopLiveFeed();
+    liveDesk.stop();
     appendTerminal("[LIVE] Đã dừng live feed. Không có lệnh nào được gửi.");
     return;
   }
@@ -1850,7 +1580,7 @@ liveToggle.addEventListener("click", () => {
     return;
   }
   appendTerminal("[LIVE] Mở live feed cho bộ lọc hiện tại…");
-  connectLiveFeed(scanInput.payload);
+  liveDesk.connect(scanInput.payload);
 });
 
 backtestExitPolicy.addEventListener("change", updateBacktestExitFields);
@@ -1867,7 +1597,7 @@ monitoringForm.addEventListener("submit", async (event) => {
       monitoringSocket = null;
       monitoringRequestKey = null;
       document.querySelector("#monitoring-submit").textContent = "Cập nhật theo dõi";
-      setMonitoringState("Đã dừng live monitoring. Không có lệnh nào được gửi.");
+      setMonitoringState("Đã dừng live monitoring.");
       return;
     }
     monitoringSocket.close();
@@ -1913,7 +1643,7 @@ function connectMonitoringStream(request, requestKey = JSON.stringify(request)) 
   monitoringSocket = socket;
   monitoringRequestKey = requestKey;
   button.textContent = "Đang kết nối…";
-  setMonitoringState("Đang kết nối live monitoring ở chế độ read-only…");
+  setMonitoringState("Đang kết nối live monitoring…");
 
   socket.addEventListener("open", () => {
     socket.send(JSON.stringify(request));

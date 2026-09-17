@@ -132,11 +132,28 @@ async function mockApi(page) {
                   timestamp: "2026-09-15T14:46:33Z",
                   data_timestamp: "2026-09-15T14:46:33Z",
                   valuation_mode: "executable",
-                  opportunities: [liveOpportunity],
+                  opportunities: window.__emptyLiveSnapshot ? [] : [liveOpportunity],
                   rejections: [],
                   asset_failures: [],
                   issues: [],
                   scan_context: {},
+                  live_desk: {
+                    selected_assets: ["BTC"],
+                    observed_assets: [{
+                      asset: "BTC",
+                      spot: 76227.9,
+                      contract_count: 700,
+                      valid_quote_count: 35,
+                    }],
+                    timestamp: "2026-09-15T14:46:33Z",
+                    data_timestamp: "2026-09-15T14:46:33Z",
+                    source: "mock-live-market",
+                    rejection_reasons: {
+                      spread_above_maximum: 4,
+                      low_liquidity: 2,
+                    },
+                    execution_allowed: false,
+                  },
                 },
                 execution_allowed: false,
               }),
@@ -313,6 +330,7 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByRole("group", { name: "Tài sản" })).toBeVisible();
   await expect(page.getByLabel("Thời hạn")).toBeVisible();
   await expect(page.getByLabel("Lỗ tối đa mỗi ý tưởng")).toBeVisible();
+  await expect(page.getByLabel("Lỗ tối đa mỗi ý tưởng")).toHaveAttribute("placeholder", "Không giới hạn");
   await expect(page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ })).toBeVisible();
   await expect(page.getByRole("group", { name: "Bạn muốn tìm ý tưởng nào?" })).toBeVisible();
   await expect(page.locator('.strategy-card input[type="checkbox"]')).toHaveCount(13);
@@ -324,6 +342,33 @@ test("shows only beginner controls in the quick scan by default", async ({ page 
   await expect(page.getByLabel("Phí mỗi chiều")).not.toBeVisible();
 });
 
+test("scans successfully without entering maximum loss (unconstrained loss)", async ({ page }) => {
+  let submittedPayload = null;
+  page.on("request", (req) => {
+    if (req.url().includes("/api/v1/opportunities/scan/stream")) {
+      submittedPayload = req.postDataJSON();
+    }
+  });
+
+  // Do not fill "Lỗ tối đa mỗi ý tưởng"
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+
+  await expect(page.locator("#result-state")).toContainText("1 cơ hội");
+  await expect(page.locator("#results-body tr")).toHaveCount(1);
+  await expect(page.locator("#scan-context")).toContainText("không giới hạn");
+  expect(submittedPayload.max_loss).toBeNull();
+});
+
+test("prevents submission and flags invalid state when negative maximum loss is entered", async ({ page }) => {
+  const maxLossInput = page.getByLabel("Lỗ tối đa mỗi ý tưởng");
+  await maxLossInput.fill("-10");
+  expect(await maxLossInput.evaluate((el) => el.validity.valid)).toBe(false);
+  expect(await maxLossInput.evaluate((el) => el.validity.rangeUnderflow)).toBe(true);
+
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  await expect(page.locator("#result-state")).toHaveText("Chọn điều kiện rồi bấm “Quét cơ hội”.");
+});
+
 test("connects the live options feed and updates the desk dashboard", async ({ page }) => {
   await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("100");
   await page.getByRole("button", { name: "Bật live feed" }).click();
@@ -332,7 +377,11 @@ test("connects the live options feed and updates the desk dashboard", async ({ p
   await expect(page.locator("#live-session-state")).toHaveText("LIVE");
   await expect(page.locator("#live-stat-spot")).toHaveText("76.2k");
   await expect(page.locator("#live-stat-opportunities")).toHaveText("1");
+  await expect(page.locator("#live-stat-contracts")).toHaveText("700");
+  await expect(page.locator("#live-stat-rejections")).toHaveText("6");
   await expect(page.locator("#market-strip")).toContainText("BTC");
+  await expect(page.locator("#market-strip")).toContainText("700 contracts");
+  await expect(page.locator("#live-rejection-summary")).toContainText("spread_above_maximum");
   await expect(page.locator("#live-opportunity-body")).toContainText("Mua call");
   await expect(page.locator("#live-feed")).toContainText("Mua call");
   await expect(page.locator("#signal-chart")).toContainText("+");
@@ -341,6 +390,21 @@ test("connects the live options feed and updates the desk dashboard", async ({ p
 
   await page.getByRole("button", { name: "Dừng live feed" }).click();
   await expect(page.locator("#live-connection")).toContainText("Live feed đang tắt");
+});
+
+test("renders live market context when the snapshot has no opportunities", async ({ page }) => {
+  await page.evaluate(() => { window.__emptyLiveSnapshot = true; });
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("100");
+  await page.getByRole("button", { name: "Bật live feed" }).click();
+
+  await expect(page.locator("#live-session-state")).toHaveText("LIVE");
+  await expect(page.locator("#live-stat-spot")).toHaveText("76.2k");
+  await expect(page.locator("#live-stat-opportunities")).toHaveText("0");
+  await expect(page.locator("#live-stat-contracts")).toHaveText("700");
+  await expect(page.locator("#live-stat-rejections")).toHaveText("6");
+  await expect(page.locator("#market-strip")).toContainText("700 contracts");
+  await expect(page.locator("#live-opportunity-body")).toContainText("chưa có signal phù hợp");
+  await expect(page.locator("#live-rejection-summary")).toContainText("low_liquidity");
 });
 
 test("shows strategy checkbox cards and keeps all strategy choices available", async ({ page }) => {
@@ -411,7 +475,7 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
   await expect(page.locator("#results-body")).toContainText("30/10/2026");
   await expect(page.locator("#results-body")).toContainText("Còn 45 ngày");
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
-  await expect(page.locator("#scan-context")).toContainText("Nhiều chiến lược");
+  await expect(page.locator("#results-table-wrap")).toBeVisible();
   await expect(page.locator("#result-state")).toContainText("1");
 });
 
@@ -426,7 +490,7 @@ test("opts into theoretical valuation and labels the result as non-executable", 
   expect((await scanRequest).postDataJSON()).toMatchObject({ valuation_mode: "theoretical" });
 
   await expect(page.locator("#valuation-mode-notice")).toBeVisible();
-  await expect(page.locator("#valuation-mode-notice")).toContainText("không phải giá khớp");
+  await expect(page.locator("#valuation-mode-notice")).toContainText("fair value mô hình");
   await expect(page.locator("#results-body")).toContainText("Tham khảo");
   await expect(page.getByRole("button", { name: "Xem payoff mô hình" })).toBeEnabled();
   await expect(page.locator("#opportunity-explanations")).toContainText("Hết hạn 30/10/2026");
@@ -533,6 +597,10 @@ test("explains an empty scan result", async ({ page }) => {
   await expect(page.locator("#result-state")).toBeVisible();
   await expect(page.locator("#result-state")).toContainText("Không có cơ hội");
   await expect(page.locator("#results-body tr")).toHaveCount(0);
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
 });
 
 test("shows an understandable error when the scan service fails", async ({ page }) => {
@@ -571,6 +639,12 @@ test("starts in the scanner workspace with a professional module sidebar", async
   await expect(page.locator("#backtest-view")).not.toBeVisible();
   await expect(sidebar).toContainText("Sắp ra mắt");
   await expect(sidebar.locator('[aria-disabled="true"]')).toHaveCount(2);
+
+  // Results panel must not show empty or unpopulated borders on initial load
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
 });
 
 test("exposes position monitoring from the module sidebar", async ({ page }) => {
@@ -586,7 +660,7 @@ test("exposes position monitoring from the module sidebar", async ({ page }) => 
   await expect(monitoringLink).toHaveAttribute("aria-current", "page");
   await expect(page.locator("#position-monitoring-view")).toBeVisible();
   await expect(page.locator("#scanner-view")).not.toBeVisible();
-  await expect(page.locator("#monitoring-state")).toContainText("read-only");
+  await expect(page.locator("#monitoring-state")).toContainText("Chưa có dữ liệu theo dõi");
 });
 
 test("runs a read-only position check and renders the exit decision", async ({ page }) => {
@@ -717,4 +791,25 @@ test("runs a historical backtest and renders exit reasons", async ({ page }) => 
   await expect(page.locator("#backtest-quality")).toContainText("Look-ahead: đã kiểm soát");
   await expect(page.locator("#backtest-trades-body")).toContainText("profit_target");
   await expect(page.locator("#backtest-metrics")).toContainText("125.00");
+});
+
+test("captures clean results panel screenshots on initial load and empty scan without ghost borders", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-initial.png" });
+
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1");
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  await expect(page.locator("#result-state")).toContainText("Không có cơ hội");
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-empty.png" });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-mobile-empty.png" });
 });
