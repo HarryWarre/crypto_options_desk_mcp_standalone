@@ -1241,7 +1241,7 @@ function renderValuationModeNotice(mode) {
   const explanation = document.createElement("span");
   explanation.textContent = isSyntheticMode(mode)
     ? `Bid/ask được dựng quanh mark/fair value theo spread giả định ${number(firstDefined(activeScanContext?.assumptions?.assumed_spread_bps, activeScanContext?.applied_filters?.assumed_spread_bps), 0)} bps nên hệ thống tính premium, edge fair value, EV, xác suất mô hình, reward/risk và lỗ tối đa; các con số vẫn là ước tính, không phải giá khớp thật.`
-    : "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value làm giá vào mô hình; payoff, EV, xác suất mô hình, reward/risk và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
+    : "Bid/ask có thể thiếu hoặc bằng 0 nên kết quả dùng fair value mô hình làm giá vào; payoff, EV, xác suất mô hình, reward/risk và lỗ tối đa vẫn được ước tính nhưng không phải giá khớp, edge giao dịch hay cam kết lợi nhuận.";
   valuationModeNotice.append(title, explanation);
   valuationModeNotice.hidden = false;
 }
