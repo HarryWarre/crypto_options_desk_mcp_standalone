@@ -165,6 +165,9 @@ function syncWorkspaceFromHash() {
   if (moduleEyebrow) moduleEyebrow.textContent = meta.eyebrow;
   if (moduleTitle) moduleTitle.textContent = meta.title;
   if (moduleDescription) moduleDescription.textContent = meta.description;
+  if (document.body.dataset.activeWorkspace && document.body.dataset.activeWorkspace !== workspace) {
+    appendTerminal(`[ĐIỀU HƯỚNG] Chuyển không gian làm việc: ${meta.title} (#${workspace})`, "info");
+  }
   document.body.dataset.activeWorkspace = workspace;
 }
 
@@ -413,13 +416,18 @@ function setState(message, className = "") {
 function appendTerminal(message, className = "") {
   const line = document.createElement("div");
   line.className = `terminal-line ${className}`.trim();
-  line.textContent = `${new Date().toLocaleTimeString("vi-VN")} ${message}`;
+  line.textContent = `[${new Date().toLocaleTimeString("vi-VN")}] ${message}`;
   scanTerminal.appendChild(line);
   scanTerminal.scrollTop = scanTerminal.scrollHeight;
+  const parentDetails = scanTerminal.closest("details");
+  if (parentDetails && !parentDetails.open) {
+    parentDetails.open = true;
+  }
 }
 
 function clearTerminal() {
   scanTerminal.replaceChildren();
+  appendTerminal("Nhật ký hệ thống đã được xóa.");
 }
 
 function cell(row, value, className = "") {
@@ -880,6 +888,7 @@ function renderPayoffDetail(item) {
 function showOpportunityDetail(item) {
   selectedOpportunity = item;
   detailPanel.hidden = false;
+  appendTerminal(`[PAYOFF] Mở chi tiết cơ hội: ${item.symbol} (${strategyLabel(item.strategy)}) - Lỗ tối đa: ${number(item.max_loss)} | EV: ${number(item.expected_value)}`, "info");
   const legs = opportunityLegs(item);
   const strikes = legs.length > 1
     ? ` · K${legs.map((leg) => number(legStrike(leg), 2)).join(" / K")}`
@@ -1203,7 +1212,11 @@ async function streamJson(path, options = {}) {
     if (!line.trim()) return;
     const event = JSON.parse(line);
     if (event.type === "log") {
-      appendTerminal(event.message);
+      let className = "info";
+      if (event.message?.includes("ERROR")) className = "error";
+      else if (event.message?.includes("WARN")) className = "warn";
+      else if (event.message?.includes("SUCCESS") || event.message?.includes("completed")) className = "success";
+      appendTerminal(event.message, className);
     } else if (event.type === "result") {
       result = event.payload;
     } else if (event.type === "error") {
@@ -1328,6 +1341,313 @@ function scanPayloadFromForm() {
   return { payload };
 }
 
+function liveCompactNumber(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  if (Math.abs(amount) >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}m`;
+  if (Math.abs(amount) >= 1_000) return `${(amount / 1_000).toFixed(1)}k`;
+  return amount.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function liveEdgePercent(item) {
+  const edge = Number(firstDefined(item?.edge_pct, item?.iv_edge));
+  return Number.isFinite(edge) ? edge : null;
+}
+
+function liveConnectionState(state, label) {
+  if (!liveConnection) return;
+  liveConnection.className = `live-connection live-connection-${state}`;
+  liveConnectionLabel.textContent = label;
+  liveSessionState.textContent = state === "live" ? "LIVE" : state === "connecting" ? "SYNC" : state === "stale" ? "STALE" : "WAITING";
+  liveToggle.textContent = state === "live" || state === "connecting" ? "Dừng live feed" : state === "stale" ? "Kết nối lại" : "Bật live feed";
+}
+
+function renderMarketStrip(payload) {
+  marketStrip.replaceChildren();
+  const opportunities = Array.isArray(payload.opportunities) ? payload.opportunities : [];
+  const selectedAssets = [...form.querySelectorAll('input[name="assets"]:checked')].map((input) => input.value);
+  const assets = [...new Set([...selectedAssets, ...opportunities.map((item) => item.asset).filter(Boolean)])];
+  const grouped = new Map();
+  opportunities.forEach((item) => {
+    const key = item.asset || "—";
+    const current = grouped.get(key) || [];
+    current.push(item);
+    grouped.set(key, current);
+  });
+  if (!assets.length) {
+    const empty = document.createElement("div");
+    empty.className = "market-strip-empty";
+    empty.textContent = "Chọn tài sản trong bộ lọc scanner để xem ticker live.";
+    marketStrip.appendChild(empty);
+    return;
+  }
+  assets.forEach((asset) => {
+    const items = grouped.get(asset) || [];
+    const first = items[0];
+    const card = document.createElement("div");
+    card.className = "market-card";
+    const heading = document.createElement("div");
+    heading.className = "market-card-heading";
+    const name = document.createElement("strong");
+    name.textContent = asset;
+    const dot = document.createElement("span");
+    dot.className = items.length ? "market-card-dot" : "market-card-dot market-card-dot-muted";
+    dot.setAttribute("aria-hidden", "true");
+    heading.append(name, dot);
+    card.appendChild(heading);
+    const spot = document.createElement("strong");
+    spot.className = "market-card-price";
+    spot.textContent = first ? liveCompactNumber(first.spot_price) : "—";
+    card.appendChild(spot);
+    const detail = document.createElement("span");
+    detail.className = "market-card-detail";
+    detail.textContent = items.length ? `${items.length} signal${items.length > 1 ? "s" : ""} · ${strategyLabel(first.strategy)}` : "Chưa có signal";
+    card.appendChild(detail);
+    marketStrip.appendChild(card);
+  });
+}
+
+function renderSignalChart(opportunities) {
+  signalChart.replaceChildren();
+  if (!opportunities.length) {
+    const empty = document.createElement("div");
+    empty.className = "signal-chart-empty";
+    empty.textContent = "Không có cơ hội đạt điều kiện hiện tại.";
+    signalChart.appendChild(empty);
+    liveSignalStatus.textContent = "Không có signal";
+    return;
+  }
+  const ranked = opportunities
+    .map((item) => ({ item, value: liveEdgePercent(item) }))
+    .filter((entry) => entry.value !== null)
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 8);
+  const maxValue = Math.max(...ranked.map((entry) => Math.abs(entry.value)), 0.01);
+  ranked.forEach(({ item, value }, index) => {
+    const column = document.createElement("div");
+    column.className = "signal-column";
+    const valueLabel = document.createElement("span");
+    valueLabel.className = "signal-value";
+    valueLabel.textContent = `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
+    const track = document.createElement("div");
+    track.className = "signal-track";
+    const bar = document.createElement("span");
+    bar.className = value >= 0 ? "signal-bar" : "signal-bar signal-bar-negative";
+    bar.style.height = `${Math.max(12, Math.abs(value) / maxValue * 100)}%`;
+    track.appendChild(bar);
+    const label = document.createElement("span");
+    label.className = "signal-label";
+    label.textContent = `${index + 1} · ${item.asset || "—"}`;
+    column.append(valueLabel, track, label);
+    signalChart.appendChild(column);
+  });
+  liveSignalStatus.textContent = `${opportunities.length} signal${opportunities.length > 1 ? "s" : ""} · top ${ranked.length}`;
+}
+
+function renderLiveOpportunityBoard(opportunities) {
+  liveOpportunityBody.replaceChildren();
+  const ranked = [...opportunities]
+    .sort((left, right) => (liveEdgePercent(right) || 0) - (liveEdgePercent(left) || 0))
+    .slice(0, 8);
+  if (!ranked.length) {
+    const row = document.createElement("tr");
+    const empty = document.createElement("td");
+    empty.className = "live-board-empty";
+    empty.colSpan = 6;
+    empty.textContent = "Snapshot đã nhận nhưng chưa có signal phù hợp.";
+    row.appendChild(empty);
+    liveOpportunityBody.appendChild(row);
+    return;
+  }
+  ranked.forEach((item) => {
+    const row = document.createElement("tr");
+    const instrument = document.createElement("td");
+    instrument.className = "live-board-instrument";
+    const asset = document.createElement("strong");
+    asset.textContent = item.asset || "—";
+    const symbol = document.createElement("span");
+    symbol.textContent = opportunitySymbol(item);
+    instrument.append(asset, symbol);
+    row.appendChild(instrument);
+    cell(row, strategyLabel(item.strategy));
+    const edge = liveEdgePercent(item);
+    cell(row, edge === null ? "—" : `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(2)}%`, edge === null || edge < 0 ? "negative" : "positive");
+    cell(row, Number.isFinite(Number(item.dte)) ? `${Math.round(Number(item.dte))}d` : "—");
+    cell(row, liveCompactNumber(firstDefined(item.estimated_entry, item.market_mid)));
+    const action = document.createElement("td");
+    const detailButton = document.createElement("button");
+    detailButton.type = "button";
+    detailButton.className = "live-board-detail";
+    detailButton.textContent = "Payoff";
+    detailButton.addEventListener("click", () => showOpportunityDetail(item));
+    action.appendChild(detailButton);
+    row.appendChild(action);
+    liveOpportunityBody.appendChild(row);
+  });
+}
+
+function renderLiveFeed(payload) {
+  liveFeed.replaceChildren();
+  const opportunities = [...(payload.opportunities || [])]
+    .sort((left, right) => (liveEdgePercent(right) || 0) - (liveEdgePercent(left) || 0))
+    .slice(0, 6);
+  if (!opportunities.length) {
+    const empty = document.createElement("div");
+    empty.className = "live-feed-empty";
+    empty.textContent = "Snapshot đã nhận nhưng chưa có signal phù hợp.";
+    liveFeed.appendChild(empty);
+    return;
+  }
+  opportunities.forEach((item, index) => {
+    const event = document.createElement("div");
+    event.className = "live-event";
+    const indexLabel = document.createElement("span");
+    indexLabel.className = "live-event-index";
+    indexLabel.textContent = String(index + 1).padStart(2, "0");
+    const copy = document.createElement("div");
+    copy.className = "live-event-copy";
+    const title = document.createElement("strong");
+    title.textContent = `${item.asset || "—"} · ${strategyLabel(item.strategy)}`;
+    const symbol = document.createElement("span");
+    symbol.textContent = opportunitySymbol(item);
+    copy.append(title, symbol);
+    const edge = document.createElement("strong");
+    edge.className = liveEdgePercent(item) >= 0 ? "live-event-edge positive" : "live-event-edge negative";
+    const edgeValue = liveEdgePercent(item);
+    edge.textContent = edgeValue === null ? "—" : `${edgeValue >= 0 ? "+" : ""}${(edgeValue * 100).toFixed(2)}%`;
+    event.append(indexLabel, copy, edge);
+    liveFeed.appendChild(event);
+  });
+}
+
+function renderLiveSnapshot(payload) {
+  const opportunities = Array.isArray(payload.opportunities) ? payload.opportunities : [];
+  const first = opportunities[0];
+  const edgeValues = opportunities.map(liveEdgePercent).filter((value) => value !== null);
+  const dtes = opportunities.map((item) => Number(item.dte)).filter(Number.isFinite);
+  liveUpdateCount += 1;
+  liveUpdateCountLabel.textContent = `${liveUpdateCount} cập nhật`;
+  liveLastUpdate.textContent = `Cập nhật ${new Date(payload.data_timestamp || payload.timestamp || Date.now()).toLocaleTimeString("vi-VN")}`;
+  liveNextRefresh.textContent = "Snapshot mới mỗi 8 giây · quote server-side";
+  liveStatSpot.textContent = first ? liveCompactNumber(first.spot_price) : "—";
+  liveStatSpotLabel.textContent = first ? `${first.asset || "Underlying"} · ${first.quote_timestamp ? "quote nhận được" : "quote model"}` : "Chưa có quote phù hợp";
+  liveStatOpportunities.textContent = String(opportunities.length);
+  liveStatOpportunitiesLabel.textContent = opportunities.length ? "Đang đạt bộ lọc" : "Không có signal phù hợp";
+  liveStatEdge.textContent = edgeValues.length ? `${(edgeValues.reduce((sum, value) => sum + value, 0) / edgeValues.length * 100).toFixed(2)}%` : "—";
+  liveStatDte.textContent = dtes.length ? `${Math.round(Math.min(...dtes))}d` : "—";
+  renderMarketStrip(payload);
+  renderLiveOpportunityBoard(opportunities);
+  renderSignalChart(opportunities);
+  renderLiveFeed(payload);
+  liveConnectionState("live", `Live feed · ${opportunities.length} signal`);
+  serviceStatus.classList.remove("error");
+  serviceStatus.textContent = "Live stream đang hoạt động";
+}
+
+function scheduleLiveReconnect() {
+  if (!liveFeedWanted || liveReconnectTimer) return;
+  liveReconnectTimer = window.setTimeout(() => {
+    liveReconnectTimer = null;
+    if (liveFeedWanted && liveScanRequest) connectLiveFeed(liveScanRequest, true);
+  }, 1800);
+  liveNextRefresh.textContent = "Đang thử kết nối lại…";
+}
+
+function connectLiveFeed(request, isReconnect = false) {
+  if (liveReconnectTimer) {
+    window.clearTimeout(liveReconnectTimer);
+    liveReconnectTimer = null;
+  }
+  if (liveScanSocket) liveScanSocket.close();
+  liveFeedWanted = true;
+  liveScanRequest = request;
+  liveUpdateCount = isReconnect ? liveUpdateCount : 0;
+  liveConnectionState("connecting", isReconnect ? "Đang reconnect live feed…" : "Đang kết nối live feed…");
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${protocol}://${window.location.host}/api/v1/opportunities/stream`);
+  liveScanSocket = socket;
+  socket.addEventListener("open", () => {
+    socket.send(JSON.stringify(request));
+    liveNextRefresh.textContent = "Đã mở kênh · chờ snapshot đầu tiên";
+    appendTerminal("[LIVE] Đã kết nối WebSocket /api/v1/opportunities/stream thành công.", "info");
+  });
+  socket.addEventListener("message", (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (_error) {
+      appendTerminal("[LIVE] Nhận event không hợp lệ.", "error");
+      return;
+    }
+    if (payload.type === "snapshot") {
+      renderLiveSnapshot(payload.payload || {});
+      appendTerminal(`[LIVE] Đã nhận snapshot: ${payload.payload?.opportunities?.length || 0} cơ hội đạt chuẩn.`, "success");
+      return;
+    }
+    if (payload.type === "log") {
+      const rawMsg = payload.message || "Đang cập nhật…";
+      let className = "info";
+      if (rawMsg.includes("ERROR") || rawMsg.includes("LỖI")) className = "error";
+      else if (rawMsg.includes("WARN")) className = "warn";
+      else if (rawMsg.includes("SUCCESS") || rawMsg.includes("hoàn tất") || rawMsg.includes("completed")) className = "success";
+      const formatted = rawMsg.startsWith("[LIVE]") ? rawMsg : `[LIVE] ${rawMsg}`;
+      appendTerminal(formatted, className);
+      return;
+    }
+    if (payload.type === "error") {
+      liveConnectionState("error", payload.message || "Live feed gặp lỗi");
+      serviceStatus.textContent = "Live stream gặp lỗi";
+      serviceStatus.classList.add("error");
+      appendTerminal(`[LIVE] LỖI: ${payload.message || "Live feed gặp lỗi"}`, "error");
+      return;
+    }
+    if (payload.status === "starting") {
+      liveConnectionState("connecting", "Đang dựng snapshot live…");
+      appendTerminal("[LIVE] Trạng thái: starting (khởi tạo luồng quét)...", "info");
+    }
+    if (payload.status === "connected" && liveScanSocket === socket && liveUpdateCount === 0) {
+      liveConnectionState("connecting", "Đã kết nối · đang chờ dữ liệu");
+      appendTerminal("[LIVE] Trạng thái: connected (kênh sẵn sàng).", "info");
+    }
+  });
+  socket.addEventListener("error", () => {
+    if (liveScanSocket !== socket) return;
+    liveConnectionState("stale", "Không kết nối được · đang thử lại");
+    serviceStatus.textContent = "Live stream không sẵn sàng";
+    serviceStatus.classList.add("error");
+    appendTerminal("[LIVE] Lỗi kết nối WebSocket tới live desk stream.", "error");
+  });
+  socket.addEventListener("close", () => {
+    if (liveScanSocket !== socket) return;
+    liveScanSocket = null;
+    if (liveFeedWanted) {
+      liveConnectionState("stale", "Stream bị ngắt · đang thử lại");
+      appendTerminal("[LIVE] WebSocket bị ngắt kết nối · chuẩn bị reconnect…", "warn");
+      scheduleLiveReconnect();
+    } else {
+      liveConnectionState("idle", "Live feed đang tắt");
+      appendTerminal("[LIVE] Đã đóng WebSocket live feed an toàn.");
+    }
+  });
+}
+
+function stopLiveFeed() {
+  liveFeedWanted = false;
+  liveScanRequest = null;
+  if (liveReconnectTimer) {
+    window.clearTimeout(liveReconnectTimer);
+    liveReconnectTimer = null;
+  }
+  if (liveScanSocket) {
+    liveScanSocket.close();
+    liveScanSocket = null;
+  }
+  liveConnectionState("idle", "Live feed đang tắt");
+  liveNextRefresh.textContent = "Chờ kết nối stream";
+  serviceStatus.classList.remove("error");
+  serviceStatus.textContent = "API đang hoạt động";
+}
+
 function renderResults(payload) {
   activeScanValuationMode = payload.valuation_mode || payload.scan_context?.valuation_mode || "executable";
   activeScanContext = payload.scan_context || null;
@@ -1407,17 +1727,17 @@ function renderResults(payload) {
 }
 
 async function loadAssets() {
-  appendTerminal("Đang tải danh sách tài sản từ Bybit…");
+  appendTerminal("[INIT] Đang kết nối backend và tải danh sách tài sản từ Bybit…", "info");
   try {
     const payload = await getJson("/api/v1/assets");
     renderAssets(payload);
     serviceStatus.textContent = "API đang hoạt động";
-    appendTerminal(`Đã tải ${payload.assets?.length || 0} tài sản.`, "success");
+    appendTerminal(`[INIT] Đã kết nối thành công: tải được ${payload.assets?.length || 0} tài sản (${payload.assets?.map((a) => a.base_coin).join(", ") || "none"}).`, "success");
   } catch (error) {
     serviceStatus.textContent = "API không sẵn sàng";
     serviceStatus.classList.add("error");
     setState(error.message, "error");
-    appendTerminal(`LỖI: ${error.message}`, "error");
+    appendTerminal(`[INIT] LỖI: ${error.message}`, "error");
   }
 }
 
@@ -1428,15 +1748,23 @@ form.addEventListener("submit", async (event) => {
   const scanInput = scanPayloadFromForm();
   if (scanInput.error) {
     setState(scanInput.error, "error");
+    appendTerminal(`[QUÉT] LỖI FORM: ${scanInput.error}`, "error");
     return;
   }
   const payload = scanInput.payload;
   button.disabled = true;
   clearTerminal();
-  appendTerminal("Bắt đầu quét…");
+  appendTerminal("[QUÉT] Bắt đầu quét cơ hội options…", "info");
+  appendTerminal(`[QUÉT] Bộ lọc: Tài sản=${payload.assets?.length ? payload.assets.join(",") : "Tất cả"} | Chiến lược=${(payload.strategies || []).join(",")} | Chế độ=${payload.valuation_mode || "executable"}`, "info");
   setState("Đang lấy dữ liệu và dựng bề mặt biến động…");
   try {
-    renderResults(await streamJson("/api/v1/opportunities/scan/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
+    const scanData = await streamJson("/api/v1/opportunities/scan/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderResults(scanData);
+    appendTerminal(`[QUÉT] Nhận kết quả thành công: ${scanData.opportunities?.length || 0} cơ hội đạt điều kiện.`, "success");
   } catch (error) {
     setState(error.message, "error");
     appendTerminal(`LỖI: ${error.message}`, "error");
@@ -1525,20 +1853,24 @@ function connectMonitoringStream(request, requestKey = JSON.stringify(request)) 
   monitoringSocket = socket;
   monitoringRequestKey = requestKey;
   button.textContent = "Đang kết nối…";
-  setMonitoringState("Đang kết nối live monitoring…");
+  setMonitoringState("Đang kết nối live monitoring ở chế độ read-only…");
+  appendTerminal(`[MONITOR] Khởi tạo kết nối theo dõi vị thế cho tài sản ${request.base_coin || "ALL"} (read-only)…`, "info");
 
   socket.addEventListener("open", () => {
     socket.send(JSON.stringify(request));
     button.textContent = "Dừng live";
+    appendTerminal("[MONITOR] Đã mở WebSocket /api/v1/positions/stream thành công.", "success");
   });
   socket.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
     if (payload.type === "snapshot") {
       renderMonitoringResult(payload);
+      appendTerminal(`[MONITOR] Nhận snapshot vị thế: ${payload.positions?.length || 0} vị thế, Quyết định: CLOSE=${payload.summary?.close || 0}, HOLD=${payload.summary?.hold || 0}, REVIEW=${payload.summary?.review || 0}.`, "success");
       return;
     }
     if (payload.type === "error") {
       setMonitoringState(payload.message || "Live monitoring gặp lỗi.", "error");
+      appendTerminal(`[MONITOR] LỖI: ${payload.message || "Live monitoring gặp lỗi"}`, "error");
       return;
     }
     const statusMessages = {
@@ -1547,16 +1879,21 @@ function connectMonitoringStream(request, requestKey = JSON.stringify(request)) 
       reconciled: "Đã reconnect và reconcile lại với REST; tiếp tục nhận cập nhật live.",
       disconnected: "Mất kết nối Bybit; đang thử reconnect…",
     };
-    if (payload.status && statusMessages[payload.status]) setMonitoringState(statusMessages[payload.status]);
+    if (payload.status && statusMessages[payload.status]) {
+      setMonitoringState(statusMessages[payload.status]);
+      appendTerminal(`[MONITOR] Trạng thái Bybit: ${statusMessages[payload.status]}`, "info");
+    }
   });
   socket.addEventListener("error", () => {
     setMonitoringState("Không thể kết nối live monitoring. Kiểm tra credential và server.", "error");
+    appendTerminal("[MONITOR] Lỗi kết nối WebSocket live monitoring.", "error");
   });
   socket.addEventListener("close", () => {
     if (monitoringSocket !== socket) return;
     monitoringSocket = null;
     monitoringRequestKey = null;
     button.textContent = "Cập nhật theo dõi";
+    appendTerminal("[MONITOR] Đã đóng kết nối live monitoring.", "info");
   });
 }
 
@@ -1597,14 +1934,16 @@ backtestForm.addEventListener("submit", async (event) => {
   const button = document.querySelector("#backtest-submit");
   button.disabled = true;
   setBacktestState("Đang replay tín hiệu và kiểm tra quy tắc đóng lệnh…");
+  appendTerminal(`[BACKTEST] Bắt đầu backtest: Tài sản=${payload.assets.join(",")} | Chiến lược=${payload.filters.strategies.join(",")} | Từ=${payload.start_time} Đến=${payload.end_time} | Exit=${payload.exit_policy.type}`, "info");
+  appendTerminal("[BACKTEST] Đang nạp snapshot lịch sử và replay tín hiệu theo exit policy…", "info");
   try {
-    appendTerminal("Bắt đầu backtest lịch sử…");
-    renderBacktestResult(await getJson("/api/v1/backtests", {
+    const backtestResult = await getJson("/api/v1/backtests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }));
-    appendTerminal("Backtest hoàn tất.", "success");
+    });
+    renderBacktestResult(backtestResult);
+    appendTerminal(`[BACKTEST] Hoàn tất: ${backtestResult.total_trades || 0} giao dịch, Win rate: ${((backtestResult.win_rate || 0) * 100).toFixed(1)}%, P&L: ${number(backtestResult.total_pnl)} USDT.`, "success");
   } catch (error) {
     setBacktestState(error.message, "error");
     backtestQuality.hidden = true;

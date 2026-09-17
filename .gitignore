@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv
 .venv/
+.venv
 *.egg-info/
 dist/
 build/
@@ -9,5 +10,6 @@ build/
 data/
 node_modules
 node_modules/
+node_modules
 test-results/
 playwright-report/

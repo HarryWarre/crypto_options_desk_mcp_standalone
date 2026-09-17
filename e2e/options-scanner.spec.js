@@ -638,6 +638,26 @@ test("shows an understandable error when the scan service fails", async ({ page 
   await expect(page.locator("#scan-terminal")).toContainText("Không thể hoàn tất lượt quét");
 });
 
+test("terminal acts as a live backend monitoring system and records step logs", async ({ page }) => {
+  const terminal = page.locator("#scan-terminal");
+  const details = page.locator(".technical-log");
+
+  await expect(details).toHaveJSProperty("open", true);
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toContainText("[INIT]");
+  await expect(terminal).toContainText("tài sản");
+
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+
+  await expect(terminal).toContainText("[QUÉT]");
+  await expect(terminal).toContainText("[OPTIONS] scan started");
+  await expect(terminal).toContainText("[OPTIONS] scan completed");
+
+  await page.getByRole("button", { name: "Xóa log" }).click();
+  await expect(terminal).toContainText("Nhật ký hệ thống đã được xóa");
+});
+
 test("renders API payoff curve and estimated outcome metrics from a quick-scan result", async ({ page }) => {
   await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1000");
   await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();

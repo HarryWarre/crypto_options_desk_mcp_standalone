@@ -901,12 +901,26 @@ def create_app(
                 }
             )
 
+            cycle = 0
             while True:
                 market_universe: NormalizedOptionUniverse | None = None
 
                 def capture_market_universe(universe: NormalizedOptionUniverse) -> None:
                     nonlocal market_universe
                     market_universe = universe
+
+                cycle += 1
+                cycle_start = time.perf_counter()
+                await websocket.send_json(
+                    {
+                        "type": "log",
+                        "message": (
+                            f"[LIVE] [CYCLE #{cycle}] Bắt đầu chu kỳ làm mới "
+                            f"(assets={','.join(scan_request.assets) if scan_request.assets else 'all'})"
+                        ),
+                    }
+                )
+
 
                 async def on_progress(message: str) -> None:
                     await websocket.send_json({"type": "log", "message": message})
@@ -939,6 +953,17 @@ def create_app(
                         "type": "snapshot",
                         "payload": payload,
                         "execution_allowed": False,
+                    }
+                )
+                cycle_elapsed = time.perf_counter() - cycle_start
+                await websocket.send_json(
+                    {
+                        "type": "log",
+                        "message": (
+                            f"[LIVE] [CYCLE #{cycle}] Snapshot hoàn tất "
+                            f"({len(snapshot.scan.opportunities)} cơ hội, {cycle_elapsed:.2f}s). "
+                            f"Nghỉ {live_scan_interval_seconds}s..."
+                        ),
                     }
                 )
                 await websocket.send_json(
@@ -1194,34 +1219,48 @@ async def _execute_scan(
             await on_progress(message)
 
     await progress(
-        f"[OPTIONS] scan started assets={selected_assets} "
-        f"strategies={','.join(scan_request.strategies)}"
+        f"[OPTIONS] scan started [STEP 1/6] assets={selected_assets} "
+        f"strategies={','.join(scan_request.strategies)} "
+        f"valuation_mode={scan_request.valuation_mode}"
     )
-    await progress("[OPTIONS] loading market data")
+    await progress(f"[OPTIONS] loading market data [STEP 2/6] for {selected_assets}")
     try:
         universe = await _maybe_await(
             market_adapter.load_universe(assets=scan_request.assets or None)
         )
     except Exception as exc:
         logger.exception("[OPTIONS] market data loading failed")
-        await progress(f"[OPTIONS] market data loading failed: {exc}")
+        await progress(f"[OPTIONS] [STEP 2/6 ERROR] market data loading failed: {exc}")
         raise _upstream_error(exc) from exc
     await progress(
-        "[OPTIONS] market data loaded "
+        "[OPTIONS] market data loaded [STEP 2/6] "
         f"assets={len(universe.assets)} contracts={len(universe.contracts)} "
         f"issues={len(universe.issues)} elapsed={time.perf_counter() - started_at:.2f}s"
     )
     if on_market_data is not None:
         await _maybe_await(on_market_data(universe))
+    if universe.issues:
+        for issue in universe.issues[:3]:
+            await progress(f"[OPTIONS] [STEP 2/6 WARN] {issue.asset}: {issue.code} - {issue.message}")
+        if len(universe.issues) > 3:
+            await progress(f"[OPTIONS] [STEP 2/6 WARN] ...còn {len(universe.issues) - 3} cảnh báo chất lượng khác")
+
     history_assets = _history_assets(universe, scan_request)
     await progress(
-        "[OPTIONS] loading 30-day historical volatility "
+        "[OPTIONS] loading 30-day historical volatility [STEP 3/6] "
         f"assets={','.join(history_assets) if history_assets else 'none'}"
     )
     historical_contexts = await _load_historical_contexts(
         historical_volatility_loader,
         history_assets,
         requested_at=universe.valuation_time,
+    )
+    available_hv = sum(1 for ctx in historical_contexts.contexts if ctx.available)
+    await progress(
+        f"[OPTIONS] [STEP 3/6] historical volatility ready: {available_hv}/{len(historical_contexts.contexts)} assets available"
+    )
+    await progress(
+        f"[OPTIONS] [STEP 4/6] calibrating volatility surfaces & valuation models (mode={scan_request.valuation_mode})"
     )
     config = head_config or StrategyHeadConfigRequest()
     fallback_strategies = (
@@ -1263,25 +1302,35 @@ async def _execute_scan(
     )
 
     if effective_request is None:
-        await progress("[OPTIONS] strategy head returned no trade; scanner skipped")
+        await progress("[OPTIONS] [STEP 5/6] strategy head returned no trade; scanner skipped")
         result = _empty_scan_result(universe, scan_request)
     else:
         await progress(
-            "[OPTIONS] running opportunity scanner "
-            f"strategies={','.join(effective_request.strategies)}"
+            f"[OPTIONS] running opportunity scanner [STEP 5/6] evaluating {len(effective_request.strategies)} strategies ({','.join(effective_request.strategies)}) across {len(universe.contracts)} contracts"
         )
         try:
             result = await _run_scanner(scanner, universe, effective_request)
         except Exception as exc:
             logger.exception("[OPTIONS] opportunity scanner failed")
-            await progress(f"[OPTIONS] opportunity scanner failed: {exc}")
+            await progress(f"[OPTIONS] [STEP 5/6 ERROR] opportunity scanner failed: {exc}")
             raise ApiError(500, "scanner_failed", "Opportunity scan failed") from exc
+    elapsed_total = time.perf_counter() - started_at
     await progress(
-        "[OPTIONS] scan completed "
+        "[OPTIONS] scan completed [STEP 6/6] "
         f"opportunities={len(result.opportunities)} rejections={len(result.rejections)} "
         f"asset_failures={len(result.asset_failures)} "
-        f"elapsed={time.perf_counter() - started_at:.2f}s"
+        f"elapsed={elapsed_total:.2f}s"
     )
+    if result.opportunities:
+        top = result.opportunities[0]
+        symbol = getattr(top, "symbol", "N/A")
+        strat = getattr(top, "strategy", getattr(top, "option_type", "opportunity"))
+        edge = getattr(top, "edge_after_costs", "N/A")
+        max_loss = getattr(top, "max_loss", "N/A")
+        await progress(
+            f"[OPTIONS] [STEP 6/6 SUCCESS] Top opportunity: {symbol} ({strat}) "
+            f"edge={edge} max_loss={max_loss}"
+        )
     return _ExecutedScanResult(
         scan=result,
         historical_volatility_contexts=historical_contexts,

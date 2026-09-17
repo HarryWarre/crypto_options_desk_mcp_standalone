@@ -133,15 +133,17 @@ button { border: 0; border-radius: 9px; cursor: pointer; font: inherit; padding:
 .explanation-fact { background: #111a22; border-radius: 8px; display: grid; gap: 2px; padding: 8px 10px; }
 .explanation-fact strong { color: var(--text); }
 .explanation-extra { font-size: .82rem; margin: 11px 0 0; }
-.scan-terminal { background: #090d12; border: 1px solid #263544; border-radius: 10px; color: #a8f3c8; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 260px; min-height: 86px; overflow: auto; padding: 13px 15px; white-space: pre-wrap; }
+.scan-terminal { background: #090d12; border: 1px solid #263544; border-radius: 10px; color: #a8f3c8; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 280px; min-height: 100px; overflow: auto; padding: 13px 15px; white-space: pre-wrap; }
 .technical-log { border: 0; }
-.technical-log > summary { align-items: center; display: flex; gap: 9px; }
+.technical-log > summary { align-items: center; cursor: pointer; display: flex; gap: 9px; }
 .technical-log > summary .eyebrow { margin: 0; }
 .technical-log .panel-heading { margin: 4px 0 12px; padding: 0 12px; }
 .technical-log .scan-terminal { margin: 0 12px 12px; }
 .terminal-line { overflow-wrap: anywhere; }
 .terminal-line.success { color: var(--accent); }
 .terminal-line.error { color: var(--danger); }
+.terminal-line.warn { color: var(--warning, #e5a93c); }
+.terminal-line.info { color: #82b1ff; }
 .pnl-chart-heading { align-items: center; display: flex; gap: 16px; justify-content: space-between; margin: 22px 0 12px; }
 .pnl-chart-heading h3 { font-size: 1.05rem; margin: 0 0 3px; }
 .chart-shell { background: #0b1016; border: 1px solid var(--line); border-radius: 12px; min-height: 280px; overflow: hidden; position: relative; }
