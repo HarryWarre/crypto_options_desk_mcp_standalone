@@ -82,3 +82,25 @@ The ordered set of positions needing attention, with `CLOSE` first, then
 `REVIEW`, then `HOLD`. It reduces attention cost without changing the
 underlying risk decision.
 _Avoid_: trade queue, execution queue
+
+## Strategy selection language
+
+**Strategy head**:
+A trained decision layer that receives the current market context and returns
+one or more allowed option strategy families, or `NO_TRADE`. It does not pick
+the final contract, change fair-value formulas, create orders, or claim that a
+trade will profit.
+_Avoid_: pricing model, execution engine, order agent
+
+**Strategy scan**:
+The deterministic search performed after strategy selection. It evaluates the
+chosen strategy families across available contracts, prices complete leg sets,
+checks costs and risk, and returns ranked candidates.
+_Avoid_: model prediction, automatic trade
+
+**Trade signal**:
+A timestamped, auditable candidate produced by a strategy scan. It contains
+the selected contract legs, direction, executable entry, costs, fair-value
+edge, risk fields, and reason codes. It is information for a human decision,
+not an order or proof of future profit.
+_Avoid_: executed trade, guaranteed return
