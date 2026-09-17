@@ -1332,6 +1332,7 @@ function renderResults(payload) {
   renderHistoricalContext(payload.historical_volatility_contexts);
   detailPanel.hidden = true;
   selectedOpportunity = null;
+  const opportunities = payload.opportunities || [];
   if (resultsGuide) {
     resultsGuide.hidden = true;
   }
@@ -1460,7 +1461,7 @@ monitoringForm.addEventListener("submit", async (event) => {
       monitoringSocket = null;
       monitoringRequestKey = null;
       document.querySelector("#monitoring-submit").textContent = "Cập nhật theo dõi";
-      setMonitoringState("Đã dừng live monitoring. Không có lệnh nào được gửi.");
+      setMonitoringState("Đã dừng live monitoring.");
       return;
     }
     monitoringSocket.close();
@@ -1506,7 +1507,7 @@ function connectMonitoringStream(request, requestKey = JSON.stringify(request)) 
   monitoringSocket = socket;
   monitoringRequestKey = requestKey;
   button.textContent = "Đang kết nối…";
-  setMonitoringState("Đang kết nối live monitoring ở chế độ read-only…");
+  setMonitoringState("Đang kết nối live monitoring…");
 
   socket.addEventListener("open", () => {
     socket.send(JSON.stringify(request));

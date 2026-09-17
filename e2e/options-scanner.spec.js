@@ -490,7 +490,7 @@ test("opts into theoretical valuation and labels the result as non-executable", 
   expect((await scanRequest).postDataJSON()).toMatchObject({ valuation_mode: "theoretical" });
 
   await expect(page.locator("#valuation-mode-notice")).toBeVisible();
-  await expect(page.locator("#valuation-mode-notice")).toContainText("không phải giá khớp");
+  await expect(page.locator("#valuation-mode-notice")).toContainText("fair value mô hình");
   await expect(page.locator("#results-body")).toContainText("Tham khảo");
   await expect(page.getByRole("button", { name: "Xem payoff mô hình" })).toBeEnabled();
   await expect(page.locator("#opportunity-explanations")).toContainText("Hết hạn 30/10/2026");
@@ -650,7 +650,7 @@ test("exposes position monitoring from the module sidebar", async ({ page }) => 
   await expect(monitoringLink).toHaveAttribute("aria-current", "page");
   await expect(page.locator("#position-monitoring-view")).toBeVisible();
   await expect(page.locator("#scanner-view")).not.toBeVisible();
-  await expect(page.locator("#monitoring-state")).toContainText("read-only");
+  await expect(page.locator("#monitoring-state")).toContainText("Chưa có dữ liệu theo dõi");
 });
 
 test("runs a read-only position check and renders the exit decision", async ({ page }) => {
