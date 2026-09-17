@@ -85,6 +85,14 @@ prospectively captured JSONL archive before calling `POST /api/v1/backtests`.
 See [`docs/options-backtest.md`](docs/options-backtest.md) for setup and the
 optional NautilusTrader catalog bridge.
 
+The `Position Monitoring` workspace is available from the sidebar at
+`#monitoring`. It calls `POST /api/v1/positions/monitor` to read manually
+executed positions, open orders, and recent order history, then displays
+deterministic `CLOSE`, `HOLD`, or `REVIEW` decisions. The endpoint is
+read-only: it never submits or closes an order; a `CLOSE` result is a manual
+instruction that requires human confirmation. Private Bybit credentials are
+required for live monitoring.
+
 Historical option data is intentionally split by data quality. The
 `BybitPublicClient.get_option_mark_price_history()` method downloads historical
 mark-price candles per option symbol. For complete bid/ask, IV, Greeks, OI, and

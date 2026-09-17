@@ -32,9 +32,9 @@ Manual Close Instruction
 | Issue | Description | Status | Merge target |
 | --- | --- | --- | --- |
 | PM-001 | Canonical position/policy contracts and deterministic risk/exit engine | done | `feat/position-monitoring` |
-| PM-002 | Read-only Bybit snapshot adapter and order/position reconciliation | next | `feat/position-monitoring` |
+| PM-002 | Read-only Bybit snapshot adapter and order/position reconciliation | done | `feat/position-monitoring` |
 | PM-003 | MCP `monitor_positions` tool with policy input and serialized decisions | done | `feat/position-monitoring` |
-| PM-004 | Timestamped snapshot persistence, history, and monitoring workspace | done (local history; UI next) | `feat/position-monitoring` |
+| PM-004 | Timestamped snapshot persistence, history, and monitoring workspace | done | `feat/position-monitoring` → `main` |
 | PM-005 | Optional close-order adapter with explicit confirmation and kill switch | deferred | `feat/position-monitoring` → later review |
 
 ## PM-001 acceptance criteria
@@ -53,13 +53,13 @@ Manual Close Instruction
 
 ## PM-002 acceptance criteria
 
-- [ ] Read `option`, `linear`, and `inverse` positions through the existing
+- [x] Read `option`, `linear`, and `inverse` positions through the existing
       private client without adding new order mutation.
-- [ ] Read open orders and a bounded order-history window, preserving status,
+- [x] Read open orders and a bounded order-history window, preserving status,
       fill, remaining quantity, trigger, reduce-only, and timestamps.
-- [ ] Mark partial/failed snapshots as `REVIEW`-eligible and never as a clean
+- [x] Mark partial/failed snapshots as `REVIEW`-eligible and never as a clean
       `HOLD` observation.
-- [ ] Preserve broker position quantity and mark-based unrealized PnL as
+- [x] Preserve broker position quantity and mark-based unrealized PnL as
       observations; do not infer fills from HTTP acknowledgement.
 
 ## PM-003 acceptance criteria
@@ -77,7 +77,9 @@ Manual Close Instruction
       changes.
 - [x] Expose the latest decision and its evidence through the read-only MCP
       history tool without suggesting that the output is investment advice or
-      an executed action. A dedicated web workspace remains a follow-up.
+      an executed action.
+- [x] Expose a dedicated web workspace with hash navigation, manual policy
+      inputs, decision rendering, and a read-only HTTP bridge to the monitor.
 
 ## PM-005 acceptance criteria
 

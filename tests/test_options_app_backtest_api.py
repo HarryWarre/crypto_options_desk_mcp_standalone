@@ -75,3 +75,40 @@ async def test_backtest_endpoint_rejects_naive_timestamps() -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_position_monitoring_endpoint_passes_manual_policy_to_runner() -> None:
+    calls = []
+
+    async def runner(payload):
+        calls.append(payload)
+        return {
+            "success": True,
+            "analysis_type": "position_monitoring",
+            "data": {"summary": {"close": 0, "hold": 1, "review": 0}},
+        }
+
+    response = await request(
+        create_app(monitoring_runner=runner),
+        "POST",
+        "/api/v1/positions/monitor",
+        json={
+            "base_coin": "btc",
+            "position_type": "linear",
+            "policies": [
+                {
+                    "symbol": "BTCUSDT",
+                    "take_profit_price": 70000,
+                    "thesis_status": "valid",
+                }
+            ],
+            "persist": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls[0].base_coin == "BTC"
+    assert calls[0].position_type == "linear"
+    assert calls[0].persist is False
+    assert calls[0].policies[0].to_domain().take_profit_price == 70000

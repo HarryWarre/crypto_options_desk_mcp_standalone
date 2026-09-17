@@ -59,6 +59,7 @@ from options_lib.scenario_engine import (
     evaluate_scenarios,
 )
 from options_lib.volatility_surface import VolatilityObservation, build_volatility_surface
+from position_monitoring.models import ExitPolicy as PositionExitPolicy
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -571,11 +572,52 @@ class BacktestRequest(BaseModel):
         )
 
 
+class PositionMonitoringPolicyRequest(BaseModel):
+    """One optional manual policy supplied to the position-monitoring UI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1)
+    stop_loss_price: float | None = Field(default=None, gt=0)
+    take_profit_price: float | None = Field(default=None, gt=0)
+    max_loss_amount: float | None = Field(default=None, gt=0)
+    max_loss_pct: float | None = Field(default=None, gt=0, le=1)
+    risk_budget: float | None = Field(default=None, gt=0)
+    max_holding_hours: float | None = Field(default=None, gt=0)
+    min_liquidation_distance_pct: float | None = Field(default=None, gt=0, le=1)
+    thesis_status: Literal["valid", "invalid", "unknown"] = "unknown"
+    opened_at: datetime | None = None
+    policy_id: str | None = None
+
+    def to_domain(self) -> PositionExitPolicy:
+        return PositionExitPolicy(**self.model_dump())
+
+
+class PositionMonitoringRequest(BaseModel):
+    """Validated request for a read-only current-position monitoring pass."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_coin: str = Field(default="BTC", min_length=1)
+    position_type: Literal["option", "linear", "inverse", "all"] = "all"
+    policies: list[PositionMonitoringPolicyRequest] = Field(default_factory=list)
+    persist: bool = True
+
+    @field_validator("base_coin")
+    @classmethod
+    def normalize_base_coin(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("base_coin cannot be empty")
+        return normalized
+
+
 def create_app(
     adapter: ScannerAdapter | None = None,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult] = scan_opportunities,
     historical_volatility_loader: HistoricalVolatilityLoader | None = None,
     backtest_runner: Callable[[BacktestRequest], Any] | None = None,
+    monitoring_runner: Callable[[PositionMonitoringRequest], Any] | None = None,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
 
@@ -589,6 +631,7 @@ def create_app(
         market_adapter = adapter
         history_loader = historical_volatility_loader
     run_backtest = backtest_runner or _default_backtest_runner
+    run_monitoring = monitoring_runner or _default_monitoring_runner
     app = FastAPI(title="Crypto Options Scanner API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -811,6 +854,19 @@ def create_app(
             payload["equity_curve"] = _serialize(result.equity_curve)
         return JSONResponse(content=payload)
 
+    @app.post("/api/v1/positions/monitor")
+    async def monitor_positions(request: PositionMonitoringRequest) -> JSONResponse:
+        """Return current positions and manual-review decisions without mutating orders."""
+
+        try:
+            result = await _maybe_await(run_monitoring(request))
+        except (TypeError, ValueError) as exc:
+            raise ApiError(422, "position_monitoring_invalid", str(exc)) from exc
+        except Exception as exc:
+            logger.exception("[OPTIONS] position monitoring failed")
+            raise ApiError(500, "position_monitoring_failed", "Position monitoring failed") from exc
+        return JSONResponse(content=_serialize(result))
+
     return app
 
 
@@ -821,6 +877,19 @@ def _default_backtest_runner(request: BacktestRequest) -> Any:
             f"historical archive is not configured; set {_BACKTEST_ARCHIVE_ENV} to a JSONL snapshot archive"
         )
     return run_snapshot_backtest(request.to_domain(Path(archive_value)))
+
+
+async def _default_monitoring_runner(request: PositionMonitoringRequest) -> Any:
+    """Bridge the web workspace to the existing MCP monitor lazily."""
+
+    from mcp_trading.orchestrator import get_orchestrator
+
+    return await get_orchestrator().monitor_positions(
+        request.base_coin,
+        request.position_type,
+        [policy.to_domain() for policy in request.policies],
+        request.persist,
+    )
 
 
 async def _execute_scan(
@@ -1163,6 +1232,8 @@ __all__ = [
     "BacktestRequest",
     "ExecutionAssumptionsRequest",
     "MarketScenarioRequest",
+    "PositionMonitoringPolicyRequest",
+    "PositionMonitoringRequest",
     "ScanFilters",
     "ScenarioLegRequest",
     "ScenarioRequest",
