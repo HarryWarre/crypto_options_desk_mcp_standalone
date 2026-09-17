@@ -195,6 +195,23 @@ class TrackedPosition:
             source=source,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "category": self.category,
+            "side": self.side.value,
+            "quantity": self.quantity,
+            "avg_entry_price": self.avg_entry_price,
+            "mark_price": self.mark_price,
+            "unrealized_pnl": self.unrealized_pnl,
+            "realized_pnl": self.realized_pnl,
+            "position_value": self.position_value,
+            "liquidation_price": self.liquidation_price,
+            "leverage": self.leverage,
+            "observed_at": self.observed_at.isoformat(),
+            "source": self.source,
+        }
+
 
 @dataclass(frozen=True)
 class TrackedOrder:
@@ -206,9 +223,13 @@ class TrackedOrder:
     side: str
     status: str
     order_type: str
+    client_order_id: str | None = None
+    position_idx: int | None = None
     quantity: float | None = None
     leaves_quantity: float | None = None
+    cumulative_filled_quantity: float | None = None
     average_fill_price: float | None = None
+    executed_fee: float | None = None
     price: float | None = None
     trigger_price: float | None = None
     reduce_only: bool = False
@@ -217,6 +238,16 @@ class TrackedOrder:
 
     @classmethod
     def from_exchange(cls, raw: Mapping[str, Any], *, category: str) -> TrackedOrder:
+        def boolean(*keys: str) -> bool:
+            for key in keys:
+                if key not in raw:
+                    continue
+                value = raw[key]
+                if isinstance(value, str):
+                    return value.strip().lower() in {"true", "1", "yes"}
+                return bool(value)
+            return False
+
         def number(*keys: str) -> float | None:
             for key in keys:
                 if raw.get(key) not in (None, ""):
@@ -245,15 +276,27 @@ class TrackedOrder:
             side=str(raw.get("side") or "").strip().lower(),
             status=str(raw.get("orderStatus") or raw.get("status") or "").strip(),
             order_type=str(raw.get("orderType") or raw.get("order_type") or "").strip(),
+            client_order_id=str(raw.get("orderLinkId") or raw.get("client_order_id") or "").strip()
+            or None,
+            position_idx=int(raw["positionIdx"])
+            if raw.get("positionIdx") not in (None, "")
+            else None,
             quantity=number("qty", "quantity"),
             leaves_quantity=number("leavesQty", "leaves_quantity"),
+            cumulative_filled_quantity=number("cumExecQty", "cumulative_filled_quantity"),
             average_fill_price=number("avgPrice", "average_fill_price"),
+            executed_fee=number("cumExecFee", "executed_fee"),
             price=number("price"),
             trigger_price=number("triggerPrice", "trigger_price"),
-            reduce_only=bool(raw.get("reduceOnly", raw.get("reduce_only", False))),
-            close_on_trigger=bool(raw.get("closeOnTrigger", raw.get("close_on_trigger", False))),
+            reduce_only=boolean("reduceOnly", "reduce_only"),
+            close_on_trigger=boolean("closeOnTrigger", "close_on_trigger"),
             updated_at=timestamp("updatedTime", "updateTime", "updated_at"),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["updated_at"] = self.updated_at.isoformat() if self.updated_at else None
+        return payload
 
 
 @dataclass(frozen=True)
@@ -264,6 +307,7 @@ class PositionSnapshot:
     source: str
     positions: tuple[TrackedPosition, ...] = ()
     open_orders: tuple[TrackedOrder, ...] = ()
+    order_history: tuple[TrackedOrder, ...] = ()
     reconciliation_status: str = "complete"
     issues: tuple[str, ...] = ()
 
