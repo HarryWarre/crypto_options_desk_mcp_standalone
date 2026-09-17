@@ -10,7 +10,7 @@ module.exports = defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: ".venv/bin/uvicorn options_app.api:create_app --factory --host 127.0.0.1 --port 8002",
+    command: "PYTHONPATH=./src .venv/bin/uvicorn options_app.api:create_app --factory --host 127.0.0.1 --port 8002",
     url: "http://127.0.0.1:8002/api/v1/health",
     reuseExistingServer: true,
     timeout: 120_000,
