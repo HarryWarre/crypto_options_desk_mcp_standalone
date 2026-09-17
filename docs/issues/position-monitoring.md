@@ -33,8 +33,8 @@ Manual Close Instruction
 | --- | --- | --- | --- |
 | PM-001 | Canonical position/policy contracts and deterministic risk/exit engine | done | `feat/position-monitoring` |
 | PM-002 | Read-only Bybit snapshot adapter and order/position reconciliation | next | `feat/position-monitoring` |
-| PM-003 | MCP `monitor_positions` tool with policy input and serialized decisions | planned | `feat/position-monitoring` |
-| PM-004 | Timestamped snapshot persistence, history, and monitoring workspace | planned | `feat/position-monitoring` |
+| PM-003 | MCP `monitor_positions` tool with policy input and serialized decisions | done | `feat/position-monitoring` |
+| PM-004 | Timestamped snapshot persistence, history, and monitoring workspace | done (local history; UI next) | `feat/position-monitoring` |
 | PM-005 | Optional close-order adapter with explicit confirmation and kill switch | deferred | `feat/position-monitoring` → later review |
 
 ## PM-001 acceptance criteria
@@ -64,19 +64,20 @@ Manual Close Instruction
 
 ## PM-003 acceptance criteria
 
-- [ ] Add a read-only MCP tool that accepts base coin/category and policies.
-- [ ] Return snapshot timestamp, source, open positions, open orders, and a
+- [x] Add a read-only MCP tool that accepts base coin/category and policies.
+- [x] Return snapshot timestamp, source, open positions, open orders, and a
       decision per position with reason codes.
-- [ ] Keep secrets server-side and return a structured error when private
+- [x] Keep secrets server-side and return a structured error when private
       credentials are unavailable.
 
 ## PM-004 acceptance criteria
 
-- [ ] Persist immutable snapshots with source timestamp and policy identifier.
-- [ ] Support comparing two snapshots for PnL, size, mark, order, and decision
+- [x] Persist immutable snapshots with source timestamp and snapshot identifier.
+- [x] Support comparing two snapshots for PnL, size, mark, order, and decision
       changes.
-- [ ] Show the latest decision and its evidence in the web workspace without
-      suggesting that the output is investment advice or an executed action.
+- [x] Expose the latest decision and its evidence through the read-only MCP
+      history tool without suggesting that the output is investment advice or
+      an executed action. A dedicated web workspace remains a follow-up.
 
 ## PM-005 acceptance criteria
 
