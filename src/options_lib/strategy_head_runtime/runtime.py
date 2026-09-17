@@ -53,6 +53,8 @@ class RuntimeScanDecision:
     selected_strategy_families: tuple[str, ...] = ()
     reason_codes: tuple[str, ...] = ()
     ranking_score: float | None = None
+    ranked_strategies: tuple[tuple[str, float], ...] = ()
+    model_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.action not in {SELECT_STRATEGIES, NO_TRADE}:
@@ -63,6 +65,20 @@ class RuntimeScanDecision:
             raise ValueError("select_strategies requires selected strategies")
         if self.ranking_score is not None and not isfinite(float(self.ranking_score)):
             raise ValueError("ranking_score must be finite")
+        seen: set[str] = set()
+        for strategy, score in self.ranked_strategies:
+            if not isinstance(strategy, str) or not strategy.strip():
+                raise ValueError("ranked_strategies must contain strategy names")
+            normalized = strategy.strip().lower()
+            if normalized in seen:
+                raise ValueError("ranked_strategies cannot contain duplicate strategies")
+            seen.add(normalized)
+            if not isfinite(float(score)):
+                raise ValueError("ranked strategy scores must be finite")
+        if self.model_version is not None and (
+            not isinstance(self.model_version, str) or not self.model_version.strip()
+        ):
+            raise ValueError("model_version must be a non-empty string")
         if any(
             not isinstance(reason, str) or not reason.strip()
             for reason in self.reason_codes
@@ -151,6 +167,12 @@ class StrategyHeadRuntime:
             raise ValueError("max_context_age must be positive")
 
         self._head = head
+        model_version = getattr(head, "model_version", None)
+        self._model_version = (
+            model_version.strip()
+            if isinstance(model_version, str) and model_version.strip()
+            else None
+        )
         self._min_ranking_score = (
             None if min_ranking_score is None else float(min_ranking_score)
         )
@@ -220,6 +242,8 @@ class StrategyHeadRuntime:
                 action=NO_TRADE,
                 reason_codes=(*parsed.reason_codes, "lightgbm_no_trade"),
                 ranking_score=parsed.ranking_score,
+                ranked_strategies=parsed.ranked_strategies,
+                model_version=self._model_version,
             )
         if parsed.ranking_score is None:
             return _fallback_or_no_trade("invalid_prediction", fallback)
@@ -236,7 +260,15 @@ class StrategyHeadRuntime:
             selected_strategy_families=parsed.selected_strategy_families,
             reason_codes=(*parsed.reason_codes, "lightgbm_selection"),
             ranking_score=parsed.ranking_score,
+            ranked_strategies=parsed.ranked_strategies,
+            model_version=self._model_version,
         )
+
+    @property
+    def model_version(self) -> str | None:
+        """Return the injected model version when it exposes one."""
+
+        return self._model_version
 
     def _normalise_strategies(self, values: Iterable[str]) -> tuple[str, ...] | None:
         try:
@@ -301,6 +333,7 @@ class _ParsedPrediction:
     selected_strategy_families: tuple[str, ...]
     ranking_score: float | None
     reason_codes: tuple[str, ...]
+    ranked_strategies: tuple[tuple[str, float], ...] = ()
 
 
 _MISSING_MODEL = object()
@@ -373,7 +406,7 @@ def _parse_action(value: object) -> DecisionAction | None:
     normalized = value.strip().lower().replace("-", "_")
     if normalized in {NO_TRADE, SELECT_STRATEGIES}:
         return normalized  # type: ignore[return-value]
-    if normalized == "scan":
+    if normalized in {"scan", "select"}:
         return SELECT_STRATEGIES
     return None
 
@@ -431,7 +464,7 @@ def _parse_prediction(
     if action == NO_TRADE and selected:
         return None
 
-    ranked_value = _prediction_value(prediction, "ranked_strategies", "rankings")
+    ranked_value = _prediction_value(prediction, "ranked_strategies", "rankings", "scores")
     ranking_scores: dict[str, float] = {}
     if ranked_value is not None:
         if isinstance(ranked_value, (str, bytes)):
@@ -481,7 +514,8 @@ def _parse_prediction(
     reason_codes = _parse_reason_codes(_prediction_value(prediction, "reason_codes"))
     if reason_codes is None:
         return None
-    return _ParsedPrediction(action, selected, score, reason_codes)
+    ranked_strategies = tuple(ranking_scores.items())
+    return _ParsedPrediction(action, selected, score, reason_codes, ranked_strategies)
 
 
 def _looks_like_shared_prediction(prediction: object) -> bool:

@@ -9,8 +9,8 @@ import logging
 import math
 import os
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import fields, is_dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -21,7 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bybit_api.option_history import JsonlOptionSnapshotArchive
 from bybit_api.option_volatility_history import BybitHistoricalVolatilityContextLoader
@@ -59,6 +59,15 @@ from options_lib.scenario_engine import (
     StrategyDefinition,
     evaluate_scenarios,
 )
+from options_lib.strategy_head.contract import MarketContext
+from options_lib.strategy_head_provenance import (
+    SignalProvenance,
+    attach_provenance,
+)
+from options_lib.strategy_head_provenance import (
+    StrategyRanking as ProvenanceStrategyRanking,
+)
+from options_lib.strategy_head_runtime import StrategyHeadRuntime, apply_strategy_decision
 from options_lib.volatility_surface import VolatilityObservation, build_volatility_surface
 from position_monitoring.models import ExitPolicy as PositionExitPolicy
 
@@ -105,6 +114,21 @@ _DEFAULT_SCAN_RISK_FREE_RATE = 0.05
 _DEFAULT_MIN_EXPECTED_VALUE = 0.0
 _LIVE_SCAN_INTERVAL_SECONDS = 8.0
 _LIVE_MAX_OPPORTUNITIES = 24
+_STRATEGY_HEAD_FEATURE_NAMES = (
+    "underlying_price",
+    "quote_count",
+    "complete_quote_count",
+    "executable_quote_count",
+    "expiry_count",
+    "mean_mark_iv",
+    "mean_abs_delta",
+    "mean_volume_24h",
+    "mean_open_interest",
+    "mean_spread_pct",
+    "mean_dte_days",
+    "min_dte_days",
+    "max_dte_days",
+)
 
 # The scanner gained EV metrics after the original HTTP contract.  Keep the
 # API tolerant of either spelling while the domain slices land independently.
@@ -152,11 +176,58 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 MarketDataCallback = Callable[[NormalizedOptionUniverse], Awaitable[None] | None]
 
 
+class StrategyHeadConfigRequest(BaseModel):
+    """Optional controls for explicitly enabled automatic head selection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_ranking_score: float | None = None
+    max_context_age_seconds: float = Field(default=900.0, gt=0)
+    fallback_strategies: list[str] | None = None
+
+    @field_validator("min_ranking_score", "max_context_age_seconds", mode="before")
+    @classmethod
+    def finite_number(cls, value: Any) -> Any:
+        if value is not None:
+            try:
+                finite = math.isfinite(float(value))
+            except (TypeError, ValueError):
+                finite = False
+            if isinstance(value, bool) or not finite:
+                raise ValueError("must be a finite number")
+        return value
+
+    @field_validator("fallback_strategies")
+    @classmethod
+    def validate_fallback_strategies(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        normalized = list(dict.fromkeys(value.strip().lower() for value in values))
+        if any(not value for value in normalized):
+            raise ValueError("strategy names cannot be empty")
+        unsupported = sorted(set(normalized) - _SUPPORTED_SCAN_STRATEGIES)
+        if unsupported:
+            raise ValueError(f"unsupported strategy: {', '.join(unsupported)}")
+        return normalized
+
+
 class ScanFilters(BaseModel):
     """Validated JSON filters accepted by the scan endpoint."""
 
     model_config = ConfigDict(extra="forbid")
 
+    head_mode: Literal["manual", "automatic"] = Field(
+        default="manual",
+        validation_alias=AliasChoices("head_mode", "strategy_head_mode"),
+    )
+    head_model_path: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("head_model_path", "strategy_head_model_path"),
+    )
+    head_config: StrategyHeadConfigRequest = Field(
+        default_factory=StrategyHeadConfigRequest,
+        validation_alias=AliasChoices("head_config", "strategy_head_config"),
+    )
     risk_free_rate: float = _DEFAULT_SCAN_RISK_FREE_RATE
     assets: list[str] = Field(default_factory=list)
     valuation_mode: Literal["executable", "theoretical", "synthetic"] = "executable"
@@ -242,6 +313,16 @@ class ScanFilters(BaseModel):
             normalized.append(asset)
         return list(dict.fromkeys(normalized))
 
+    @field_validator("head_model_path")
+    @classmethod
+    def normalize_head_model_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("head_model_path cannot be empty")
+        return normalized
+
     @field_validator("strategies")
     @classmethod
     def validate_strategies(cls, values: list[str]) -> list[str]:
@@ -257,9 +338,8 @@ class ScanFilters(BaseModel):
     def validate_ranges(self) -> ScanFilters:
         if (self.market_view is None) != (self.time_horizon is None):
             raise ValueError("market_view and time_horizon must be provided together")
-        if self.market_view is not None:
-            if not self.assets:
-                raise ValueError("at least one asset is required for a simple scan")
+        if self.market_view is not None and not self.assets:
+            raise ValueError("at least one asset is required for a simple scan")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
         if (
@@ -273,6 +353,9 @@ class ScanFilters(BaseModel):
     def to_scan_request(self) -> ScanRequest:
         values = self.model_dump(
             exclude={
+                "head_mode",
+                "head_model_path",
+                "head_config",
                 "market_view",
                 "time_horizon",
                 "strategy_preference",
@@ -306,6 +389,16 @@ class ApiError(Exception):
         self.status_code = status_code
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True)
+class _ExecutedScanResult:
+    """HTTP-only envelope for the scan result and its head decision."""
+
+    scan: ScanResult
+    historical_volatility_contexts: HistoricalVolatilityContexts
+    scan_request: ScanRequest
+    provenance: SignalProvenance
 
 
 class ScenarioLegRequest(BaseModel):
@@ -622,6 +715,8 @@ def create_app(
     monitoring_runner: Callable[[PositionMonitoringRequest], Any] | None = None,
     monitoring_stream_factory: Callable[[PositionMonitoringRequest], Any] | None = None,
     live_scan_interval_seconds: float = _LIVE_SCAN_INTERVAL_SECONDS,
+    strategy_head: Any | None = None,
+    strategy_head_loader: Callable[[Path], Any] | None = None,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
 
@@ -718,6 +813,11 @@ def create_app(
             market_adapter,
             scanner,
             historical_volatility_loader=history_loader,
+            strategy_head=strategy_head,
+            strategy_head_loader=strategy_head_loader,
+            head_mode=filters.head_mode,
+            head_model_path=filters.head_model_path,
+            head_config=filters.head_config,
         )
         return JSONResponse(content=_serialize_scan_result(result, filters, scan_request))
 
@@ -737,6 +837,11 @@ def create_app(
                     market_adapter,
                     scanner,
                     historical_volatility_loader=history_loader,
+                    strategy_head=strategy_head,
+                    strategy_head_loader=strategy_head_loader,
+                    head_mode=filters.head_mode,
+                    head_model_path=filters.head_model_path,
+                    head_config=filters.head_config,
                     on_progress=on_progress,
                 )
             )
@@ -811,6 +916,11 @@ def create_app(
                     market_adapter,
                     scanner,
                     historical_volatility_loader=history_loader,
+                    strategy_head=strategy_head,
+                    strategy_head_loader=strategy_head_loader,
+                    head_mode=filters.head_mode,
+                    head_model_path=filters.head_model_path,
+                    head_config=filters.head_config,
                     on_progress=on_progress,
                     on_market_data=capture_market_universe,
                 )
@@ -1067,9 +1177,14 @@ async def _execute_scan(
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult],
     *,
     historical_volatility_loader: HistoricalVolatilityLoader | None = None,
+    strategy_head: Any | None = None,
+    strategy_head_loader: Callable[[Path], Any] | None = None,
+    head_mode: Literal["manual", "automatic"] = "manual",
+    head_model_path: str | None = None,
+    head_config: StrategyHeadConfigRequest | None = None,
     on_progress: ProgressCallback | None = None,
     on_market_data: MarketDataCallback | None = None,
-) -> HistoricalContextScanResult:
+) -> _ExecutedScanResult:
     started_at = time.perf_counter()
     selected_assets = ",".join(scan_request.assets) if scan_request.assets else "all"
 
@@ -1108,22 +1223,280 @@ async def _execute_scan(
         history_assets,
         requested_at=universe.valuation_time,
     )
-    await progress("[OPTIONS] running opportunity scanner")
-    try:
-        result = await _run_scanner(scanner, universe, scan_request)
-    except Exception as exc:
-        logger.exception("[OPTIONS] opportunity scanner failed")
-        await progress(f"[OPTIONS] opportunity scanner failed: {exc}")
-        raise ApiError(500, "scanner_failed", "Opportunity scan failed") from exc
+    config = head_config or StrategyHeadConfigRequest()
+    fallback_strategies = (
+        tuple(config.fallback_strategies)
+        if config.fallback_strategies is not None
+        else scan_request.strategies
+    )
+    model = strategy_head
+    model_load_reason: str | None = None
+    if head_mode == "automatic" and model is None and head_model_path is not None:
+        loader = strategy_head_loader or _default_strategy_head_loader
+        try:
+            model = loader(Path(head_model_path))
+        except Exception:
+            logger.exception("[OPTIONS] strategy head loading failed")
+            model_load_reason = "model_load_failed"
+
+    runtime = StrategyHeadRuntime(
+        model if head_mode == "automatic" else None,
+        min_ranking_score=config.min_ranking_score,
+        max_context_age=timedelta(seconds=config.max_context_age_seconds),
+        required_features=_STRATEGY_HEAD_FEATURE_NAMES,
+        fallback_strategies=fallback_strategies,
+    )
+    decision = runtime.decide(
+        mode=head_mode,
+        market_context=_market_context_from_universe(universe),
+        manual_strategies=scan_request.strategies,
+        fallback_strategies=fallback_strategies,
+        now=universe.valuation_time,
+    )
+    if model_load_reason is not None:
+        decision = replace(decision, reason_codes=(*decision.reason_codes, model_load_reason))
+    effective_request = apply_strategy_decision(scan_request, decision)
+    provenance = _provenance_for_runtime_decision(
+        decision,
+        as_of=universe.valuation_time,
+        mode=head_mode,
+    )
+
+    if effective_request is None:
+        await progress("[OPTIONS] strategy head returned no trade; scanner skipped")
+        result = _empty_scan_result(universe, scan_request)
+    else:
+        await progress(
+            "[OPTIONS] running opportunity scanner "
+            f"strategies={','.join(effective_request.strategies)}"
+        )
+        try:
+            result = await _run_scanner(scanner, universe, effective_request)
+        except Exception as exc:
+            logger.exception("[OPTIONS] opportunity scanner failed")
+            await progress(f"[OPTIONS] opportunity scanner failed: {exc}")
+            raise ApiError(500, "scanner_failed", "Opportunity scan failed") from exc
     await progress(
         "[OPTIONS] scan completed "
         f"opportunities={len(result.opportunities)} rejections={len(result.rejections)} "
         f"asset_failures={len(result.asset_failures)} "
         f"elapsed={time.perf_counter() - started_at:.2f}s"
     )
-    return HistoricalContextScanResult(
+    return _ExecutedScanResult(
         scan=result,
         historical_volatility_contexts=historical_contexts,
+        scan_request=effective_request or scan_request,
+        provenance=provenance,
+    )
+
+
+def _default_strategy_head_loader(path: Path) -> Any:
+    """Load the optional LightGBM adapter lazily at the application seam."""
+
+    from options_lib.strategy_head_model import LightGBMStrategyHead
+
+    return LightGBMStrategyHead.load(path)
+
+
+def _market_context_from_universe(universe: NormalizedOptionUniverse) -> MarketContext:
+    """Build the head's point-in-time features from the loaded quote universe."""
+
+    valuation_time = universe.valuation_time
+    contracts = tuple(universe.contracts)
+    underlying_prices = _valid_contract_values(contracts, "spot_price", positive=True)
+    mark_ivs = _valid_contract_values(contracts, "mark_iv", positive=True)
+    abs_deltas = [abs(value) for value in _valid_contract_values(contracts, "delta")]
+    volumes = _valid_contract_values(contracts, "volume_24h", non_negative=True)
+    open_interests = _valid_contract_values(contracts, "open_interest", non_negative=True)
+    spreads = [
+        (ask - bid) / max((ask + bid) / 2.0, 1e-12)
+        for contract in contracts
+        for bid, ask in [_executable_prices(contract)]
+        if bid is not None and ask is not None
+    ]
+    dtes = [
+        max(0.0, (contract.expiry_at - valuation_time).total_seconds() / 86_400.0)
+        for contract in contracts
+        if contract.expiry_at.tzinfo is not None and contract.expiry_at > valuation_time
+    ]
+    complete_quotes = [
+        contract
+        for contract in contracts
+        if all(
+            getattr(contract, field_name, None) is not None
+            for field_name in (
+                "spot_price",
+                "mark_iv",
+                "delta",
+                "volume_24h",
+                "open_interest",
+            )
+        )
+    ]
+    features = {
+        "underlying_price": _median_or_zero(underlying_prices),
+        "quote_count": float(len(contracts)),
+        "complete_quote_count": float(len(complete_quotes)),
+        "executable_quote_count": float(
+            sum(_executable_prices(contract)[0] is not None for contract in contracts)
+        ),
+        "expiry_count": float(len({contract.expiry_at for contract in contracts})),
+        "mean_mark_iv": _mean_or_zero(mark_ivs),
+        "mean_abs_delta": _mean_or_zero(abs_deltas),
+        "mean_volume_24h": _mean_or_zero(volumes),
+        "mean_open_interest": _mean_or_zero(open_interests),
+        "mean_spread_pct": _mean_or_zero(spreads),
+        "mean_dte_days": _mean_or_zero(dtes),
+        "min_dte_days": min(dtes, default=0.0),
+        "max_dte_days": max(dtes, default=0.0),
+    }
+    return MarketContext(
+        observed_at=valuation_time,
+        assets=tuple(sorted({contract.asset for contract in contracts})),
+        features=features,
+        source=universe.source,
+    )
+
+
+def _valid_contract_values(
+    contracts: Sequence[Any],
+    field_name: str,
+    *,
+    positive: bool = False,
+    non_negative: bool = False,
+) -> list[float]:
+    values: list[float] = []
+    for contract in contracts:
+        value = getattr(contract, field_name, None)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(numeric):
+            continue
+        if positive and numeric <= 0:
+            continue
+        if non_negative and numeric < 0:
+            continue
+        values.append(numeric)
+    return values
+
+
+def _executable_prices(contract: Any) -> tuple[float | None, float | None]:
+    bid = getattr(contract, "bid_price", None)
+    ask = getattr(contract, "ask_price", None)
+    if bid is None or ask is None or isinstance(bid, bool) or isinstance(ask, bool):
+        return None, None
+    try:
+        bid_value = float(bid)
+        ask_value = float(ask)
+    except (TypeError, ValueError):
+        return None, None
+    if (
+        not math.isfinite(bid_value)
+        or not math.isfinite(ask_value)
+        or bid_value <= 0
+        or ask_value <= 0
+        or ask_value < bid_value
+    ):
+        return None, None
+    return bid_value, ask_value
+
+
+def _mean_or_zero(values: Sequence[float]) -> float:
+    return math.fsum(values) / len(values) if values else 0.0
+
+
+def _median_or_zero(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _empty_scan_result(
+    universe: NormalizedOptionUniverse,
+    scan_request: ScanRequest,
+) -> ScanResult:
+    quote_timestamps = [
+        contract.quote_timestamp
+        for contract in universe.contracts
+        if isinstance(contract.quote_timestamp, datetime)
+    ]
+    return ScanResult(
+        timestamp=universe.valuation_time,
+        data_timestamp=min(quote_timestamps, default=universe.valuation_time),
+        opportunities=(),
+        rejections=(),
+        asset_failures=(),
+        issues=universe.issues,
+        valuation_mode=scan_request.valuation_mode,
+    )
+
+
+def _provenance_for_runtime_decision(
+    decision: Any,
+    *,
+    as_of: datetime,
+    mode: Literal["manual", "automatic"],
+) -> SignalProvenance:
+    rankings = tuple(
+        ProvenanceStrategyRanking(
+            strategy_family=strategy,
+            rank=rank,
+            ranking_score=score,
+        )
+        for rank, (strategy, score) in enumerate(decision.ranked_strategies, start=1)
+    )
+    reasons = decision.reason_codes or ("no_trade",)
+    if mode == "manual":
+        if decision.action == "no_trade":
+            return SignalProvenance.no_trade(
+                as_of=as_of,
+                source="manual",
+                reason_codes=reasons,
+            )
+        return SignalProvenance.manual(
+            selected_strategy_families=decision.selected_strategy_families,
+            as_of=as_of,
+            reason_codes=reasons,
+        )
+
+    is_lightgbm = any(
+        reason in {"lightgbm_selection", "lightgbm_no_trade"} for reason in reasons
+    )
+    if is_lightgbm:
+        model_version = decision.model_version or "unversioned"
+        if decision.action == "no_trade":
+            return SignalProvenance.no_trade(
+                as_of=as_of,
+                source="lightgbm",
+                model_version=model_version,
+                ranked_strategies=rankings,
+                reason_codes=reasons,
+            )
+        return SignalProvenance.lightgbm(
+            selected_strategy_families=decision.selected_strategy_families,
+            as_of=as_of,
+            model_version=model_version,
+            ranked_strategies=rankings,
+            reason_codes=reasons,
+        )
+    if decision.action == "no_trade":
+        return SignalProvenance.no_trade(
+            as_of=as_of,
+            source="fallback",
+            reason_codes=reasons,
+        )
+    return SignalProvenance.fallback(
+        selected_strategy_families=decision.selected_strategy_families,
+        as_of=as_of,
+        reason_codes=reasons,
     )
 
 
@@ -1232,11 +1605,21 @@ def _serialize(value: Any) -> Any:
 
 
 def _serialize_scan_result(
-    result: ScanResult | HistoricalContextScanResult,
+    result: ScanResult | HistoricalContextScanResult | _ExecutedScanResult,
     filters: ScanFilters,
     scan_request: ScanRequest,
 ) -> dict[str, Any]:
-    if isinstance(result, HistoricalContextScanResult):
+    provenance: SignalProvenance | None = None
+    if isinstance(result, _ExecutedScanResult):
+        scan_request = result.scan_request
+        payload = _serialize(result.scan)
+        payload["historical_volatility_contexts"] = [
+            _serialize_historical_context(context)
+            for context in result.historical_volatility_contexts.contexts
+        ]
+        opportunities = result.scan.opportunities
+        provenance = result.provenance
+    elif isinstance(result, HistoricalContextScanResult):
         payload = _serialize(result.scan)
         payload["historical_volatility_contexts"] = [
             _serialize_historical_context(context)
@@ -1333,6 +1716,8 @@ def _serialize_scan_result(
                 ),
             }
         )
+    if provenance is not None:
+        payload = attach_provenance(payload, provenance)
     return payload
 
 
