@@ -9,4 +9,4 @@
 - [x] Run Python UI/static tests.
 - [x] Run Playwright functional and visual QA at desktop and mobile sizes.
 - [x] Review the branch against `main` on Standards and Spec axes.
-- [ ] Rebase onto `main` and merge the completed branch.
+- [x] Rebase onto `main` and merge the completed branch.

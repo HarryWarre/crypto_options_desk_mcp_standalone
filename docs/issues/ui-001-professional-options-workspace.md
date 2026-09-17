@@ -1,6 +1,6 @@
 # UI-001 — Professional options workspace shell
 
-Status: ready for merge
+Status: merged
 Branch: `feat/professional-options-workspace`
 
 ## Problem
