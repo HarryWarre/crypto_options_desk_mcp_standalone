@@ -4,6 +4,7 @@ const assetList = document.querySelector("#asset-list");
 const form = document.querySelector("#scan-form");
 const resultState = document.querySelector("#result-state");
 const resultsBody = document.querySelector("#results-body");
+const resultsTableWrap = document.querySelector("#results-table-wrap");
 const secondaryResults = document.querySelector("#secondary-results");
 const resultsGuide = document.querySelector("#results-guide");
 const valuationModeNotice = document.querySelector("#valuation-mode-notice");
@@ -1334,7 +1335,18 @@ function renderResults(payload) {
   selectedOpportunity = null;
   const opportunities = payload.opportunities || [];
   if (resultsGuide) {
-    resultsGuide.hidden = true;
+    resultsGuide.hidden = !opportunities.length;
+    const guide = resultsGuide.querySelector("span");
+    if (guide) {
+      guide.textContent = isSyntheticMode(activeScanValuationMode)
+        ? "Các dòng dưới đây dùng bid/ask tổng hợp từ mark/fair value và spread giả định. Edge, EV, RR và lỗ tối đa đã được tính nhưng vẫn là ước tính, không phải khả năng khớp lệnh."
+        : isTheoreticalMode(activeScanValuationMode)
+        ? "Các dòng dưới đây là fair value/IV/Greeks và payoff từ mô hình. Bid/ask thiếu không được thay bằng giá giả; EV, RR và lỗ tối đa chỉ là ước tính mô hình, còn edge giao dịch và khả năng khớp không được suy ra."
+        : "Hãy bắt đầu từ phần diễn giải: hướng kỳ vọng, chân mua/bán, lỗ tối đa và vùng có lợi. Giá mô hình chỉ là tham chiếu, không phải lợi nhuận đảm bảo.";
+    }
+  }
+  if (resultsTableWrap) {
+    resultsTableWrap.hidden = !opportunities.length;
   }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
   else setState(`${opportunities.length} cơ hội đạt điều kiện.`);

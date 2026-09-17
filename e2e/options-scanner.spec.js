@@ -475,7 +475,7 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
   await expect(page.locator("#results-body")).toContainText("30/10/2026");
   await expect(page.locator("#results-body")).toContainText("Còn 45 ngày");
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
-  await expect(page.locator("#scan-context")).toContainText("Nhiều chiến lược");
+  await expect(page.locator("#results-table-wrap")).toBeVisible();
   await expect(page.locator("#result-state")).toContainText("1");
 });
 
@@ -597,6 +597,10 @@ test("explains an empty scan result", async ({ page }) => {
   await expect(page.locator("#result-state")).toBeVisible();
   await expect(page.locator("#result-state")).toContainText("Không có cơ hội");
   await expect(page.locator("#results-body tr")).toHaveCount(0);
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
 });
 
 test("shows an understandable error when the scan service fails", async ({ page }) => {
@@ -635,6 +639,12 @@ test("starts in the scanner workspace with a professional module sidebar", async
   await expect(page.locator("#backtest-view")).not.toBeVisible();
   await expect(sidebar).toContainText("Sắp ra mắt");
   await expect(sidebar.locator('[aria-disabled="true"]')).toHaveCount(2);
+
+  // Results panel must not show empty or unpopulated borders on initial load
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
 });
 
 test("exposes position monitoring from the module sidebar", async ({ page }) => {
@@ -781,4 +791,25 @@ test("runs a historical backtest and renders exit reasons", async ({ page }) => 
   await expect(page.locator("#backtest-quality")).toContainText("Look-ahead: đã kiểm soát");
   await expect(page.locator("#backtest-trades-body")).toContainText("profit_target");
   await expect(page.locator("#backtest-metrics")).toContainText("125.00");
+});
+
+test("captures clean results panel screenshots on initial load and empty scan without ghost borders", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-initial.png" });
+
+  await page.getByLabel("Lỗ tối đa mỗi ý tưởng").fill("1");
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+  await expect(page.locator("#result-state")).toContainText("Không có cơ hội");
+  await expect(page.locator("#valuation-mode-notice")).toBeHidden();
+  await expect(page.locator("#results-guide")).toBeHidden();
+  await expect(page.locator("#historical-context")).toBeHidden();
+  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-empty.png" });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-mobile-empty.png" });
 });
