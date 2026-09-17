@@ -1,7 +1,7 @@
 # Position monitoring and manual exit workflow
 
-Status: in progress  
-Feature branch: `feat/position-monitoring`  
+Status: in progress
+Feature branch: `feat/position-monitoring`
 Scope: start after manual execution; no automatic order placement in the first release.
 
 ## Problem

@@ -1,7 +1,7 @@
 # Order, Position/PnL và Risk/Exit Decision — Research
 
-**Status:** research-only; chưa triển khai code production  
-**Ngày:** 2026-09-17  
+**Status:** research-only; chưa triển khai code production
+**Ngày:** 2026-09-17
 **Phạm vi:** Bybit V5, ưu tiên options/perpetuals/inverse contracts vì phù hợp workspace hiện tại; SEC/FINRA/NIST chỉ được dùng làm nguyên tắc tham chiếu cho risk-control, supervision và audit. Đây không phải tư vấn pháp lý hay khuyến nghị đầu tư.
 
 ## 1. Kết luận điều hành
@@ -287,4 +287,3 @@ Các nguồn dưới đây đều là nguồn first-party/primary được dùng
 - [FINRA Customer Order Handling / Best Execution](https://www.finra.org/rules-guidance/guidance/reports/2026-finra-annual-regulatory-oversight-report/best-execution)
 - [NIST SP 800-53 Rev. 5 landing page](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final)
 - [NIST SP 800-53 Rev. 5 PDF](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf)
-
