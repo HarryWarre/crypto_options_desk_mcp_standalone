@@ -151,6 +151,11 @@ class BybitPrivateClient(BaseClient):
                 position_value=safe_float_optional(item.get("positionValue")),
                 initial_margin=safe_float_optional(item.get("positionIM")),
                 maintenance_margin=safe_float_optional(item.get("positionMM")),
+                position_idx=(
+                    int(item["positionIdx"])
+                    if item.get("positionIdx") not in (None, "")
+                    else None
+                ),
             )
             positions.append(position)
 

@@ -27,6 +27,7 @@ class Position:
     position_value: Optional[float] = None
     initial_margin: Optional[float] = None
     maintenance_margin: Optional[float] = None
+    position_idx: Optional[int] = None
 
 
 @dataclass

@@ -22,17 +22,27 @@ from .persistence import (
     snapshot_id_for,
     snapshot_record,
 )
+from .stream import (
+    BybitPrivateStreamError,
+    BybitPrivateWebSocket,
+    LiveMonitoringSession,
+    MonitoringSnapshotReducer,
+)
 from .tracker import BybitPositionSnapshotAdapter, MonitoringReport, PositionTracker
 
 __all__ = [
     "BybitPositionSnapshotAdapter",
+    "BybitPrivateStreamError",
+    "BybitPrivateWebSocket",
     "DecisionAction",
     "DecisionSeverity",
     "ExitDecision",
     "ExitDecisionEngine",
     "ExitPolicy",
     "JsonlSnapshotHistory",
+    "LiveMonitoringSession",
     "MonitoringReport",
+    "MonitoringSnapshotReducer",
     "PositionSide",
     "PositionSnapshot",
     "PositionTracker",

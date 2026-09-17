@@ -81,6 +81,20 @@ class PositionTracker:
             position_type=position_type.strip().lower(),
             as_of=captured_at,
         )
+        return self.evaluate_snapshot(snapshot, policies)
+
+    def evaluate_snapshot(
+        self,
+        snapshot: PositionSnapshot,
+        policies: Mapping[str, ExitPolicy] | None = None,
+    ) -> MonitoringReport:
+        """Evaluate a known snapshot without fetching it again.
+
+        This is the seam used by the live stream reducer after each delta.
+        Keeping it separate prevents a WebSocket event from triggering a REST
+        request for every UI update.
+        """
+
         observation_warnings = tuple(snapshot.issues)
         if snapshot.reconciliation_status != "complete":
             observation_warnings += (f"snapshot_{snapshot.reconciliation_status}",)
@@ -232,11 +246,11 @@ class BybitPositionSnapshotAdapter:
     def _dedupe_positions(
         positions: list[TrackedPosition], issues: list[str]
     ) -> list[TrackedPosition]:
-        by_key: dict[tuple[str, str], TrackedPosition] = {}
+        by_key: dict[tuple[str, str, int | None, str], TrackedPosition] = {}
         for position in positions:
-            key = (position.category, position.symbol)
+            key = (position.category, position.symbol, position.position_idx, position.side.value)
             if key in by_key:
-                issues.append(f"duplicate_position:{position.category}:{position.symbol}")
+                issues.append(f"duplicate_position:{position.category}:{position.symbol}:{position.position_idx}")
                 continue
             by_key[key] = position
         return list(by_key.values())
