@@ -14,6 +14,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from typing import Any, Literal
 
 SurfacePointStatus = Literal["observed", "interpolated", "extrapolated"]
@@ -402,6 +403,25 @@ def build_volatility_surface(
 
 
 def _normalize_observation(
+    raw: VolatilityObservation | Mapping[str, Any],
+    valuation_time: datetime,
+    config: SurfaceConfig,
+) -> tuple[_NormalizedObservation | None, SurfaceWarning | None]:
+    if isinstance(raw, VolatilityObservation):
+        return _normalize_observation_cached(raw, valuation_time, config)
+    return _normalize_observation_uncached(raw, valuation_time, config)
+
+
+@lru_cache(maxsize=100_000)
+def _normalize_observation_cached(
+    raw: VolatilityObservation,
+    valuation_time: datetime,
+    config: SurfaceConfig,
+) -> tuple[_NormalizedObservation | None, SurfaceWarning | None]:
+    return _normalize_observation_uncached(raw, valuation_time, config)
+
+
+def _normalize_observation_uncached(
     raw: VolatilityObservation | Mapping[str, Any],
     valuation_time: datetime,
     config: SurfaceConfig,

@@ -192,6 +192,34 @@ def test_scan_supports_multiple_assets_and_ranks_after_costs() -> None:
     assert result.data_timestamp == VALUATION_TIME
 
 
+def test_multi_leg_surface_excludes_every_candidate_leg() -> None:
+    universe = _universe(
+        _contract("BTC", 80, mark_iv=0.10),
+        _contract("BTC", 90, mark_iv=0.20),
+        _contract("BTC", 100, mark_iv=1.00),
+        _contract("BTC", 110, mark_iv=0.20),
+        _contract("BTC", 120, mark_iv=0.10),
+    )
+    result = scan_opportunities(
+        universe,
+        ScanRequest(
+            risk_free_rate=0.0,
+            assets=("BTC",),
+            strategies=("bull_call_vertical",),
+        ),
+    )
+
+    candidate = next(
+        item
+        for item in result.opportunities
+        if item.long_symbol == "BTC-90-C" and item.short_symbol == "BTC-100-C"
+    )
+    # The 90/100 legs are excluded, so both fitted values come from the
+    # remaining 80/110/120 points rather than using the 100-strike 100% IV.
+    assert candidate.legs[0].fair_iv == pytest.approx(0.14524385, abs=1e-7)
+    assert candidate.legs[1].fair_iv == pytest.approx(0.17612860, abs=1e-7)
+
+
 def test_theoretical_mode_values_missing_quote_without_executable_claims() -> None:
     target = replace(
         _contract("BTC", 100, mark_iv=0.15, ask=0.60, bid=0.50),

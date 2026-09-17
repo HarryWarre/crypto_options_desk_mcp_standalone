@@ -13,6 +13,7 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from itertools import combinations
 from typing import Literal
 
@@ -2405,6 +2406,7 @@ def _surface_observations(
             yield observation
 
 
+@lru_cache(maxsize=100_000)
 def _to_observation(
     contract: OptionContract,
     *,
