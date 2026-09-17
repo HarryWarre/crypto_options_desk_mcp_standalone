@@ -17,6 +17,7 @@ from .models import (
 from .persistence import (
     JsonlSnapshotHistory,
     SnapshotHistoryError,
+    SQLiteSnapshotHistory,
     compare_snapshot_records,
     snapshot_id_for,
     snapshot_record,
@@ -38,6 +39,7 @@ __all__ = [
     "RiskAssessment",
     "RiskMonitor",
     "RiskRuleResult",
+    "SQLiteSnapshotHistory",
     "SnapshotHistoryError",
     "ThesisStatus",
     "TrackedOrder",
