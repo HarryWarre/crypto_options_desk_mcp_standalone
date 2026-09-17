@@ -420,7 +420,65 @@ test("renders API payoff curve and estimated outcome metrics from a quick-scan r
   await expect(page.locator("#scenario-state")).toContainText("4 điểm payoff");
 });
 
+test("starts in the scanner workspace with a professional module sidebar", async ({ page }) => {
+  const sidebar = page.getByRole("complementary", { name: "Điều hướng workspace" });
+
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: "Scanner" })).toHaveAttribute("aria-current", "page");
+  await expect(sidebar.getByRole("link", { name: "Backtest" })).toBeVisible();
+  await expect(page.locator("#scanner-view")).toBeVisible();
+  await expect(page.locator("#backtest-view")).not.toBeVisible();
+  await expect(sidebar).toContainText("Sắp ra mắt");
+  await expect(sidebar.locator('[aria-disabled="true"]')).toHaveCount(2);
+});
+
+test("switches between scanner and backtest without stacking workspaces", async ({ page }) => {
+  const sidebar = page.getByRole("complementary", { name: "Điều hướng workspace" });
+
+  await sidebar.getByRole("link", { name: "Backtest" }).click();
+  await expect(page).toHaveURL(/#backtest$/);
+  await expect(sidebar.getByRole("link", { name: "Backtest" })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#backtest-view")).toBeVisible();
+  await expect(page.locator("#scanner-view")).not.toBeVisible();
+
+  await sidebar.getByRole("link", { name: "Scanner" }).click();
+  await expect(page).toHaveURL(/#scanner$/);
+  await expect(page.locator("#scanner-view")).toBeVisible();
+  await expect(page.locator("#backtest-view")).not.toBeVisible();
+});
+
+test("opens the backtest workspace from a deep link and preserves browser history", async ({ page }) => {
+  await page.goto("/#backtest");
+
+  const sidebar = page.getByRole("complementary", { name: "Điều hướng workspace" });
+  await expect(page.locator("#backtest-view")).toBeVisible();
+  await expect(page.locator("#scanner-view")).not.toBeVisible();
+  await expect(sidebar.getByRole("link", { name: "Backtest" })).toHaveAttribute("aria-current", "page");
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#scanner$/);
+  await expect(page.locator("#scanner-view")).toBeVisible();
+});
+
+test("keeps the workspace shell inside desktop and mobile viewports", async ({ page }) => {
+  for (const viewport of [
+    { width: 1280, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.reload();
+    await expect(page.locator(".app-shell")).toBeVisible();
+
+    const overflow = await page.locator(".app-shell").evaluate((shell) => ({
+      clientWidth: shell.clientWidth,
+      scrollWidth: shell.scrollWidth,
+    }));
+    expect(overflow.scrollWidth, `workspace shell overflows at ${viewport.width}px`).toBeLessThanOrEqual(overflow.clientWidth);
+  }
+});
+
 test("runs a historical backtest and renders exit reasons", async ({ page }) => {
+  await page.getByRole("link", { name: "Backtest" }).click();
   await page.route("**/api/v1/backtests", async (route) => {
     const body = route.request().postDataJSON();
     expect(body.assets).toEqual(["BTC"]);

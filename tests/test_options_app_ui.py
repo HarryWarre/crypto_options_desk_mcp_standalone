@@ -26,6 +26,13 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert '<script src="/static/app.js?v=20260917-2" defer></script>' in response.text
     assert '<link rel="stylesheet" href="/static/styles.css?v=20260917-2">' in response.text
     assert 'id="service-status"' in response.text
+    assert 'class="app-shell"' in response.text
+    assert 'aria-label="Điều hướng workspace"' in response.text
+    assert 'data-workspace-link href="#scanner"' in response.text
+    assert 'data-workspace-link href="#backtest"' in response.text
+    assert 'data-workspace-view="scanner"' in response.text
+    assert 'data-workspace-view="backtest"' in response.text
+    assert 'aria-disabled="true"' in response.text
     assert 'id="scan-terminal"' in response.text
     assert 'id="clear-terminal"' in response.text
     assert 'id="historical-context"' in response.text
@@ -84,6 +91,8 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert javascript.status_code == 200
     assert javascript.headers["content-type"].startswith("text/javascript")
     assert '"/api/v1/assets"' in javascript.text
+    assert "syncWorkspaceFromHash" in javascript.text
+    assert 'window.addEventListener("hashchange"' in javascript.text
     assert "/api/v1/opportunities/scan/stream" in javascript.text
     assert "legs" in javascript.text
     for field in ("symbol", "option_type", "strike", "expiry_at", "position"):

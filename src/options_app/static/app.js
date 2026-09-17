@@ -34,10 +34,51 @@ const backtestTradesBody = document.querySelector("#backtest-trades-body");
 const backtestProfitField = document.querySelector("#backtest-profit-field");
 const backtestStopField = document.querySelector("#backtest-stop-field");
 const backtestDteField = document.querySelector("#backtest-dte-field");
+const workspaceLinks = [...document.querySelectorAll("[data-workspace-link]")];
+const workspaceViews = [...document.querySelectorAll("[data-workspace-view]")];
+const moduleEyebrow = document.querySelector("#module-eyebrow");
+const moduleTitle = document.querySelector("#module-title");
+const moduleDescription = document.querySelector("#module-description");
 
 let selectedOpportunity = null;
 let activeScanContext = null;
 let activeScanValuationMode = "executable";
+
+const WORKSPACE_META = Object.freeze({
+  scanner: {
+    eyebrow: "Nghiên cứu quyền chọn / Scanner",
+    title: "Crypto Options Scanner",
+    description: "Tìm hợp đồng có chênh lệch giữa giá mô hình và giá có thể mua.",
+  },
+  backtest: {
+    eyebrow: "Nghiên cứu quyền chọn / Backtest",
+    title: "Historical Options Backtest",
+    description: "Replay tín hiệu trên archive snapshot để kiểm tra chất lượng và rủi ro.",
+  },
+});
+
+function syncWorkspaceFromHash() {
+  const requestedWorkspace = window.location.hash.slice(1).toLowerCase();
+  const workspace = Object.prototype.hasOwnProperty.call(WORKSPACE_META, requestedWorkspace)
+    ? requestedWorkspace
+    : "scanner";
+  if (!window.location.hash) window.history.replaceState(null, "", "#scanner");
+  const meta = WORKSPACE_META[workspace];
+
+  workspaceLinks.forEach((link) => {
+    const isActive = link.getAttribute("href") === `#${workspace}`;
+    link.classList.toggle("is-active", isActive);
+    if (isActive) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+  workspaceViews.forEach((view) => {
+    view.hidden = view.dataset.workspaceView !== workspace;
+  });
+  if (moduleEyebrow) moduleEyebrow.textContent = meta.eyebrow;
+  if (moduleTitle) moduleTitle.textContent = meta.title;
+  if (moduleDescription) moduleDescription.textContent = meta.description;
+  document.body.dataset.activeWorkspace = workspace;
+}
 
 const valuationModeInputs = [...form.querySelectorAll('input[name="valuation_mode"]')];
 const modeSensitiveInputNames = [
@@ -1279,6 +1320,9 @@ backtestForm.addEventListener("submit", async (event) => {
 });
 valuationModeInputs.forEach((input) => input.addEventListener("change", syncValuationModeInputs));
 syncValuationModeInputs();
+
+window.addEventListener("hashchange", syncWorkspaceFromHash);
+syncWorkspaceFromHash();
 
 clearTerminalButton.addEventListener("click", clearTerminal);
 

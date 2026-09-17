@@ -8,17 +8,63 @@
     <script src="/static/app.js?v=20260917-2" defer></script>
   </head>
   <body>
-    <header class="site-header">
-      <div>
-        <p class="eyebrow">Nghiên cứu quyền chọn</p>
-        <h1>Crypto Options Scanner</h1>
-        <p class="lede">Tìm hợp đồng có chênh lệch giữa giá mô hình và giá có thể mua.</p>
-        <p class="research-note">Tín hiệu nghiên cứu / paper trading; không phải khuyến nghị đầu tư.</p>
-      </div>
-      <div class="status-pill" id="service-status">Đang tải dữ liệu…</div>
-    </header>
+    <div class="app-shell">
+      <aside class="app-sidebar" aria-label="Điều hướng workspace">
+        <div class="sidebar-brand">
+          <div class="brand-mark" aria-hidden="true">F</div>
+          <div>
+            <p class="sidebar-kicker">Options research desk</p>
+            <strong>FlowSurface</strong>
+          </div>
+        </div>
+        <p class="sidebar-description">Một workspace rõ ràng cho định giá, tín hiệu và kiểm định.</p>
 
-    <main class="page-shell">
+        <nav class="workspace-nav" aria-label="Modules">
+          <p class="nav-label">Workspaces</p>
+          <a class="module-link" data-workspace-link href="#scanner" aria-label="Scanner">
+            <span class="module-icon" aria-hidden="true">⌕</span>
+            <span class="module-copy"><strong>Scanner</strong><small>Live opportunity scan</small></span>
+            <span class="module-status">01</span>
+          </a>
+          <a class="module-link" data-workspace-link href="#backtest" aria-label="Backtest">
+            <span class="module-icon" aria-hidden="true">↗</span>
+            <span class="module-copy"><strong>Backtest</strong><small>Historical replay</small></span>
+            <span class="module-status">02</span>
+          </a>
+        </nav>
+
+        <div class="future-modules">
+          <p class="nav-label">Coming next</p>
+          <div class="module-link module-link-disabled" aria-disabled="true">
+            <span class="module-icon" aria-hidden="true">∿</span>
+            <span class="module-copy"><strong>Volatility surface</strong><small>Sắp ra mắt</small></span>
+          </div>
+          <div class="module-link module-link-disabled" aria-disabled="true">
+            <span class="module-icon" aria-hidden="true">◌</span>
+            <span class="module-copy"><strong>Portfolio risk</strong><small>Sắp ra mắt</small></span>
+          </div>
+        </div>
+
+        <div class="sidebar-footer">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Research mode</span>
+          <small>Paper trading only</small>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="site-header">
+          <div>
+            <p class="eyebrow" id="module-eyebrow">Nghiên cứu quyền chọn / Scanner</p>
+            <h1 id="module-title">Crypto Options Scanner</h1>
+            <p class="lede" id="module-description">Tìm hợp đồng có chênh lệch giữa giá mô hình và giá có thể mua.</p>
+            <p class="research-note">Tín hiệu nghiên cứu / paper trading; không phải khuyến nghị đầu tư.</p>
+          </div>
+          <div class="status-pill" id="service-status">Đang tải dữ liệu…</div>
+        </header>
+
+        <main class="page-shell">
+          <div class="workspace-view" id="scanner-view" data-workspace-view="scanner">
       <section class="panel controls-panel">
         <div class="panel-heading">
           <div>
@@ -202,86 +248,6 @@
         </form>
       </section>
 
-      <section class="panel backtest-panel" id="backtest-panel" aria-labelledby="backtest-title">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Backtest</p>
-            <h2 id="backtest-title">Kiểm tra tín hiệu trên dữ liệu lịch sử</h2>
-            <p class="muted">Dùng archive snapshot Bybit đã lưu; không dùng dữ liệu live thay thế.</p>
-          </div>
-          <span class="badge" id="backtest-engine-badge">Snapshot replay</span>
-        </div>
-        <form id="backtest-form" class="backtest-form">
-          <div class="form-grid">
-            <label>Tài sản
-              <select id="backtest-asset" name="asset" required></select>
-            </label>
-            <label>Chiến lược backtest
-              <select id="backtest-strategy" name="strategy" aria-label="Chiến lược backtest">
-                <option value="long_call">Mua call</option>
-                <option value="long_put">Mua put</option>
-                <option value="call_vertical">Call spread</option>
-                <option value="put_vertical">Put spread</option>
-                <option value="iron_condor">Iron condor</option>
-                <option value="iron_butterfly">Iron butterfly</option>
-                <option value="long_straddle">Long straddle</option>
-                <option value="long_strangle">Long strangle</option>
-              </select>
-            </label>
-            <label>Từ ngày
-              <input id="backtest-start" name="start_time" type="datetime-local" value="2026-01-01T00:00" required>
-            </label>
-            <label>Đến ngày
-              <input id="backtest-end" name="end_time" type="datetime-local" value="2026-06-30T00:00" required>
-            </label>
-          </div>
-          <div class="form-grid">
-            <label>Quy tắc đóng lệnh
-              <select id="backtest-exit-policy" name="exit_policy">
-                <option value="hold_to_expiry">Giữ tới đáo hạn</option>
-                <option value="profit_target">Đóng khi đạt mục tiêu lời</option>
-                <option value="stop_loss">Đóng khi chạm mức lỗ</option>
-                <option value="min_dte">Đóng khi còn ít DTE</option>
-                <option value="end_of_test">Đóng tại cuối kỳ test</option>
-              </select>
-            </label>
-            <label id="backtest-profit-field">Mục tiêu lời (% rủi ro)
-              <input id="backtest-profit-target" name="profit_target_pct" type="number" min="0.01" step="0.01" value="0.5">
-            </label>
-            <label id="backtest-stop-field">Mức lỗ (% rủi ro)
-              <input id="backtest-stop-loss" name="stop_loss_pct" type="number" min="0.01" step="0.01" value="1">
-            </label>
-            <label id="backtest-dte-field">Đóng khi còn DTE
-              <input id="backtest-min-dte" name="min_dte_exit" type="number" min="0" step="1" value="3">
-            </label>
-          </div>
-          <div class="form-grid backtest-costs">
-            <label>Phí mỗi hợp đồng / mỗi chiều
-              <input id="backtest-fee" name="fee_per_contract" type="number" min="0" step="0.01" value="0">
-            </label>
-            <label>Trượt giá (bps)
-              <input id="backtest-slippage" name="slippage_bps" type="number" min="0" step="1" value="0">
-            </label>
-            <label>Khoảng cách tín hiệu (phút)
-              <input id="backtest-interval" name="signal_interval_minutes" type="number" min="1" step="1" value="60">
-            </label>
-          </div>
-          <div class="form-options">
-            <p class="scan-note">Kết quả gồm thời điểm vào/ra, lý do đóng lệnh, P&amp;L sau chi phí, drawdown và kiểm tra train/holdout.</p>
-            <button type="submit" class="primary-button" id="backtest-submit">Chạy backtest</button>
-          </div>
-        </form>
-        <div class="state-message" id="backtest-state">Cấu hình archive rồi chạy để xem kết quả.</div>
-        <div class="quality-note" id="backtest-quality" hidden></div>
-        <div class="detail-metrics" id="backtest-metrics"></div>
-        <div class="table-wrap">
-          <table class="backtest-table">
-            <thead><tr><th>Vào</th><th>Ra</th><th>Chiến lược</th><th>Lý do</th><th>Gross P&amp;L</th><th>Net P&amp;L</th><th>Return</th></tr></thead>
-            <tbody id="backtest-trades-body"></tbody>
-          </table>
-        </div>
-      </section>
-
       <section class="panel terminal-panel" aria-labelledby="terminal-title">
         <details class="technical-log">
           <summary><span class="eyebrow">Theo dõi</span> Chi tiết kỹ thuật của lần quét</summary>
@@ -368,6 +334,91 @@
           </div>
         </details>
       </section>
-    </main>
+          </div>
+
+          <div class="workspace-view" id="backtest-view" data-workspace-view="backtest" hidden>
+            <section class="panel backtest-panel" id="backtest-panel" aria-labelledby="backtest-title">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Backtest workspace</p>
+                  <h2 id="backtest-title">Kiểm tra tín hiệu trên dữ liệu lịch sử</h2>
+                  <p class="muted">Dùng archive snapshot Bybit đã lưu; không dùng dữ liệu live thay thế.</p>
+                </div>
+                <span class="badge" id="backtest-engine-badge">Snapshot replay</span>
+              </div>
+              <form id="backtest-form" class="backtest-form">
+                <div class="form-grid">
+                  <label>Tài sản
+                    <select id="backtest-asset" name="asset" required></select>
+                  </label>
+                  <label>Chiến lược backtest
+                    <select id="backtest-strategy" name="strategy" aria-label="Chiến lược backtest">
+                      <option value="long_call">Mua call</option>
+                      <option value="long_put">Mua put</option>
+                      <option value="call_vertical">Call spread</option>
+                      <option value="put_vertical">Put spread</option>
+                      <option value="iron_condor">Iron condor</option>
+                      <option value="iron_butterfly">Iron butterfly</option>
+                      <option value="long_straddle">Long straddle</option>
+                      <option value="long_strangle">Long strangle</option>
+                    </select>
+                  </label>
+                  <label>Từ ngày
+                    <input id="backtest-start" name="start_time" type="datetime-local" value="2026-01-01T00:00" required>
+                  </label>
+                  <label>Đến ngày
+                    <input id="backtest-end" name="end_time" type="datetime-local" value="2026-06-30T00:00" required>
+                  </label>
+                </div>
+                <div class="form-grid">
+                  <label>Quy tắc đóng lệnh
+                    <select id="backtest-exit-policy" name="exit_policy">
+                      <option value="hold_to_expiry">Giữ tới đáo hạn</option>
+                      <option value="profit_target">Đóng khi đạt mục tiêu lời</option>
+                      <option value="stop_loss">Đóng khi chạm mức lỗ</option>
+                      <option value="min_dte">Đóng khi còn ít DTE</option>
+                      <option value="end_of_test">Đóng tại cuối kỳ test</option>
+                    </select>
+                  </label>
+                  <label id="backtest-profit-field">Mục tiêu lời (% rủi ro)
+                    <input id="backtest-profit-target" name="profit_target_pct" type="number" min="0.01" step="0.01" value="0.5">
+                  </label>
+                  <label id="backtest-stop-field">Mức lỗ (% rủi ro)
+                    <input id="backtest-stop-loss" name="stop_loss_pct" type="number" min="0.01" step="0.01" value="1">
+                  </label>
+                  <label id="backtest-dte-field">Đóng khi còn DTE
+                    <input id="backtest-min-dte" name="min_dte_exit" type="number" min="0" step="1" value="3">
+                  </label>
+                </div>
+                <div class="form-grid backtest-costs">
+                  <label>Phí mỗi hợp đồng / mỗi chiều
+                    <input id="backtest-fee" name="fee_per_contract" type="number" min="0" step="0.01" value="0">
+                  </label>
+                  <label>Trượt giá (bps)
+                    <input id="backtest-slippage" name="slippage_bps" type="number" min="0" step="1" value="0">
+                  </label>
+                  <label>Khoảng cách tín hiệu (phút)
+                    <input id="backtest-interval" name="signal_interval_minutes" type="number" min="1" step="1" value="60">
+                  </label>
+                </div>
+                <div class="form-options">
+                  <p class="scan-note">Kết quả gồm thời điểm vào/ra, lý do đóng lệnh, P&amp;L sau chi phí, drawdown và kiểm tra train/holdout.</p>
+                  <button type="submit" class="primary-button" id="backtest-submit">Chạy backtest</button>
+                </div>
+              </form>
+              <div class="state-message" id="backtest-state">Cấu hình archive rồi chạy để xem kết quả.</div>
+              <div class="quality-note" id="backtest-quality" hidden></div>
+              <div class="detail-metrics" id="backtest-metrics"></div>
+              <div class="table-wrap">
+                <table class="backtest-table">
+                  <thead><tr><th>Vào</th><th>Ra</th><th>Chiến lược</th><th>Lý do</th><th>Gross P&amp;L</th><th>Net P&amp;L</th><th>Return</th></tr></thead>
+                  <tbody id="backtest-trades-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
   </body>
 </html>
