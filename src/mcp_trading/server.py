@@ -4,12 +4,13 @@ MCP Server for Quantitative Options Trading
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .orchestrator import get_orchestrator, _format_position
+from position_monitoring import ExitPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,37 @@ class UserPositionsParams(BaseModel):
     position_type: str = Field(
         default="option", description="option, linear, inverse, or all"
     )
+
+
+class ExitPolicyParams(BaseModel):
+    """Manual exit policy for one already-open position."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1)
+    stop_loss_price: float | None = Field(default=None, gt=0)
+    take_profit_price: float | None = Field(default=None, gt=0)
+    max_loss_amount: float | None = Field(default=None, gt=0)
+    max_loss_pct: float | None = Field(default=None, gt=0, le=1)
+    risk_budget: float | None = Field(default=None, gt=0)
+    max_holding_hours: float | None = Field(default=None, gt=0)
+    min_liquidation_distance_pct: float | None = Field(default=None, gt=0, le=1)
+    thesis_status: Literal["valid", "invalid", "unknown"] = "unknown"
+    opened_at: datetime | None = None
+    policy_id: str | None = None
+
+    def to_domain(self) -> ExitPolicy:
+        return ExitPolicy(**self.model_dump())
+
+
+class MonitorPositionsParams(BaseModel):
+    """Request parameters for the read-only position monitor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_coin: str = Field(default="BTC", min_length=1)
+    position_type: Literal["option", "linear", "inverse", "all"] = "all"
+    policies: List[ExitPolicyParams] = Field(default_factory=list)
 
 
 class MarketDataParams(BaseModel):
@@ -357,6 +389,29 @@ async def get_user_all_positions(params: UserPositionsParams) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@mcp.tool(
+    description=(
+        "Monitor manually executed positions and return read-only CLOSE, HOLD, or REVIEW decisions "
+        "with risk reasons and a human-reviewed close instruction"
+    )
+)
+async def monitor_positions(params: MonitorPositionsParams) -> Dict[str, Any]:
+    try:
+        policies = [policy.to_domain() for policy in params.policies]
+        return await orchestrator.monitor_positions(
+            params.base_coin,
+            params.position_type,
+            policies,
+        )
+    except (TypeError, ValueError) as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "context": "position_monitoring",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
 # ── Covered call ──
 
 
@@ -454,8 +509,8 @@ async def analyze_portfolio_strategies(
 async def get_server_info() -> Dict[str, Any]:
     return {
         "server_name": "Quant Trading Server",
-        "version": "2.1.0",
-        "tools_count": 22,
+        "version": "2.2.0",
+        "tools_count": 23,
         "categories": [
             "Options Flow (GEX, Vanna, Flow, Skew, Vol Surface)",
             "Technical Analysis",
@@ -463,6 +518,7 @@ async def get_server_info() -> Dict[str, Any]:
             "Market Data (Klines, Options Chain)",
             "Sentiment (Long/Short, OI, Funding)",
             "User Positions",
+            "Position Monitoring (read-only CLOSE, HOLD, REVIEW)",
             "Covered Call (IV-RV Spread, Signal)",
             "Strategy Analysis (Straddles, Strangles, Spreads)",
         ],
