@@ -28,6 +28,12 @@ from .stream import (
     LiveMonitoringSession,
     MonitoringSnapshotReducer,
 )
+from .notebook import TrackedNotebookPosition, TradeNotebookStore
+from .smart_monitor import (
+    SmartMonitorDecision,
+    SmartPositionEvaluation,
+    SmartPositionMonitor,
+)
 from .tracker import BybitPositionSnapshotAdapter, MonitoringReport, PositionTracker
 
 __all__ = [
@@ -50,10 +56,15 @@ __all__ = [
     "RiskMonitor",
     "RiskRuleResult",
     "SQLiteSnapshotHistory",
+    "SmartMonitorDecision",
+    "SmartPositionEvaluation",
+    "SmartPositionMonitor",
     "SnapshotHistoryError",
     "ThesisStatus",
+    "TrackedNotebookPosition",
     "TrackedOrder",
     "TrackedPosition",
+    "TradeNotebookStore",
     "compare_snapshot_records",
     "snapshot_id_for",
     "snapshot_record",

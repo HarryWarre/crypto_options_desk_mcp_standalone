@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -68,8 +69,17 @@ from options_lib.strategy_head_provenance import (
     StrategyRanking as ProvenanceStrategyRanking,
 )
 from options_lib.strategy_head_runtime import StrategyHeadRuntime, apply_strategy_decision
+from options_lib.strategy.builder import (
+    STRATEGY_TEMPLATES,
+    BuilderEvaluationResult,
+    BuilderLegInput,
+    build_template_legs_from_chain,
+    evaluate_builder_strategy,
+)
 from options_lib.volatility_surface import VolatilityObservation, build_volatility_surface
 from position_monitoring.models import ExitPolicy as PositionExitPolicy
+from position_monitoring.notebook import TrackedNotebookPosition, TradeNotebookStore
+from position_monitoring.smart_monitor import SmartPositionEvaluation, SmartPositionMonitor
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -707,6 +717,83 @@ class PositionMonitoringRequest(BaseModel):
         return normalized
 
 
+class BuilderLegRequest(BaseModel):
+    """One leg specification in strategy builder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    option_type: Literal["call", "put"]
+    strike: float = Field(gt=0)
+    expiry: str = Field(min_length=1)
+    iv: float = Field(default=0.80, gt=0)
+    spot: float = Field(gt=0)
+    position: int = Field(default=1)
+    mid_price: float = Field(default=0.0, ge=0)
+    bid: float = Field(default=0.0, ge=0)
+    ask: float = Field(default=0.0, ge=0)
+    risk_free_rate: float = Field(default=0.05, ge=0)
+    quantity: int = Field(default=1, ge=1)
+    symbol: str = ""
+
+
+class BuilderEvaluateRequest(BaseModel):
+    """Payload to evaluate a multi-leg options strategy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_type: str = "custom"
+    legs: list[BuilderLegRequest] = Field(min_length=1)
+    spot_range_pct: float = Field(default=0.30, gt=0, le=1.0)
+    risk_free_rate: float = Field(default=0.05, ge=0)
+
+
+class BuilderPopulateRequest(BaseModel):
+    """Request to auto-populate template legs from live chain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_type: str = Field(min_length=1)
+    asset: str = Field(default="BTC", min_length=1)
+    expiry: str | None = None
+
+
+class NotebookPositionCreateRequest(BaseModel):
+    """Request to create a tracked position in the trade notebook."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    asset: str = Field(default="BTC", min_length=1)
+    strategy_type: str = Field(default="custom", min_length=1)
+    legs: list[dict[str, Any]] = Field(min_length=1)
+    entry_spot: float = Field(gt=0)
+    target_profit_pct: float = Field(default=50.0, gt=0)
+    stop_loss_pct: float = Field(default=50.0, gt=0)
+    notes: str = ""
+    source: str = "manual"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class NotebookPositionUpdateRequest(BaseModel):
+    """Request to update notes or risk targets for a notebook position."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_profit_pct: float | None = Field(default=None, gt=0)
+    stop_loss_pct: float | None = Field(default=None, gt=0)
+    notes: str | None = None
+    status: Literal["open", "closed"] | None = None
+
+
+class NotebookPositionCloseRequest(BaseModel):
+    """Request to close an open position in the trade notebook."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    exit_spot: float | None = Field(default=None, gt=0)
+    exit_pnl: float | None = None
+    notes: str | None = None
+
+
 def create_app(
     adapter: ScannerAdapter | None = None,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult] = scan_opportunities,
@@ -717,6 +804,8 @@ def create_app(
     live_scan_interval_seconds: float = _LIVE_SCAN_INTERVAL_SECONDS,
     strategy_head: Any | None = None,
     strategy_head_loader: Callable[[Path], Any] | None = None,
+    notebook_store: TradeNotebookStore | None = None,
+    smart_monitor: SmartPositionMonitor | None = None,
 ) -> FastAPI:
     """Create the read-only scanner application with injectable boundaries."""
 
@@ -735,6 +824,8 @@ def create_app(
     run_backtest = backtest_runner or _default_backtest_runner
     run_monitoring = monitoring_runner or _default_monitoring_runner
     build_monitoring_stream = monitoring_stream_factory or _default_monitoring_stream
+    nb_store = notebook_store or TradeNotebookStore()
+    s_monitor = smart_monitor or SmartPositionMonitor()
     app = FastAPI(title="Crypto Options Scanner API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -1139,6 +1230,271 @@ def create_app(
                 await websocket.close(code=1011)
             except Exception:
                 logger.debug("Could not send the live monitoring error envelope", exc_info=True)
+
+    @app.get("/api/v1/options/chain/{asset}")
+    async def get_options_chain(asset: str) -> JSONResponse:
+        """Return available option chain contracts for an asset, grouped by expiry."""
+        asset_norm = asset.strip().upper()
+        try:
+            universe = await _maybe_await(market_adapter.load_universe(assets=(asset_norm,)))
+            contracts = universe.contracts_by_asset.get(asset_norm, ())
+            spot = float(universe.spot_prices.get(asset_norm, 0.0) if hasattr(universe, "spot_prices") else 0.0)
+            if spot <= 0 and contracts:
+                spot = float(getattr(contracts[0], "underlying_price", 0.0) or 0.0)
+
+            contract_dicts = []
+            expiries = set()
+            for c in contracts:
+                exp = c.expiry.isoformat() if hasattr(c.expiry, "isoformat") else str(c.expiry)
+                expiries.add(exp[:10])
+                bid = float(c.bid or 0.0)
+                ask = float(c.ask or 0.0)
+                mid = (bid + ask) / 2.0 if (bid + ask) > 0 else float(getattr(c, "mark_price", 0.0) or 0.0)
+                contract_dicts.append({
+                    "symbol": c.symbol,
+                    "option_type": c.option_type,
+                    "strike": float(c.strike),
+                    "expiry": exp,
+                    "bid": bid,
+                    "ask": ask,
+                    "mid_price": round(mid, 4),
+                    "iv": float(getattr(c, "mark_iv", 0.80) or 0.80),
+                    "open_interest": float(getattr(c, "open_interest", 0.0) or 0.0),
+                    "volume_24h": float(getattr(c, "volume_24h", 0.0) or 0.0),
+                })
+            return JSONResponse(
+                content={
+                    "asset": asset_norm,
+                    "spot": spot,
+                    "expiries": sorted(expiries),
+                    "contracts": contract_dicts,
+                    "valuation_time": universe.valuation_time.isoformat() if hasattr(universe, "valuation_time") else datetime.now(UTC).isoformat(),
+                }
+            )
+        except Exception as exc:
+            logger.exception("[OPTIONS] failed to fetch options chain for %s", asset_norm)
+            raise ApiError(500, "chain_fetch_failed", f"Failed to fetch chain for {asset_norm}") from exc
+
+    @app.get("/api/v1/builder/templates")
+    async def get_builder_templates() -> JSONResponse:
+        """Return catalog of supported multi-leg strategy templates."""
+        return JSONResponse(content={"templates": STRATEGY_TEMPLATES})
+
+    @app.post("/api/v1/builder/populate")
+    async def populate_builder_template(request: BuilderPopulateRequest) -> JSONResponse:
+        """Auto-populate legs from live option chain for a template."""
+        asset_norm = request.asset.strip().upper()
+        try:
+            universe = await _maybe_await(market_adapter.load_universe(assets=(asset_norm,)))
+            contracts = universe.contracts_by_asset.get(asset_norm, ())
+            spot = float(universe.spot_prices.get(asset_norm, 0.0) if hasattr(universe, "spot_prices") else 0.0)
+            if spot <= 0 and contracts:
+                spot = float(getattr(contracts[0], "underlying_price", 0.0) or 0.0)
+
+            contract_dicts = [
+                {
+                    "symbol": c.symbol,
+                    "option_type": c.option_type,
+                    "strike": float(c.strike),
+                    "expiry": c.expiry.isoformat() if hasattr(c.expiry, "isoformat") else str(c.expiry),
+                    "bid": float(c.bid or 0.0),
+                    "ask": float(c.ask or 0.0),
+                    "mark_price": float(getattr(c, "mark_price", 0.0) or 0.0),
+                    "iv": float(getattr(c, "mark_iv", 0.80) or 0.80),
+                }
+                for c in contracts
+            ]
+
+            legs = build_template_legs_from_chain(
+                strategy_type=request.strategy_type,
+                spot=spot,
+                contracts=contract_dicts,
+                expiry_filter=request.expiry,
+            )
+
+            return JSONResponse(
+                content={
+                    "strategy_type": request.strategy_type,
+                    "asset": asset_norm,
+                    "spot": spot,
+                    "legs": [
+                        {
+                            "symbol": leg.symbol,
+                            "option_type": leg.option_type,
+                            "strike": leg.strike,
+                            "expiry": leg.expiry.isoformat(),
+                            "iv": leg.iv,
+                            "spot": leg.spot,
+                            "position": leg.position,
+                            "mid_price": leg.mid_price,
+                            "bid": leg.bid,
+                            "ask": leg.ask,
+                            "quantity": leg.quantity,
+                        }
+                        for leg in legs
+                    ],
+                }
+            )
+        except ValueError as exc:
+            raise ApiError(400, "builder_populate_invalid", str(exc)) from exc
+        except Exception as exc:
+            logger.exception("[OPTIONS] failed to populate template %s", request.strategy_type)
+            raise ApiError(500, "builder_populate_failed", str(exc)) from exc
+
+    @app.post("/api/v1/builder/evaluate")
+    async def evaluate_builder(request: BuilderEvaluateRequest) -> JSONResponse:
+        """Evaluate a multi-leg options strategy."""
+        try:
+            domain_legs = []
+            for leg in request.legs:
+                if "T" in leg.expiry:
+                    exp_dt = datetime.fromisoformat(leg.expiry.replace("Z", "+00:00"))
+                else:
+                    exp_dt = datetime.fromisoformat(f"{leg.expiry}T08:00:00+00:00")
+
+                domain_legs.append(
+                    BuilderLegInput(
+                        option_type=leg.option_type,
+                        strike=leg.strike,
+                        expiry=exp_dt,
+                        iv=leg.iv,
+                        spot=leg.spot,
+                        position=leg.position,
+                        mid_price=leg.mid_price,
+                        bid=leg.bid,
+                        ask=leg.ask,
+                        risk_free_rate=leg.risk_free_rate or request.risk_free_rate,
+                        quantity=leg.quantity,
+                        symbol=leg.symbol,
+                    )
+                )
+
+            result = evaluate_builder_strategy(
+                legs=domain_legs,
+                strategy_type=request.strategy_type,
+                spot_range_pct=request.spot_range_pct,
+                risk_free_rate=request.risk_free_rate,
+            )
+            return JSONResponse(content=result.to_dict())
+        except ValueError as exc:
+            raise ApiError(400, "builder_evaluate_invalid", str(exc)) from exc
+        except Exception as exc:
+            logger.exception("[OPTIONS] failed to evaluate builder strategy")
+            raise ApiError(500, "builder_evaluate_failed", str(exc)) from exc
+
+    @app.get("/api/v1/notebook/positions")
+    async def list_notebook_positions(
+        status: str | None = None,
+        asset: str | None = None,
+    ) -> JSONResponse:
+        """List tracked trade notebook positions."""
+        positions = nb_store.list_positions(status=status, asset=asset)
+        return JSONResponse(content={"positions": [p.to_dict() for p in positions]})
+
+    @app.post("/api/v1/notebook/positions")
+    async def create_notebook_position(request: NotebookPositionCreateRequest) -> JSONResponse:
+        """Save a new trade to the notebook."""
+        pos_id = str(uuid.uuid4())[:8]
+        pos = TrackedNotebookPosition(
+            id=pos_id,
+            created_at=datetime.now(UTC).isoformat(),
+            asset=request.asset.upper(),
+            strategy_type=request.strategy_type,
+            legs=request.legs,
+            entry_spot=request.entry_spot,
+            target_profit_pct=request.target_profit_pct,
+            stop_loss_pct=request.stop_loss_pct,
+            status="open",
+            notes=request.notes,
+            source=request.source,
+            metadata=request.metadata,
+        )
+        saved = nb_store.save_position(pos)
+        return JSONResponse(content={"position": saved.to_dict()}, status_code=201)
+
+    @app.get("/api/v1/notebook/positions/{position_id}")
+    async def get_notebook_position(position_id: str) -> JSONResponse:
+        """Get a single tracked trade."""
+        pos = nb_store.get_position(position_id)
+        if pos is None:
+            raise ApiError(404, "position_not_found", f"Notebook position {position_id} not found")
+        return JSONResponse(content={"position": pos.to_dict()})
+
+    @app.put("/api/v1/notebook/positions/{position_id}")
+    async def update_notebook_position(
+        position_id: str,
+        request: NotebookPositionUpdateRequest,
+    ) -> JSONResponse:
+        """Update risk targets or notes for a trade."""
+        updates = {k: v for k, v in request.model_dump().items() if v is not None}
+        pos = nb_store.update_position(position_id, **updates)
+        if pos is None:
+            raise ApiError(404, "position_not_found", f"Notebook position {position_id} not found")
+        return JSONResponse(content={"position": pos.to_dict()})
+
+    @app.post("/api/v1/notebook/positions/{position_id}/close")
+    async def close_notebook_position(
+        position_id: str,
+        request: NotebookPositionCloseRequest,
+    ) -> JSONResponse:
+        """Close an open trade in the notebook."""
+        pos = nb_store.close_position(
+            position_id,
+            exit_spot=request.exit_spot,
+            exit_pnl=request.exit_pnl,
+            notes=request.notes,
+        )
+        if pos is None:
+            raise ApiError(404, "position_not_found", f"Notebook position {position_id} not found")
+        return JSONResponse(content={"position": pos.to_dict()})
+
+    @app.delete("/api/v1/notebook/positions/{position_id}")
+    async def delete_notebook_position(position_id: str) -> JSONResponse:
+        """Delete a trade from the notebook."""
+        deleted = nb_store.delete_position(position_id)
+        if not deleted:
+            raise ApiError(404, "position_not_found", f"Notebook position {position_id} not found")
+        return JSONResponse(content={"deleted": True})
+
+    @app.get("/api/v1/notebook/monitor")
+    async def monitor_notebook() -> JSONResponse:
+        """Smart monitor pass on all open notebook positions."""
+        open_positions = nb_store.list_positions(status="open")
+        assets = list(dict.fromkeys(p.asset for p in open_positions))
+
+        spot_map: dict[str, float] = {}
+        contracts_map: dict[str, dict[str, Any]] = {}
+
+        if assets:
+            try:
+                universe = await _maybe_await(market_adapter.load_universe(assets=tuple(assets)))
+                for a in assets:
+                    s = universe.spot_prices.get(a, 0.0) if hasattr(universe, "spot_prices") else 0.0
+                    cs = universe.contracts_by_asset.get(a, ())
+                    if s <= 0 and cs:
+                        s = float(getattr(cs[0], "underlying_price", 0.0) or 0.0)
+                    spot_map[a] = s
+                    for c in cs:
+                        contracts_map[c.symbol] = {
+                            "bid": float(c.bid or 0.0),
+                            "ask": float(c.ask or 0.0),
+                            "mark_price": float(getattr(c, "mark_price", 0.0) or 0.0),
+                            "iv": float(getattr(c, "mark_iv", 0.80) or 0.80),
+                        }
+            except Exception:
+                logger.warning("[OPTIONS] could not fetch live quotes for smart monitor; using theoretical pricing")
+
+        evaluations = s_monitor.evaluate_all(
+            positions=open_positions,
+            spot_map=spot_map,
+            contracts_map=contracts_map,
+        )
+        return JSONResponse(
+            content={
+                "evaluations": [e.to_dict() for e in evaluations],
+                "evaluated_at": datetime.now(UTC).isoformat(),
+            }
+        )
 
     return app
 
@@ -1861,8 +2217,14 @@ def _opportunity_value(opportunity: Any, names: tuple[str, ...]) -> Any | None:
 __all__ = [
     "BacktestExitPolicyRequest",
     "BacktestRequest",
+    "BuilderEvaluateRequest",
+    "BuilderLegRequest",
+    "BuilderPopulateRequest",
     "ExecutionAssumptionsRequest",
     "MarketScenarioRequest",
+    "NotebookPositionCloseRequest",
+    "NotebookPositionCreateRequest",
+    "NotebookPositionUpdateRequest",
     "PositionMonitoringPolicyRequest",
     "PositionMonitoringRequest",
     "ScanFilters",
