@@ -917,3 +917,75 @@ def test_credit_verticals_reject_itm_short_leg() -> None:
     assert not bear_call_result.opportunities
     assert any("short_leg_itm" in item.reasons for item in bear_call_result.rejections)
 
+
+def test_scan_request_validates_moneyness_bounds() -> None:
+    with pytest.raises(ValueError, match="min_moneyness cannot exceed max_moneyness"):
+        ScanRequest(risk_free_rate=0.0, min_moneyness=1.2, max_moneyness=0.8)
+
+    with pytest.raises(ValueError, match="min_moneyness cannot be negative"):
+        ScanRequest(risk_free_rate=0.0, min_moneyness=-0.1)
+
+
+def test_scanner_filters_deep_otm_strikes_by_moneyness() -> None:
+    # Spot is 100.
+    # Strike 50 -> moneyness = 0.50 (e.g. HYPE Put K50 when spot is ~91)
+    # Strike 90 -> moneyness = 0.90
+    # Strike 110 -> moneyness = 1.10
+    # Strike 160 -> moneyness = 1.60
+    contracts = [
+        _contract("HYPE", 50, option_type="Put", ask=0.05, bid=0.01),
+        _contract("HYPE", 90, option_type="Put", ask=2.0, bid=1.8),
+        _contract("HYPE", 110, option_type="Call", ask=2.0, bid=1.8),
+        _contract("HYPE", 160, option_type="Call", ask=0.05, bid=0.01),
+    ]
+    # Set spot_price to 100 for all
+    contracts = [replace(c, spot_price=100.0) for c in contracts]
+
+    result = scan_opportunities(
+        _universe(*contracts),
+        ScanRequest(
+            assets=("HYPE",),
+            risk_free_rate=0.0,
+            strategies=("long_put", "long_call"),
+            min_moneyness=0.70,
+            max_moneyness=1.30,
+            valuation_mode="synthetic",
+        ),
+    )
+
+    rejection_reasons_by_strike = {
+        item.strike: item.reasons for item in result.rejections
+    }
+    assert "moneyness_below_minimum" in rejection_reasons_by_strike.get(50, ())
+    assert "moneyness_above_maximum" in rejection_reasons_by_strike.get(160, ())
+
+
+def test_multi_leg_long_strangle_excludes_deep_otm_strikes_with_moneyness_bounds() -> None:
+    # Spot is 100.
+    # Put 50 (deep OTM), Put 90 (near ATM OTM), Call 110 (near ATM OTM), Call 160 (deep OTM)
+    contracts = [
+        replace(_contract("HYPE", 50, option_type="Put", ask=0.05, bid=0.01), spot_price=100.0),
+        replace(_contract("HYPE", 90, option_type="Put", ask=2.0, bid=1.8), spot_price=100.0),
+        replace(_contract("HYPE", 110, option_type="Call", ask=2.0, bid=1.8), spot_price=100.0),
+        replace(_contract("HYPE", 160, option_type="Call", ask=0.05, bid=0.01), spot_price=100.0),
+    ]
+
+    result = scan_opportunities(
+        _universe(*contracts),
+        ScanRequest(
+            assets=("HYPE",),
+            risk_free_rate=0.0,
+            strategies=("long_strangle",),
+            min_moneyness=0.70,
+            max_moneyness=1.30,
+            valuation_mode="synthetic",
+        ),
+    )
+
+    # Any resulting opportunities or valid multi-leg sets must not contain K50 or K160
+    for opp in result.opportunities:
+        strikes = [leg.strike for leg in opp.legs]
+        assert 50 not in strikes, f"Strike 50 should be excluded by moneyness: {strikes}"
+        assert 160 not in strikes, f"Strike 160 should be excluded by moneyness: {strikes}"
+
+

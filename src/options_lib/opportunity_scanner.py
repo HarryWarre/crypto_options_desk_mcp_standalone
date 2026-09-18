@@ -84,6 +84,8 @@ class ScanRequest:
     min_volume_24h: float = 0.0
     min_open_interest: float = 0.0
     max_spread_pct: float | None = None
+    min_moneyness: float | None = None
+    max_moneyness: float | None = None
     min_iv_edge: float = 0.0
     min_edge_after_costs: float = 0.0
     max_loss: float | None = None
@@ -110,6 +112,8 @@ class ScanRequest:
             "min_volume_24h",
             "min_open_interest",
             "max_spread_pct",
+            "min_moneyness",
+            "max_moneyness",
             "min_iv_edge",
             "min_edge_after_costs",
             "max_loss",
@@ -132,6 +136,12 @@ class ScanRequest:
             and self.min_delta > self.max_delta
         ):
             raise ValueError("min_delta cannot exceed max_delta")
+        if (
+            self.min_moneyness is not None
+            and self.max_moneyness is not None
+            and self.min_moneyness > self.max_moneyness
+        ):
+            raise ValueError("min_moneyness cannot exceed max_moneyness")
         if self.max_delta is not None and self.max_delta > 1:
             raise ValueError("max_delta cannot exceed 1")
         if self.max_spread_pct is not None and self.max_spread_pct > 1:
@@ -1456,9 +1466,17 @@ def _same_expiry_strategy_leg_sets(
                 (c for c in calls if c.strike > (spot or c.spot_price)),
                 key=lambda c: c.strike,
             )
-            for put_leg in otm_puts:
-                for call_leg in otm_calls:
-                    yield put_leg, call_leg
+            pairs = [
+                (put_leg, call_leg)
+                for put_leg in otm_puts
+                for call_leg in otm_calls
+            ]
+            if spot > 0.0:
+                pairs.sort(
+                    key=lambda pair: abs(pair[0].strike - spot) + abs(pair[1].strike - spot)
+                )
+            for put_leg, call_leg in pairs:
+                yield put_leg, call_leg
         elif strategy in {"butterfly", "broken_wing_butterfly"}:
             for option_legs in (puts, calls):
                 for lower, middle, upper in combinations(option_legs, 3):
@@ -1761,12 +1779,21 @@ def _iron_butterfly_leg_sets(
     for body_strike in body_strikes:
         short_put = puts_by_strike[body_strike]
         short_call = calls_by_strike[body_strike]
-        for put_wing in puts:
-            if put_wing.strike >= body_strike:
-                break
-            for call_wing in calls:
-                if call_wing.strike > body_strike:
-                    yield (put_wing, short_put, short_call, call_wing)
+        put_wings = sorted((p for p in puts if p.strike < body_strike), key=lambda p: -p.strike)
+        call_wings = sorted((c for c in calls if c.strike > body_strike), key=lambda c: c.strike)
+        wing_pairs = [
+            (pw, cw)
+            for pw in put_wings
+            for cw in call_wings
+        ]
+        wing_pairs.sort(
+            key=lambda pair: (
+                0 if abs((body_strike - pair[0].strike) - (pair[1].strike - body_strike)) < 1e-6 else 1,
+                abs(body_strike - pair[0].strike) + abs(pair[1].strike - body_strike),
+            )
+        )
+        for put_wing, call_wing in wing_pairs:
+            yield (put_wing, short_put, short_call, call_wing)
 
 
 def _scan_multi_leg_candidate(
@@ -2477,6 +2504,12 @@ def _precheck(
             reasons.append("volume_below_minimum")
         if candidate.open_interest < request.min_open_interest:
             reasons.append("open_interest_below_minimum")
+        if candidate.spot_price > 0:
+            moneyness = candidate.strike / candidate.spot_price
+            if request.min_moneyness is not None and moneyness < request.min_moneyness:
+                reasons.append("moneyness_below_minimum")
+            if request.max_moneyness is not None and moneyness > request.max_moneyness:
+                reasons.append("moneyness_above_maximum")
         mid = _positive_quote_mid(candidate.bid_price, candidate.ask_price)
         if request.valuation_mode == "executable":
             if mid is not None:

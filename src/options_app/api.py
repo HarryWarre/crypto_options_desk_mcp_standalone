@@ -319,6 +319,8 @@ class ScanFilters(BaseModel):
     min_volume_24h: float = Field(default=0, ge=0)
     min_open_interest: float = Field(default=0, ge=0)
     max_spread_pct: float | None = Field(default=None, ge=0, le=1)
+    min_moneyness: float | None = Field(default=None, ge=0)
+    max_moneyness: float | None = Field(default=None, ge=0)
     min_iv_edge: float = 0
     min_edge_after_costs: float = 0
     min_expected_value: float | None = Field(default=_DEFAULT_MIN_EXPECTED_VALUE, ge=0)
@@ -341,6 +343,8 @@ class ScanFilters(BaseModel):
         "min_volume_24h",
         "min_open_interest",
         "max_spread_pct",
+        "min_moneyness",
+        "max_moneyness",
         "min_iv_edge",
         "min_edge_after_costs",
         "min_expected_value",
@@ -409,6 +413,12 @@ class ScanFilters(BaseModel):
             and self.min_delta > self.max_delta
         ):
             raise ValueError("min_delta cannot exceed max_delta")
+        if (
+            self.min_moneyness is not None
+            and self.max_moneyness is not None
+            and self.min_moneyness > self.max_moneyness
+        ):
+            raise ValueError("min_moneyness cannot exceed max_moneyness")
         return self
 
     def to_scan_request(self) -> ScanRequest:
@@ -438,6 +448,10 @@ class ScanFilters(BaseModel):
                 values["min_dte"] = horizon_min
             if self.max_dte is None:
                 values["max_dte"] = horizon_max
+            if self.min_moneyness is None:
+                values["min_moneyness"] = 0.70
+            if self.max_moneyness is None:
+                values["max_moneyness"] = 1.30
         values["assets"] = tuple(values["assets"])
         values["strategies"] = tuple(values["strategies"])
         if "min_expected_value" in {field.name for field in fields(ScanRequest)}:

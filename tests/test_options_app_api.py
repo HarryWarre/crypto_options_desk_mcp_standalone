@@ -1680,3 +1680,87 @@ async def test_adapter_failures_have_stable_gateway_errors(
             "message": "Upstream market data request failed",
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_scan_filters_validates_moneyness_bounds() -> None:
+    app = create_app(adapter=FakeAdapter())
+    response = await request(
+        app,
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "risk_free_rate": 0.05,
+            "assets": ["BTC"],
+            "strategies": ["long_call"],
+            "min_moneyness": 1.5,
+            "max_moneyness": 0.8,
+        },
+    )
+    assert response.status_code == 422
+
+    response_negative = await request(
+        app,
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "risk_free_rate": 0.05,
+            "assets": ["BTC"],
+            "strategies": ["long_call"],
+            "min_moneyness": -0.5,
+        },
+    )
+    assert response_negative.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_simple_scan_defaults_moneyness_bounds_and_forwards_to_scanner() -> None:
+    scan_requests: list[ScanRequest] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: ScanRequest) -> ScanResult:
+        scan_requests.append(scan_request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    app = create_app(adapter=FakeAdapter(), scanner=fake_scanner)
+
+    # Simple scan: market_view and time_horizon provided without moneyness
+    response = await request(
+        app,
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "market_view": "sideways",
+            "time_horizon": "7_30",
+        },
+    )
+    assert response.status_code == 200
+    assert len(scan_requests) == 1
+    # Check default moneyness bounds for simple scan
+    assert scan_requests[0].min_moneyness == 0.70
+    assert scan_requests[0].max_moneyness == 1.30
+
+    # Custom scan with explicit moneyness
+    response_custom = await request(
+        app,
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={
+            "assets": ["BTC"],
+            "strategies": ["long_call"],
+            "min_moneyness": 0.85,
+            "max_moneyness": 1.15,
+        },
+    )
+    assert response_custom.status_code == 200
+    assert len(scan_requests) == 2
+    assert scan_requests[1].min_moneyness == 0.85
+    assert scan_requests[1].max_moneyness == 1.15
+

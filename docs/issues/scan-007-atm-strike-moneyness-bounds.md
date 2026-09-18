@@ -1,6 +1,6 @@
 # SCAN-007 — ATM Proximity & Moneyness Bounds for Option Strike Selection
 
-Status: in-progress  
+Status: verified  
 Branch: `feat/scanner-strike-moneyness-bounds`  
 Target: `main`  
 
@@ -47,8 +47,9 @@ When scanning for option opportunities (particularly multi-leg strategies such a
 
 ## Acceptance Criteria
 
-- [ ] `ScanRequest` supports filtering by strike moneyness (`min_moneyness`, `max_moneyness`) and/or delta proximity to prevent deep OTM/ITM phantom strikes.
-- [ ] Multi-leg strategy generators (`long_strangle`, `butterfly`, `iron_condor`, etc.) only generate candidate leg combinations within realistic moneyness and strike distance bounds around spot.
-- [ ] Scanner excludes deep OTM strikes (e.g., Put K50 when spot is ~91) unless the user explicitly expands moneyness/delta filters.
-- [ ] Automated tests verify that contracts far away from ATM are filtered out and multi-leg combinations do not pair extreme strikes.
-- [ ] Web UI and API handle moneyness/strike proximity gracefully with sensible default values.
+- [x] `ScanRequest` supports filtering by strike moneyness (`min_moneyness`, `max_moneyness`) and/or delta proximity to prevent deep OTM/ITM phantom strikes.
+- [x] Multi-leg strategy generators (`long_strangle`, `butterfly`, `iron_condor`, etc.) only generate candidate leg combinations within realistic moneyness and strike distance bounds around spot.
+- [x] Scanner excludes deep OTM strikes (e.g., Put K50 when spot is ~91) unless the user explicitly expands moneyness/delta filters.
+- [x] Automated tests verify that contracts far away from ATM are filtered out and multi-leg combinations do not pair extreme strikes.
+- [x] Web UI and API handle moneyness/strike proximity gracefully with sensible default values.
+

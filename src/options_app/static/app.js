@@ -1524,6 +1524,8 @@ function scanPayloadFromForm() {
     Object.assign(payload, {
       min_delta: optionalNumber(data, "min_delta"),
       max_delta: optionalNumber(data, "max_delta"),
+      min_moneyness: optionalNumber(data, "min_moneyness"),
+      max_moneyness: optionalNumber(data, "max_moneyness"),
       min_volume_24h: Number(data.get("min_volume_24h")),
       min_open_interest: Number(data.get("min_open_interest")),
       max_spread_pct: optionalDecimal(data, "max_spread_pct", 100),
