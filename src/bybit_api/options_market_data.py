@@ -241,6 +241,8 @@ class BybitOptionMarketDataAdapter:
             len(issues),
         )
         as_of = fixed_valuation_time or ensure_utc_datetime(self._now_fn())
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=UTC)
         return NormalizedOptionUniverse(
             assets=catalog.assets,
             contracts=tuple(contracts),

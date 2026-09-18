@@ -1634,6 +1634,14 @@ async def _execute_scan(
             logger.exception("[OPTIONS] strategy head loading failed")
             model_load_reason = "model_load_failed"
 
+    runtime_valuation_time = (
+        universe.valuation_time
+        if universe.valuation_time.tzinfo is not None
+        else universe.valuation_time.replace(tzinfo=UTC)
+    )
+    if universe.valuation_time.tzinfo is None:
+        universe = replace(universe, valuation_time=runtime_valuation_time)
+
     runtime = StrategyHeadRuntime(
         model if head_mode == "automatic" else None,
         min_ranking_score=config.min_ranking_score,
@@ -1646,14 +1654,14 @@ async def _execute_scan(
         market_context=_market_context_from_universe(universe),
         manual_strategies=scan_request.strategies,
         fallback_strategies=fallback_strategies,
-        now=universe.valuation_time,
+        now=runtime_valuation_time,
     )
     if model_load_reason is not None:
         decision = replace(decision, reason_codes=(*decision.reason_codes, model_load_reason))
     effective_request = apply_strategy_decision(scan_request, decision)
     provenance = _provenance_for_runtime_decision(
         decision,
-        as_of=universe.valuation_time,
+        as_of=runtime_valuation_time,
         mode=head_mode,
     )
 
@@ -1706,7 +1714,11 @@ def _default_strategy_head_loader(path: Path) -> Any:
 def _market_context_from_universe(universe: NormalizedOptionUniverse) -> MarketContext:
     """Build the head's point-in-time features from the loaded quote universe."""
 
-    valuation_time = universe.valuation_time
+    valuation_time = (
+        universe.valuation_time
+        if universe.valuation_time.tzinfo is not None
+        else universe.valuation_time.replace(tzinfo=UTC)
+    )
     contracts = tuple(universe.contracts)
     underlying_prices = _valid_contract_values(contracts, "spot_price", positive=True)
     mark_ivs = _valid_contract_values(contracts, "mark_iv", positive=True)
@@ -1720,9 +1732,25 @@ def _market_context_from_universe(universe: NormalizedOptionUniverse) -> MarketC
         if bid is not None and ask is not None
     ]
     dtes = [
-        max(0.0, (contract.expiry_at - valuation_time).total_seconds() / 86_400.0)
+        max(
+            0.0,
+            (
+                (
+                    contract.expiry_at
+                    if contract.expiry_at.tzinfo is not None
+                    else contract.expiry_at.replace(tzinfo=UTC)
+                )
+                - valuation_time
+            ).total_seconds()
+            / 86_400.0,
+        )
         for contract in contracts
-        if contract.expiry_at.tzinfo is not None and contract.expiry_at > valuation_time
+        if (
+            contract.expiry_at
+            if contract.expiry_at.tzinfo is not None
+            else contract.expiry_at.replace(tzinfo=UTC)
+        )
+        > valuation_time
     ]
     complete_quotes = [
         contract
