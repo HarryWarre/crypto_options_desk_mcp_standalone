@@ -565,8 +565,9 @@ body {
 .btn-scanner-action:hover { border-color: var(--accent); color: var(--accent); }
 .text-success { color: var(--accent) !important; }
 .text-danger { color: var(--danger) !important; }
-.text-warning { color: #ffe682 !important; }
+.explanation-symbol { font-size: .84rem; margin-top: 4px; letter-spacing: .02em; }
 .explanation-card-actions { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08); flex-wrap: wrap; }
+.explanation-card-actions .btn-scanner-action { font-size: .82rem; margin-left: 0; padding: 6px 12px; }
 
 @media (max-width: 960px) {
   .builder-main-grid { grid-template-columns: 1fr; }

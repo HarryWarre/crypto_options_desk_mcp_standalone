@@ -469,7 +469,9 @@ function legExpiryLabel(leg, item) {
     minute: "2-digit",
     timeZone: "Asia/Ho_Chi_Minh",
   });
-  return `Hết hạn ${date} ${time}`;
+  const dte = Number(firstDefined(leg?.dte, item?.dte));
+  const dteText = Number.isFinite(dte) ? ` · Còn ${Math.max(0, Math.round(dte))} ngày` : "";
+  return `Hết hạn ${date} ${time}${dteText}`;
 }
 
 function renderInstrumentCell(row, item) {
@@ -728,21 +730,32 @@ function renderOpportunityExplanation(item, index) {
   }
   card.appendChild(heading);
 
+  const symbolText = opportunitySymbol(item);
+  if (symbolText && symbolText !== "—" && symbolText !== "Mã chưa có") {
+    const symbolLine = document.createElement("div");
+    symbolLine.className = "explanation-symbol muted";
+    symbolLine.textContent = `${firstDefined(item?.asset, "—")} · ${symbolText}`;
+    card.appendChild(symbolLine);
+  }
+
   const takeaway = document.createElement("p");
   takeaway.className = "explanation-takeaway";
   takeaway.textContent = strategyTakeaway(item, legs);
   card.appendChild(takeaway);
 
   const legList = document.createElement("div");
-  legList.className = "explanation-legs";
-  legs.forEach((leg) => {
+  legList.className = "explanation-legs leg-summary";
+  legs.forEach((leg, idx) => {
     const position = inferredLegPosition(item?.strategy, leg, legs);
     const legLine = document.createElement("span");
     legLine.className = position > 0 ? "buy-leg" : "sell-leg";
     const action = position > 0 ? "Mua" : "Bán";
     const strike = legStrike(leg);
     const strikeText = Number.isFinite(Number(strike)) ? `K${number(strike, 2)}` : "—";
-    legLine.textContent = `${action} ${optionTypeLabel(leg)} ${strikeText} · ${legExpiryLabel(leg, item)}`;
+    const legSym = legSymbol(leg);
+    const symText = legSym && legSym !== "—" ? ` · ${legSym}` : "";
+    const prefix = legs.length > 1 ? `Chân ${idx + 1}: ` : "";
+    legLine.textContent = `${prefix}${action} ${optionTypeLabel(leg)} ${strikeText}${symText} · ${legExpiryLabel(leg, item)}`;
     legList.appendChild(legLine);
   });
   card.appendChild(legList);
@@ -752,8 +765,20 @@ function renderOpportunityExplanation(item, index) {
   const edge = Number(fairValueEdge(item));
   const facts = document.createElement("div");
   facts.className = "explanation-facts";
+
+  let entryPriceText = signedPriceLabel(executablePrice);
+  if (theoretical) {
+    entryPriceText = Number.isFinite(Number(item?.market_mid))
+      ? `Tham khảo ${number(item?.market_mid)}`
+      : "Không có giá khớp";
+  } else if (synthetic) {
+    entryPriceText = Number.isFinite(Number(item?.market_mid))
+      ? `Giả định ${number(item?.market_mid, 4)} (${signedPriceLabel(executablePrice)})`
+      : signedPriceLabel(executablePrice);
+  }
+
   facts.append(
-    explanationFact(synthetic ? "Giá vào mô hình" : "Tiền vào/ra ước tính", theoretical ? "Không có giá khớp" : signedPriceLabel(executablePrice), modelMode ? "theoretical-value" : ""),
+    explanationFact(synthetic ? "Giá vào mô hình" : "Tiền vào/ra ước tính", entryPriceText, modelMode ? "theoretical-value" : ""),
     explanationFact("Mô hình định giá", signedPriceLabel(fairPrice), modelMode ? "theoretical-value" : ""),
     explanationFact("Edge fair value sau phí", theoretical ? "Không tính" : Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "Không có dữ liệu", modelMode ? "theoretical-value" : edge >= 0 ? "positive" : "negative"),
     explanationFact(modelMode ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), modelMode ? "theoretical-value" : ""),
@@ -763,6 +788,7 @@ function renderOpportunityExplanation(item, index) {
     explanationFact("Xác suất hòa vốn", estimateProbability(breakEvenWinProbability(item)), modelMode ? "theoretical-value" : ""),
     explanationFact(modelMode ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), modelMode ? "theoretical-value" : "negative"),
     explanationFact("Evidence", evidenceStatusLabel(evidenceStatus(item)), ""),
+    explanationFact("Thanh khoản", `OI ${number(item?.open_interest, 0)} · Vol ${number(item?.volume_24h, 0)}`, ""),
   );
   const historicalRate = historicalWinRate(item);
   if (historicalRate !== undefined) {
@@ -810,7 +836,13 @@ function renderOpportunityExplanation(item, index) {
   const viewPayoffBtn = document.createElement("button");
   viewPayoffBtn.type = "button";
   viewPayoffBtn.className = "btn-scanner-action";
-  viewPayoffBtn.textContent = "📈 Xem Payoff chi tiết";
+  if (synthetic) {
+    viewPayoffBtn.textContent = "📈 Xem payoff tổng hợp";
+  } else if (theoretical) {
+    viewPayoffBtn.textContent = "📈 Xem payoff mô hình";
+  } else {
+    viewPayoffBtn.textContent = "📈 Xem payoff / P&L";
+  }
   viewPayoffBtn.addEventListener("click", () => showOpportunityDetail(item));
 
   actions.append(openBuilderBtn, saveNbBtn, viewPayoffBtn);
@@ -1390,16 +1422,7 @@ function renderHistoricalContext(contexts) {
 }
 
 function renderScanRejections(rejections) {
-  const items = Array.isArray(rejections) ? rejections : [];
-  items.forEach((rejection) => {
-    const item = document.createElement("div");
-    const symbol = firstDefined(rejection?.symbol, rejection?.asset, "candidate");
-    const reason = rejectionReason(rejection);
-    const messages = Array.isArray(rejection?.messages) ? rejection.messages.join(" · ") : "";
-    item.textContent = `Loại ${symbol}: ${reasonLabel(reason)}${messages ? ` — ${messages}` : ""}`;
-    item.className = "error";
-    secondaryResults.appendChild(item);
-  });
+  // Filtered candidate rejection logs are suppressed from UI to eliminate clutter.
 }
 
 async function getJson(path, options = {}) {
@@ -1877,7 +1900,7 @@ function stopLiveFeed() {
 function renderResults(payload) {
   activeScanValuationMode = payload.valuation_mode || payload.scan_context?.valuation_mode || "executable";
   activeScanContext = payload.scan_context || null;
-  resultsBody.replaceChildren();
+  if (resultsBody) resultsBody.replaceChildren();
   secondaryResults.replaceChildren();
   opportunityExplanations.replaceChildren();
   renderScanContext(payload.scan_context);
@@ -1898,66 +1921,12 @@ function renderResults(payload) {
     }
   }
   if (resultsTableWrap) {
-    resultsTableWrap.hidden = !opportunities.length;
+    resultsTableWrap.hidden = true;
   }
   if (!opportunities.length) setState("Không có cơ hội đạt đủ điều kiện hiện tại.");
   else setState(`${opportunities.length} cơ hội đạt điều kiện.`);
   opportunities.forEach((item, index) => {
     opportunityExplanations.appendChild(renderOpportunityExplanation(item, index));
-    const row = document.createElement("tr");
-    renderInstrumentCell(row, item);
-    cell(row, expiryLabel(item));
-    cell(row, strategyLabel(item.strategy));
-    const theoretical = isTheoreticalMode(item.valuation_mode || activeScanValuationMode);
-    const synthetic = isSyntheticMode(item.valuation_mode || activeScanValuationMode);
-    const modelMode = theoretical || synthetic;
-    const hasQuote = synthetic
-      ? Number.isFinite(Number(item.bid_price)) && Number.isFinite(Number(item.ask_price))
-      : Number(item.bid_price) > 0 && Number(item.ask_price) > 0;
-    const quoteLabel = hasQuote
-      ? synthetic
-        ? `Giả định ${number(item.market_mid)}`
-        : `Tham khảo ${number(item.market_mid)}`
-      : "—";
-    cell(row, modelMode ? quoteLabel : number(item.market_mid), modelMode ? "theoretical-value" : "");
-    cell(row, number(item.fair_price), modelMode ? "theoretical-value" : "");
-    cell(row, percent(item.iv_edge), item.iv_edge >= 0 ? "positive" : "negative");
-    const edge = Number(fairValueEdge(item));
-    cell(row, theoretical ? "Không tính" : Number.isFinite(edge) ? number(edge) : "Không có dữ liệu", theoretical ? "theoretical-value" : Number.isFinite(edge) && edge >= 0 ? "positive" : "negative");
-    cell(row, theoretical ? `Mô hình ${number(item.max_loss)}` : synthetic ? `Ước tính ${number(item.max_loss)}` : number(item.max_loss), modelMode ? "theoretical-value" : "");
-    cell(row, `OI ${number(item.open_interest, 0)} · Vol ${number(item.volume_24h, 0)}`);
-    const actionCell = document.createElement("td");
-    const detailButton = document.createElement("button");
-    detailButton.type = "button";
-    detailButton.className = "secondary-button compact-button";
-    if (synthetic) {
-      detailButton.textContent = "Xem payoff tổng hợp";
-      detailButton.addEventListener("click", () => showOpportunityDetail(item));
-    } else if (theoretical) {
-      detailButton.textContent = "Xem payoff mô hình";
-      detailButton.addEventListener("click", () => showOpportunityDetail(item));
-    } else {
-      detailButton.textContent = "Xem payoff / P&L";
-      detailButton.addEventListener("click", () => showOpportunityDetail(item));
-    }
-    actionCell.appendChild(detailButton);
-
-    const builderBtn = document.createElement("button");
-    builderBtn.type = "button";
-    builderBtn.className = "btn-scanner-action";
-    builderBtn.textContent = "🛠 Mở trong Builder";
-    builderBtn.addEventListener("click", () => openOpportunityInBuilder(item));
-    actionCell.appendChild(builderBtn);
-
-    const notebookBtn = document.createElement("button");
-    notebookBtn.type = "button";
-    notebookBtn.className = "btn-scanner-action";
-    notebookBtn.textContent = "➕ Lưu Sổ tay";
-    notebookBtn.addEventListener("click", () => saveOpportunityToNotebook(item));
-    actionCell.appendChild(notebookBtn);
-
-    row.appendChild(actionCell);
-    resultsBody.appendChild(row);
   });
   (payload.asset_failures || []).forEach((failure) => {
     const item = document.createElement("div");
@@ -1965,7 +1934,6 @@ function renderResults(payload) {
     item.className = "error";
     secondaryResults.appendChild(item);
   });
-  renderScanRejections(payload.rejections);
   dataStatus.textContent = payload.data_timestamp ? `Dữ liệu: ${new Date(payload.data_timestamp).toLocaleString("vi-VN")}` : "Đã nhận dữ liệu";
 }
 

@@ -376,7 +376,7 @@ test("scans successfully without entering maximum loss (unconstrained loss)", as
   await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
 
   await expect(page.locator("#result-state")).toContainText("1 cơ hội");
-  await expect(page.locator("#results-body tr")).toHaveCount(1);
+  await expect(page.locator("#opportunity-explanations .explanation-card")).toHaveCount(1);
   await expect(page.locator("#scan-context")).toContainText("không giới hạn");
   expect(submittedPayload.max_loss).toBeNull();
 });
@@ -498,11 +498,11 @@ test("submits a backend-compatible quick-scan payload and renders results", asyn
     include_unvalidated: true,
   });
 
-  await expect(page.locator("#results-body")).toContainText(opportunity.symbol);
-  await expect(page.locator("#results-body")).toContainText("30/10/2026");
-  await expect(page.locator("#results-body")).toContainText("Còn 45 ngày");
+  await expect(page.locator("#opportunity-explanations")).toContainText(opportunity.symbol);
+  await expect(page.locator("#opportunity-explanations")).toContainText("30/10/2026");
+  await expect(page.locator("#opportunity-explanations")).toContainText("Còn 45 ngày");
   await expect(page.locator("#opportunity-explanations")).toContainText("Kỳ vọng BTC tăng giá");
-  await expect(page.locator("#results-table-wrap")).toBeVisible();
+  await expect(page.locator("#opportunity-explanations")).toBeVisible();
   await expect(page.locator("#result-state")).toContainText("1");
 });
 
@@ -518,7 +518,7 @@ test("opts into theoretical valuation and labels the result as non-executable", 
 
   await expect(page.locator("#valuation-mode-notice")).toBeVisible();
   await expect(page.locator("#valuation-mode-notice")).toContainText("fair value mô hình");
-  await expect(page.locator("#results-body")).toContainText("Tham khảo");
+  await expect(page.locator("#opportunity-explanations")).toContainText("Tham khảo");
   await expect(page.getByRole("button", { name: "Xem payoff mô hình" })).toBeEnabled();
   await expect(page.locator("#opportunity-explanations")).toContainText("Hết hạn 30/10/2026");
   await expect(page.locator("#opportunity-explanations")).toContainText("EV mô hình");
@@ -543,8 +543,8 @@ test("opts into synthetic quotes and calculates the full estimated metrics", asy
 
   await expect(page.locator("#valuation-mode-notice")).toBeVisible();
   await expect(page.locator("#valuation-mode-notice")).toContainText("spread giả định");
-  await expect(page.locator("#results-body")).toContainText("Giả định");
-  await expect(page.locator("#results-body")).toContainText("0.004");
+  await expect(page.locator("#opportunity-explanations")).toContainText("Giả định");
+  await expect(page.locator("#opportunity-explanations")).toContainText("0.004");
   await expect(page.getByRole("button", { name: "Xem payoff tổng hợp" })).toBeEnabled();
   await page.getByRole("button", { name: "Xem payoff tổng hợp" }).click();
   await expect(page.locator("#detail-metrics")).toContainText("Lỗ tối đa (mô hình)");
@@ -623,8 +623,8 @@ test("explains an empty scan result", async ({ page }) => {
 
   await expect(page.locator("#result-state")).toBeVisible();
   await expect(page.locator("#result-state")).toContainText("Không có cơ hội");
-  await expect(page.locator("#results-body tr")).toHaveCount(0);
-  await expect(page.locator("#results-table-wrap")).toBeHidden();
+  await expect(page.locator("#opportunity-explanations .explanation-card")).toHaveCount(0);
+  await expect(page.locator("#opportunity-explanations")).toBeHidden();
   await expect(page.locator("#results-guide")).toBeHidden();
   await expect(page.locator("#valuation-mode-notice")).toBeHidden();
   await expect(page.locator("#historical-context")).toBeHidden();
