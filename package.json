@@ -9,6 +9,12 @@
     "test": "tests"
   },
   "scripts": {
+    "start": "uv run --python 3.11 uvicorn options_app.api:create_app --factory --reload",
+    "dev": "uv run --python 3.11 uvicorn options_app.api:create_app --factory --reload",
+    "mcp": "uv run --python 3.11 trading-mcp",
+    "setup": "uv venv --python 3.11 && uv pip install -e .",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "uv run --python 3.11 pytest",
     "test:e2e": "playwright test"
   },
   "repository": {
