@@ -673,9 +673,7 @@ function renderOpportunityExplanation(item, index) {
     const action = position > 0 ? "Mua" : "Bán";
     const strike = legStrike(leg);
     const strikeText = Number.isFinite(Number(strike)) ? `K${number(strike, 2)}` : "—";
-    const expiry = legExpiry(leg);
-    const expiryText = expiry ? ` (${formatDate(expiry)})` : "";
-    legLine.textContent = `${action} ${optionTypeLabel(leg)} ${strikeText}${expiryText}`;
+    legLine.textContent = `${action} ${optionTypeLabel(leg)} ${strikeText} · ${legExpiryLabel(leg, item)}`;
     legList.appendChild(legLine);
   });
   card.appendChild(legList);
