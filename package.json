@@ -15,7 +15,9 @@
     "setup": "uv venv --python 3.11 && uv pip install -e .",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "uv run --no-sync pytest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "browser:agent": "jev-browser run",
+    "jev": "jev run"
   },
   "repository": {
     "type": "git",
