@@ -876,3 +876,44 @@ def test_scan_request_rejects_invalid_filters(field: str, value: float) -> None:
     kwargs = {field: value, "risk_free_rate": 0.0}
     with pytest.raises(ValueError):
         ScanRequest(**kwargs)
+
+
+def test_iron_condor_rejects_itm_short_puts_when_spot_below_strike() -> None:
+    # User's case: Spot is 0.07, strikes are 0.08, 0.09, 0.10, 0.12.
+    # Short put at 0.09 is ITM! Must not generate an iron condor.
+    contracts = [
+        replace(_contract("DOGE", 0.08, option_type="Put", ask=0.015, bid=0.014), spot_price=0.07),
+        replace(_contract("DOGE", 0.09, option_type="Put", ask=0.022, bid=0.020), spot_price=0.07),
+        replace(_contract("DOGE", 0.10, option_type="Call", ask=0.005, bid=0.004), spot_price=0.07),
+        replace(_contract("DOGE", 0.12, option_type="Call", ask=0.002, bid=0.001), spot_price=0.07),
+    ]
+    result = scan_opportunities(
+        _universe(*contracts),
+        ScanRequest(risk_free_rate=0.0, strategies=("iron_condor",)),
+    )
+    assert not result.opportunities
+    assert any("missing_put_wing" in item.reasons for item in result.rejections)
+
+
+def test_credit_verticals_reject_itm_short_leg() -> None:
+    # Bull put with short put at 110 when spot is 100 is ITM
+    contracts = [
+        _contract("BTC", 90, option_type="Put", ask=1.0, bid=0.9),
+        _contract("BTC", 110, option_type="Put", ask=12.0, bid=11.0),
+        _contract("BTC", 90, option_type="Call", ask=12.0, bid=11.0),
+        _contract("BTC", 110, option_type="Call", ask=1.0, bid=0.9),
+    ]
+    bull_put_result = scan_opportunities(
+        _universe(*contracts),
+        ScanRequest(risk_free_rate=0.0, strategies=("bull_put_vertical",)),
+    )
+    assert not bull_put_result.opportunities
+    assert any("short_leg_itm" in item.reasons for item in bull_put_result.rejections)
+
+    bear_call_result = scan_opportunities(
+        _universe(*contracts),
+        ScanRequest(risk_free_rate=0.0, strategies=("bear_call_vertical",)),
+    )
+    assert not bear_call_result.opportunities
+    assert any("short_leg_itm" in item.reasons for item in bear_call_result.rejections)
+

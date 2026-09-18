@@ -648,7 +648,15 @@ function renderOpportunityExplanation(item, index) {
     : theoretical
     ? `${legs.length} chân · Theoretical`
     : `${legs.length} chân`;
-  heading.append(title, badge);
+  const popVal = firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit);
+  if (popVal !== undefined && popVal !== null && Number.isFinite(Number(popVal))) {
+    const popBadge = document.createElement("span");
+    popBadge.className = `badge ${popVal >= 0.60 ? "positive" : popVal < 0.40 ? "negative" : ""}`.trim();
+    popBadge.textContent = `PoP: ${(Number(popVal) * 100).toFixed(0)}%`;
+    heading.append(title, badge, popBadge);
+  } else {
+    heading.append(title, badge);
+  }
   card.appendChild(heading);
 
   const takeaway = document.createElement("p");
@@ -664,14 +672,17 @@ function renderOpportunityExplanation(item, index) {
     legLine.className = position > 0 ? "buy-leg" : "sell-leg";
     const action = position > 0 ? "Mua" : "Bán";
     const strike = legStrike(leg);
-    legLine.textContent = `${action} K${strike === undefined ? "—" : number(strike, 2)} ${optionTypeLabel(leg)} · ${legExpiryLabel(leg, item)}`;
+    const strikeText = Number.isFinite(Number(strike)) ? `K${number(strike, 2)}` : "—";
+    const expiry = legExpiry(leg);
+    const expiryText = expiry ? ` (${formatDate(expiry)})` : "";
+    legLine.textContent = `${action} ${optionTypeLabel(leg)} ${strikeText}${expiryText}`;
     legList.appendChild(legLine);
   });
   card.appendChild(legList);
 
-  const executablePrice = firstDefined(item?.estimated_entry, item?.executable_entry, item?.market_mid);
-  const fairPrice = firstDefined(item?.fair_price);
-  const edge = Number(item?.edge_after_costs);
+  const executablePrice = firstDefined(item?.executable_entry, item?.ask_price);
+  const fairPrice = item?.fair_price;
+  const edge = item?.edge_after_costs;
   const facts = document.createElement("div");
   facts.className = "explanation-facts";
   facts.append(
@@ -679,7 +690,7 @@ function renderOpportunityExplanation(item, index) {
     explanationFact("Mô hình định giá", signedPriceLabel(fairPrice), modelMode ? "theoretical-value" : ""),
     explanationFact("Edge sau phí", theoretical ? "Không tính" : Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${number(edge, 4)}` : "—", modelMode ? "theoretical-value" : edge >= 0 ? "positive" : "negative"),
     explanationFact(modelMode ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), modelMode ? "theoretical-value" : ""),
-    explanationFact(modelMode ? "Xác suất có lãi (mô hình)" : "Xác suất có lãi", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), modelMode ? "theoretical-value" : ""),
+    explanationFact(modelMode ? "Xác suất lãi PoP (mô hình)" : "Xác suất lãi (PoP mô hình)", estimateProbability(popVal), modelMode ? "theoretical-value" : (popVal >= 0.60 ? "positive" : "")),
     explanationFact(modelMode ? "RR (mô hình)" : "RR", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), modelMode ? "theoretical-value" : ""),
     explanationFact(modelMode ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), modelMode ? "theoretical-value" : "negative"),
   );
@@ -691,7 +702,14 @@ function renderOpportunityExplanation(item, index) {
   const breakevens = Array.isArray(item?.breakevens) ? item.breakevens : [];
   const parts = [];
   if (maxProfit !== undefined && maxProfit !== null) parts.push(`${modelMode ? "Lãi tối đa (mô hình)" : "Lãi tối đa"}: ${number(maxProfit, 2)}`);
-  if (breakevens.length) parts.push(`Hòa vốn: ${breakevens.map((value) => `K${number(value, 2)}`).join(" và ")}`);
+  if (breakevens.length) {
+    parts.push(`Hòa vốn: ${breakevens.map((value) => `K${number(value, 2)}`).join(" và ")}`);
+    const spot = item?.spot_price;
+    if (spot && Number.isFinite(Number(spot)) && Number(spot) > 0) {
+      const minMove = Math.min(...breakevens.map((b) => Math.abs(Number(b) - Number(spot)) / Number(spot) * 100));
+      parts.push(`Cần biến động: ≥${minMove.toFixed(1)}%`);
+    }
+  }
   parts.push(`${modelMode ? "IV edge mô hình" : "IV edge"}: ${percent(item?.iv_edge)}`);
   extra.textContent = parts.join(" · ");
   card.appendChild(extra);
@@ -921,7 +939,7 @@ function renderPayoffDetail(item) {
   detailMetrics.append(
     metric("Ngày đáo hạn", opportunityExpiry(item) ? expiryLabel(item) : "Không có dữ liệu"),
     metric(modelMode ? "EV mô hình" : "EV ước tính", estimatedNumber(firstDefined(item?.estimated_ev, item?.expected_value, item?.ev)), modelMode ? "theoretical-value" : ""),
-    metric(modelMode ? "Xác suất có lãi (mô hình)" : "Xác suất có lãi (ước tính)", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), modelMode ? "theoretical-value" : ""),
+    metric(modelMode ? "Xác suất lãi PoP (mô hình)" : "Xác suất lãi (PoP mô hình)", estimateProbability(firstDefined(item?.win_probability, item?.win_rate, item?.probability_of_profit)), modelMode ? "theoretical-value" : ""),
     metric(modelMode ? "RR (mô hình)" : "RR (ước tính)", estimateRatio(firstDefined(item?.rr, item?.risk_reward, item?.risk_reward_ratio)), modelMode ? "theoretical-value" : ""),
     metric(modelMode ? "Lỗ tối đa (mô hình)" : "Lỗ tối đa", estimatedNumber(item?.max_loss), modelMode ? "theoretical-value" : "negative"),
     metric(modelMode ? "Lãi tối đa (mô hình)" : "Lãi tối đa", estimatedNumber(item?.max_profit), modelMode ? "theoretical-value" : "positive"),

@@ -1198,6 +1198,34 @@ def _scan_verticals(
                     )
                     continue
                 long_leg, short_leg = _vertical_legs(strategy, first, second)
+                spot = first.spot_price
+                if spot > 0.0:
+                    if strategy == "bull_put_vertical" and short_leg.strike > spot:
+                        rejections.append(
+                            _vertical_rejection(
+                                strategy,
+                                long_leg,
+                                short_leg,
+                                ("short_leg_itm",),
+                                (
+                                    f"Bull put credit vertical requires short put strike ({short_leg.strike:g}) <= spot ({spot:g})",
+                                ),
+                            )
+                        )
+                        continue
+                    if strategy == "bear_call_vertical" and short_leg.strike < spot:
+                        rejections.append(
+                            _vertical_rejection(
+                                strategy,
+                                long_leg,
+                                short_leg,
+                                ("short_leg_itm",),
+                                (
+                                    f"Bear call credit vertical requires short call strike ({short_leg.strike:g}) >= spot ({spot:g})",
+                                ),
+                            )
+                        )
+                        continue
                 long_rejection = _precheck(
                     long_leg,
                     request,
@@ -1362,13 +1390,25 @@ def _same_expiry_strategy_leg_sets(
         if strategy == "long_straddle":
             calls_by_strike = {item.strike: item for item in calls}
             puts_by_strike = {item.strike: item for item in puts}
-            for strike in sorted(set(calls_by_strike) & set(puts_by_strike)):
+            common_strikes = sorted(set(calls_by_strike) & set(puts_by_strike))
+            spot = contracts[0].spot_price if contracts else 0.0
+            if spot > 0.0 and common_strikes:
+                common_strikes = sorted(common_strikes, key=lambda s: abs(s - spot))
+            for strike in common_strikes:
                 yield puts_by_strike[strike], calls_by_strike[strike]
         elif strategy == "long_strangle":
-            for put_leg in puts:
-                for call_leg in calls:
-                    if put_leg.strike < put_leg.spot_price < call_leg.strike:
-                        yield put_leg, call_leg
+            spot = contracts[0].spot_price if contracts else 0.0
+            otm_puts = sorted(
+                (p for p in puts if p.strike < (spot or p.spot_price)),
+                key=lambda p: -p.strike,
+            )
+            otm_calls = sorted(
+                (c for c in calls if c.strike > (spot or c.spot_price)),
+                key=lambda c: c.strike,
+            )
+            for put_leg in otm_puts:
+                for call_leg in otm_calls:
+                    yield put_leg, call_leg
         elif strategy in {"butterfly", "broken_wing_butterfly"}:
             for option_legs in (puts, calls):
                 for lower, middle, upper in combinations(option_legs, 3):
@@ -1642,8 +1682,15 @@ def _iron_condor_leg_sets(
     )
     for put_wing, short_put in combinations(puts, 2):
         for short_call, call_wing in combinations(calls, 2):
-            if put_wing.strike < short_put.strike < short_call.strike < call_wing.strike:
-                yield (put_wing, short_put, short_call, call_wing)
+            spot = put_wing.spot_price
+            if spot > 0.0:
+                if (
+                    put_wing.strike < short_put.strike < spot < short_call.strike < call_wing.strike
+                ):
+                    yield (put_wing, short_put, short_call, call_wing)
+            else:
+                if put_wing.strike < short_put.strike < short_call.strike < call_wing.strike:
+                    yield (put_wing, short_put, short_call, call_wing)
 
 
 def _iron_butterfly_leg_sets(
@@ -1658,6 +1705,9 @@ def _iron_butterfly_leg_sets(
     calls_by_strike = {item.strike: item for item in calls}
     puts_by_strike = {item.strike: item for item in puts}
     body_strikes = sorted(set(calls_by_strike) & set(puts_by_strike))
+    spot = contracts[0].spot_price if contracts else 0.0
+    if spot > 0.0 and body_strikes:
+        body_strikes = sorted(body_strikes, key=lambda s: abs(s - spot))
     for body_strike in body_strikes:
         short_put = puts_by_strike[body_strike]
         short_call = calls_by_strike[body_strike]
