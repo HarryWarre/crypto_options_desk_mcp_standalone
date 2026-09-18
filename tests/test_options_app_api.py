@@ -1773,7 +1773,7 @@ async def test_bot_paper_trading_endpoints() -> None:
     res_status = await request(app, "GET", "/api/v1/bot/status?account_id=ic_btc_paper")
     assert res_status.status_code == 200
     data = res_status.json()
-    assert "account" in data
+    assert "portfolio" in data
     assert "margin" in data
     assert "open_positions" in data
 

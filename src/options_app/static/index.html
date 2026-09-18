@@ -566,6 +566,95 @@
                 <div class="market-strip-empty">Bật live feed để nhận quote option liên tục.</div>
               </div>
 
+              <!-- AUTOMATED OPTIONS BOT CONTROL & MONITORING PANEL -->
+              <article class="desk-panel bot-panel" id="bot-panel" aria-labelledby="bot-panel-title">
+                <div class="desk-panel-heading bot-panel-header">
+                  <div class="bot-header-left">
+                    <span class="desk-panel-label">EXECUTION ENGINE</span>
+                    <h3 id="bot-panel-title">
+                      <span class="bot-icon" aria-hidden="true">🤖</span>
+                      Automated Iron Condor Bot
+                      <span class="bot-badge bot-badge-idle" id="bot-status-badge">IDLE</span>
+                    </h3>
+                  </div>
+                  <div class="bot-controls">
+                    <button type="button" class="btn-bot btn-bot-toggle" id="bot-btn-toggle">Bật Bot (Start)</button>
+                    <button type="button" class="btn-bot btn-bot-cycle" id="bot-btn-cycle">Quét ngay (Cycle)</button>
+                    <button type="button" class="btn-bot btn-bot-close" id="bot-btn-close">Đóng hết (Close All)</button>
+                    <button type="button" class="btn-bot btn-bot-reset" id="bot-btn-reset">Reset Ví</button>
+                  </div>
+                </div>
+
+                <!-- Bot Stat Grid -->
+                <div class="bot-stat-grid" id="bot-stat-grid">
+                  <div class="bot-stat-card">
+                    <span class="bot-stat-label">VỐN KHẢ DỤNG (EQUITY)</span>
+                    <strong class="bot-stat-value" id="bot-stat-equity">$10,000.00</strong>
+                    <small class="bot-stat-sub" id="bot-stat-cash">Cash: $10,000.00</small>
+                  </div>
+                  <div class="bot-stat-card">
+                    <span class="bot-stat-label">LÃI/LỖ CHƯA CHỐT (UNREALIZED)</span>
+                    <strong class="bot-stat-value" id="bot-stat-unrealized">$0.00</strong>
+                    <small class="bot-stat-sub" id="bot-stat-compounded">Đã chốt: $0.00</small>
+                  </div>
+                  <div class="bot-stat-card">
+                    <span class="bot-stat-label">SỬ DỤNG MARGIN (PMM)</span>
+                    <strong class="bot-stat-value" id="bot-stat-margin">0.0%</strong>
+                    <div class="bot-margin-meter-wrap">
+                      <div class="bot-margin-meter" id="bot-margin-meter" style="width: 0%"></div>
+                    </div>
+                  </div>
+                  <div class="bot-stat-card">
+                    <span class="bot-stat-label">TRẠNG THÁI CHU KỲ (CYCLE)</span>
+                    <strong class="bot-stat-value" id="bot-stat-cycle-status">WAITING</strong>
+                    <small class="bot-stat-sub" id="bot-stat-cycle-time">Chưa quét</small>
+                  </div>
+                </div>
+
+                <!-- Active 4-Legs Iron Condor Container -->
+                <div class="bot-condor-wrap" id="bot-condor-wrap">
+                  <div class="bot-condor-meta" id="bot-condor-meta">
+                    <div class="condor-meta-title">
+                      <span>VỊ THẾ HIỆN TẠI:</span>
+                      <strong id="bot-condor-id">Chưa có vị thế mở</strong>
+                    </div>
+                    <div class="condor-tp-progress" id="bot-tp-progress">
+                      <span>Mục tiêu 50% TP: <strong id="bot-tp-target">$0.00</strong></span>
+                      <div class="tp-meter-bar">
+                        <div class="tp-meter-fill" id="bot-tp-fill" style="width: 0%"></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="bot-table-wrap">
+                    <table class="bot-legs-table" id="bot-legs-table">
+                      <thead>
+                        <tr>
+                          <th>Vai trò (Role)</th>
+                          <th>Hợp đồng (Contract)</th>
+                          <th>Strike</th>
+                          <th>Loại</th>
+                          <th>Vị thế</th>
+                          <th>Số lượng</th>
+                          <th>Giá vào (Entry)</th>
+                          <th>Giá hiện tại (Mark)</th>
+                          <th>PnL chưa chốt</th>
+                        </tr>
+                      </thead>
+                      <tbody id="bot-legs-body">
+                        <tr><td colspan="9" class="bot-empty-cell">Không có vị thế Iron Condor nào đang chạy. Bấm "Quét ngay" hoặc "Bật Bot" để tự động tìm cơ hội.</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <!-- Action message bar -->
+                <div class="bot-message-bar" id="bot-message-bar">
+                  <span class="bot-message-dot"></span>
+                  <span id="bot-message-text">Sẵn sàng. Dữ liệu kết nối qua WebSocket /api/v1/bot/stream.</span>
+                </div>
+              </article>
+
               <article class="desk-panel opportunity-board-panel" aria-labelledby="option-tape-title">
                 <div class="desk-panel-heading">
                   <div>

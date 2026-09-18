@@ -792,5 +792,209 @@
     });
   }
 
+  // --- Automated Options Bot Controller -------------------------------------
+
+  function initBotDesk() {
+    const badge = document.getElementById("bot-status-badge");
+    const btnToggle = document.getElementById("bot-btn-toggle");
+    const btnCycle = document.getElementById("bot-btn-cycle");
+    const btnClose = document.getElementById("bot-btn-close");
+    const btnReset = document.getElementById("bot-btn-reset");
+
+    const statEquity = document.getElementById("bot-stat-equity");
+    const statCash = document.getElementById("bot-stat-cash");
+    const statUnrealized = document.getElementById("bot-stat-unrealized");
+    const statCompounded = document.getElementById("bot-stat-compounded");
+    const statMargin = document.getElementById("bot-stat-margin");
+    const marginMeter = document.getElementById("bot-margin-meter");
+    const statCycleStatus = document.getElementById("bot-stat-cycle-status");
+    const statCycleTime = document.getElementById("bot-stat-cycle-time");
+
+    const condorId = document.getElementById("bot-condor-id");
+    const tpTarget = document.getElementById("bot-tp-target");
+    const tpFill = document.getElementById("bot-tp-fill");
+    const legsBody = document.getElementById("bot-legs-body");
+    const messageText = document.getElementById("bot-message-text");
+
+    if (!badge || !btnToggle) return; // Not on page
+
+    let isRunning = false;
+    let botSocket = null;
+
+    function formatCurrency(val) {
+      if (val === null || val === undefined) return "$0.00";
+      const num = Number(val);
+      const sign = num < 0 ? "-" : "";
+      return `${sign}$${Math.abs(num).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    function renderBotState(data) {
+      if (!data) return;
+      const ctrl = data.control || {};
+      const port = data.portfolio || {};
+      const margin = data.margin || {};
+      const active = data.active_condor;
+
+      // Update control & running state
+      isRunning = Boolean(ctrl.is_running);
+      if (isRunning) {
+        badge.textContent = "RUNNING";
+        badge.className = "bot-badge bot-badge-running";
+        btnToggle.textContent = "Dừng Bot (Stop)";
+        btnToggle.classList.add("running");
+      } else {
+        badge.textContent = "IDLE";
+        badge.className = "bot-badge bot-badge-idle";
+        btnToggle.textContent = "Bật Bot (Start)";
+        btnToggle.classList.remove("running");
+      }
+
+      // Update Stats
+      if (statEquity) statEquity.textContent = formatCurrency(port.equity);
+      if (statCash) statCash.textContent = `Cash: ${formatCurrency(port.cash_balance)}`;
+
+      if (statUnrealized) {
+        const u = port.total_unrealized_pnl || 0;
+        statUnrealized.textContent = (u >= 0 ? "+" : "") + formatCurrency(u);
+        statUnrealized.style.color = u >= 0 ? "#3ca572" : "#ef4444";
+      }
+      if (statCompounded) {
+        const c = port.total_compounded_profit || 0;
+        statCompounded.textContent = `Đã chốt: ${(c >= 0 ? "+" : "") + formatCurrency(c)}`;
+      }
+
+      if (statMargin && marginMeter) {
+        const util = margin.margin_utilization_pct || 0;
+        statMargin.textContent = `${util.toFixed(1)}%`;
+        marginMeter.style.width = `${Math.min(100, Math.max(0, util))}%`;
+        marginMeter.className = "bot-margin-meter";
+        if (margin.is_critical) marginMeter.classList.add("critical");
+        else if (margin.is_warning) marginMeter.classList.add("warning");
+      }
+
+      if (statCycleStatus) statCycleStatus.textContent = ctrl.last_cycle_status || "IDLE";
+      if (statCycleTime) {
+        statCycleTime.textContent = ctrl.last_cycle_time ? new Date(ctrl.last_cycle_time).toLocaleTimeString() : "Chưa quét";
+      }
+
+      // Render Active Condor
+      if (active && Array.isArray(active.legs) && active.legs.length > 0) {
+        if (condorId) condorId.textContent = `${active.condor_id} (Credit: ${formatCurrency(active.entry_credit)})`;
+        if (tpTarget) tpTarget.textContent = formatCurrency(active.target_profit_50);
+
+        // TP Progress
+        const target = active.target_profit_50 || 1;
+        const currentUnrealized = active.unrealized_pnl || 0;
+        const pct = Math.min(100, Math.max(0, (currentUnrealized / target) * 100));
+        if (tpFill) tpFill.style.width = `${pct}%`;
+
+        // Table Rows
+        if (legsBody) {
+          legsBody.innerHTML = active.legs.map((leg) => {
+            const isShort = leg.side === "Sell";
+            const roleClass = isShort ? "bot-role-short" : "bot-role-wing";
+            const pnl = leg.unrealized_pnl || 0;
+            const pnlColor = pnl >= 0 ? "#3ca572" : "#ef4444";
+            const pnlStr = (pnl >= 0 ? "+" : "") + formatCurrency(pnl);
+
+            return `
+              <tr>
+                <td><span class="bot-role-tag ${roleClass}">${leg.role || leg.side}</span></td>
+                <td><strong>${leg.symbol}</strong></td>
+                <td>${Number(leg.strike).toLocaleString()}</td>
+                <td style="text-transform: uppercase;">${leg.option_type}</td>
+                <td><strong>${leg.side}</strong></td>
+                <td>${leg.qty}</td>
+                <td>${formatCurrency(leg.entry_price)}</td>
+                <td>${formatCurrency(leg.current_mark)}</td>
+                <td style="color: ${pnlColor}; font-weight: 700;">${pnlStr}</td>
+              </tr>
+            `;
+          }).join("");
+        }
+      } else {
+        if (condorId) condorId.textContent = "Chưa có vị thế mở";
+        if (tpTarget) tpTarget.textContent = "$0.00";
+        if (tpFill) tpFill.style.width = "0%";
+        if (legsBody) {
+          legsBody.innerHTML = `<tr><td colspan="9" class="bot-empty-cell">Không có vị thế Iron Condor nào đang chạy. Bấm "Quét ngay" hoặc "Bật Bot" để tự động tìm cơ hội.</td></tr>`;
+        }
+      }
+
+      if (messageText && ctrl.last_action_message) {
+        messageText.textContent = ctrl.last_action_message;
+      }
+    }
+
+    async function sendControl(action, extra = {}) {
+      try {
+        if (messageText) messageText.textContent = `Đang gửi lệnh ${action}...`;
+        const res = await fetch("/api/v1/bot/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, ...extra }),
+        });
+        const data = await res.json();
+        if (data.current_status) {
+          renderBotState(data.current_status);
+        }
+      } catch (err) {
+        if (messageText) messageText.textContent = `Lỗi: ${err.message}`;
+      }
+    }
+
+    // Connect WebSocket
+    function connectBotStream() {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${protocol}//${window.location.host}/api/v1/bot/stream`;
+      botSocket = new WebSocket(url);
+
+      botSocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          renderBotState(data);
+        } catch (e) {
+          console.warn("Invalid bot stream payload", e);
+        }
+      };
+
+      botSocket.onclose = () => {
+        setTimeout(connectBotStream, 3000); // Auto reconnect
+      };
+    }
+
+    // Bind Button Events
+    btnToggle.addEventListener("click", () => {
+      sendControl(isRunning ? "stop" : "start");
+    });
+    btnCycle.addEventListener("click", () => {
+      sendControl("cycle");
+    });
+    btnClose.addEventListener("click", () => {
+      if (confirm("Bạn có chắc chắn muốn đóng khẩn cấp toàn bộ vị thế bot?")) {
+        sendControl("close_all");
+      }
+    });
+    btnReset.addEventListener("click", () => {
+      if (confirm("Reset lại tài khoản ảo về $10,000 và xóa hết vị thế?")) {
+        sendControl("reset", { capital: 10000.0 });
+      }
+    });
+
+    // Initial fetch and WS connect
+    fetch("/api/v1/bot/status")
+      .then((r) => r.json())
+      .then(renderBotState)
+      .catch(console.warn);
+
+    connectBotStream();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initBotDesk);
+  } else {
+    initBotDesk();
+  }
+
   window.FlowSurfaceLiveDesk = Object.freeze({ createController });
 })();
