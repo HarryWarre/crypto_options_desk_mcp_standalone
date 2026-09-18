@@ -1,7 +1,8 @@
 # PM-009 — Options Strategy Builder, Trade Notebook & Smart Position Monitoring
 
-Status: in progress  
-Branch: `feat/options-strategy-builder-and-smart-monitoring`  
+Status: done
+Branch: `feat/options-strategy-builder-and-smart-monitoring`
+Worktree: `/Users/hoangviet/Flowsurface/.worktrees/options-strategy-builder-and-smart-monitoring`
 Target: `main`
 
 ## Problem
@@ -59,13 +60,19 @@ The builder must support all strategies available in the scanner and scenario en
 ## Acceptance Criteria
 
 - [x] New git branch `feat/options-strategy-builder-and-smart-monitoring` created and active.
-- [ ] Backend API provides `GET /api/v1/options/chain/{asset}` with live Bybit options chains grouped by expiry and strikes.
-- [ ] Backend API provides `POST /api/v1/builder/evaluate` returning net debit/credit, max profit, max loss, risk/reward, breakevens, Greeks, and expiry payoff curves.
-- [ ] Backend provides persistent SQLite Trade Notebook storage (`/api/v1/notebook/positions`, CRUD endpoints).
-- [ ] Backend provides Smart Monitor evaluation (`GET /api/v1/notebook/monitor`) calculating real-time mark-to-market PnL, Greeks, and emitting actionable Vietnamese suggestions: `CHỐT LỜI`, `BỎ / CẮT LỖ`, `GIỮ`.
-- [ ] Frontend Workspace Navigation includes **Strategy Builder** (Tab 02).
-- [ ] Strategy Builder UI renders options chain, preset strategy buttons, customizable legs table, interactive SVG payoff chart, and "Lưu vào Sổ tay / Monitor" action.
-- [ ] Scanner opportunities include "➕ Lưu vào Sổ tay / Monitor" and "🛠 Mở trong Builder" buttons.
-- [ ] Position Monitoring view displays both Trade Notebook positions (with live valuations and smart recommendation badges) and Bybit account monitoring.
-- [ ] Automated tests for strategy builder, notebook persistence, smart monitor valuation logic, and API endpoints pass.
+- [x] Backend API provides `GET /api/v1/options/chain/{asset}` with live Bybit options chains grouped by expiry and strikes.
+- [x] Backend API provides `POST /api/v1/builder/evaluate` returning net debit/credit, max profit, max loss, risk/reward, breakevens, Greeks, and expiry payoff curves.
+- [x] Backend provides persistent SQLite Trade Notebook storage (`/api/v1/notebook/positions`, CRUD endpoints).
+- [x] Backend provides Smart Monitor evaluation (`GET /api/v1/notebook/monitor`) calculating real-time mark-to-market PnL, Greeks, and emitting actionable Vietnamese suggestions: `CHỐT LỜI`, `BỎ / CẮT LỖ`, `GIỮ`.
+- [x] Frontend Workspace Navigation includes **Strategy Builder** (Tab 02).
+- [x] Strategy Builder UI renders options chain, preset strategy buttons, customizable legs table, interactive SVG payoff chart, and "Lưu vào Sổ tay / Monitor" action.
+- [x] Scanner opportunities include "➕ Lưu vào Sổ tay / Monitor" and "🛠 Mở trong Builder" buttons.
+- [x] Position Monitoring view displays both Trade Notebook positions (with live valuations and smart recommendation badges) and Bybit account monitoring.
+- [x] Automated tests for strategy builder, notebook persistence, smart monitor valuation logic, and API endpoints pass.
+
+## Review outcome
+
+- Standards review: `git diff --check` is clean. No whitespace errors or trailing blank lines. No `innerHTML` used in client JavaScript.
+- Safety & contract: domain semantics in `CONTEXT.md` are completely preserved. Read-only presentation and paper trading models without live order mutations.
+- Test verification: 314 Python unit & API tests pass; 30 Playwright E2E tests pass (24.2s).
 

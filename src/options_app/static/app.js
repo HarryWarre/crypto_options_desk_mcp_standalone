@@ -45,6 +45,55 @@ const monitoringMetrics = document.querySelector("#monitoring-metrics");
 const monitoringDecisionGuide = document.querySelector("#monitoring-decision-guide");
 const monitoringDecisionsBody = document.querySelector("#monitoring-decisions-body");
 const monitoringEmptyState = document.querySelector("#monitoring-empty-state");
+
+// Strategy Builder DOM elements
+const builderAssetSelect = document.querySelector("#builder-asset-select");
+const builderExpirySelect = document.querySelector("#builder-expiry-select");
+const builderSpotDisplay = document.querySelector("#builder-spot-display");
+const builderPresetButtons = document.querySelector("#builder-preset-buttons");
+const builderEvaluateBtn = document.querySelector("#builder-evaluate-btn");
+const builderSaveNotebookBtn = document.querySelector("#builder-save-notebook-btn");
+const builderAddLegBtn = document.querySelector("#builder-add-leg-btn");
+const builderClearLegsBtn = document.querySelector("#builder-clear-legs-btn");
+const builderLegsTbody = document.querySelector("#builder-legs-tbody");
+const builderLegsEmpty = document.querySelector("#builder-legs-empty");
+const builderStatusBadge = document.querySelector("#builder-status-badge");
+const builderMetrics = document.querySelector("#builder-metrics");
+const bmNetPremium = document.querySelector("#bm-net-premium");
+const bmMaxProfit = document.querySelector("#bm-max-profit");
+const bmMaxLoss = document.querySelector("#bm-max-loss");
+const bmRrRatio = document.querySelector("#bm-rr-ratio");
+const bmBreakeven = document.querySelector("#bm-breakeven");
+const bgDelta = document.querySelector("#bg-delta");
+const bgGamma = document.querySelector("#bg-gamma");
+const bgTheta = document.querySelector("#bg-theta");
+const bgVega = document.querySelector("#bg-vega");
+const builderPayoffSvg = document.querySelector("#builder-payoff-svg");
+const builderChartWrap = document.querySelector("#builder-chart-wrap");
+const builderChartTooltip = document.querySelector("#builder-chart-tooltip");
+const builderChainStatus = document.querySelector("#builder-chain-status");
+const builderChainTbody = document.querySelector("#builder-chain-tbody");
+
+// Trade Notebook & Smart Monitor DOM elements
+const nbRefreshBtn = document.querySelector("#nb-refresh-btn");
+const nbStatTotal = document.querySelector("#nb-stat-total");
+const nbStatPnl = document.querySelector("#nb-stat-pnl");
+const nbStatTp = document.querySelector("#nb-stat-tp");
+const nbStatSl = document.querySelector("#nb-stat-sl");
+const nbStatHold = document.querySelector("#nb-stat-hold");
+const nbPositionsTbody = document.querySelector("#nb-positions-tbody");
+const nbEmptyState = document.querySelector("#nb-empty-state");
+
+let builderState = {
+  asset: "BTC",
+  expiry: "",
+  spot: 0,
+  legs: [],
+  chainData: null,
+  activePreset: "bull_call_vertical",
+  evaluation: null,
+  initialized: false,
+};
 const workspaceLinks = [...document.querySelectorAll("[data-workspace-link]")];
 const workspaceViews = [...document.querySelectorAll("[data-workspace-view]")];
 const moduleEyebrow = document.querySelector("#module-eyebrow");
@@ -121,6 +170,11 @@ const WORKSPACE_META = Object.freeze({
     title: "Crypto Options Scanner",
     description: "Tìm hợp đồng có chênh lệch giữa giá mô hình và giá có thể mua.",
   },
+  builder: {
+    eyebrow: "Nghiên cứu quyền chọn / Strategy Builder",
+    title: "Options Strategy Builder & Payoff",
+    description: "Lắp ráp chiến lược đa chân, tính toán Greeks, vẽ đồ thị Payoff và chuyển vào Sổ tay giám sát.",
+  },
   backtest: {
     eyebrow: "Nghiên cứu quyền chọn / Backtest",
     title: "Historical Options Backtest",
@@ -169,6 +223,13 @@ function syncWorkspaceFromHash() {
     appendTerminal(`[ĐIỀU HƯỚNG] Chuyển không gian làm việc: ${meta.title} (#${workspace})`, "info");
   }
   document.body.dataset.activeWorkspace = workspace;
+
+  if (workspace === "builder" && !builderState.initialized) {
+    initStrategyBuilder();
+  }
+  if (workspace === "monitoring") {
+    loadTradeNotebook();
+  }
 }
 
 const valuationModeInputs = [...form.querySelectorAll('input[name="valuation_mode"]')];
@@ -1714,6 +1775,21 @@ function renderResults(payload) {
       detailButton.addEventListener("click", () => showOpportunityDetail(item));
     }
     actionCell.appendChild(detailButton);
+
+    const builderBtn = document.createElement("button");
+    builderBtn.type = "button";
+    builderBtn.className = "btn-scanner-action";
+    builderBtn.textContent = "🛠 Mở trong Builder";
+    builderBtn.addEventListener("click", () => openOpportunityInBuilder(item));
+    actionCell.appendChild(builderBtn);
+
+    const notebookBtn = document.createElement("button");
+    notebookBtn.type = "button";
+    notebookBtn.className = "btn-scanner-action";
+    notebookBtn.textContent = "➕ Lưu Sổ tay";
+    notebookBtn.addEventListener("click", () => saveOpportunityToNotebook(item));
+    actionCell.appendChild(notebookBtn);
+
     row.appendChild(actionCell);
     resultsBody.appendChild(row);
   });
@@ -1952,6 +2028,863 @@ backtestForm.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
+// ==========================================
+// Strategy Builder & Trade Notebook Engine
+// ==========================================
+
+function initStrategyBuilder() {
+  if (builderState.initialized) return;
+  builderState.initialized = true;
+
+  if (builderAssetSelect) {
+    builderAssetSelect.addEventListener("change", () => {
+      builderState.asset = builderAssetSelect.value;
+      loadBuilderOptionChain(builderState.asset);
+    });
+  }
+
+  if (builderExpirySelect) {
+    builderExpirySelect.addEventListener("change", () => {
+      builderState.expiry = builderExpirySelect.value;
+      if (builderState.chainData) {
+        renderBuilderChain(builderState.chainData, builderState.expiry);
+      }
+    });
+  }
+
+  if (builderPresetButtons) {
+    builderPresetButtons.querySelectorAll(".preset-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        builderPresetButtons.querySelectorAll(".preset-chip").forEach((b) => b.classList.remove("is-active"));
+        btn.classList.add("is-active");
+        const preset = btn.dataset.preset;
+        builderState.activePreset = preset;
+        applyBuilderPreset(preset);
+      });
+    });
+  }
+
+  if (builderAddLegBtn) {
+    builderAddLegBtn.addEventListener("click", () => {
+      const now = new Date();
+      now.setDate(now.getDate() + 14);
+      const defaultExp = builderState.expiry || now.toISOString().split("T")[0];
+      const defaultStrike = builderState.spot > 0 ? Math.round(builderState.spot) : 60000;
+      builderState.legs.push({
+        option_type: "call",
+        strike: defaultStrike,
+        expiry: defaultExp,
+        iv: 0.65,
+        spot: builderState.spot || defaultStrike,
+        position: 1,
+        quantity: 1,
+        mid_price: 1000,
+        bid: 980,
+        ask: 1020,
+        symbol: `${builderState.asset}-${defaultExp}-${defaultStrike}-C`,
+      });
+      renderBuilderLegs();
+      evaluateBuilder();
+    });
+  }
+
+  if (builderClearLegsBtn) {
+    builderClearLegsBtn.addEventListener("click", () => {
+      builderState.legs = [];
+      renderBuilderLegs();
+      evaluateBuilder();
+    });
+  }
+
+  if (builderEvaluateBtn) {
+    builderEvaluateBtn.addEventListener("click", evaluateBuilder);
+  }
+
+  if (builderSaveNotebookBtn) {
+    builderSaveNotebookBtn.addEventListener("click", saveBuilderToNotebook);
+  }
+
+  loadBuilderOptionChain(builderState.asset || "BTC");
+}
+
+async function loadBuilderOptionChain(asset) {
+  if (builderChainStatus) {
+    builderChainStatus.textContent = `Đang tải chuỗi ${asset}...`;
+  }
+  try {
+    const data = await getJson(`/api/v1/options/chain/${asset}`);
+    builderState.chainData = data;
+    builderState.spot = data.spot || 0;
+    if (builderSpotDisplay) {
+      builderSpotDisplay.textContent = `$${number(data.spot, 2)}`;
+    }
+
+    if (builderExpirySelect) {
+      builderExpirySelect.replaceChildren();
+      (data.expiries || []).forEach((exp) => {
+        const opt = document.createElement("option");
+        opt.value = exp;
+        opt.textContent = exp;
+        builderExpirySelect.appendChild(opt);
+      });
+      if (data.expiries && data.expiries.length) {
+        if (!builderState.expiry || !data.expiries.includes(builderState.expiry)) {
+          builderState.expiry = data.expiries[0];
+        }
+        builderExpirySelect.value = builderState.expiry;
+      }
+    }
+
+    if (builderChainStatus) {
+      builderChainStatus.textContent = `${data.contracts?.length || 0} hợp đồng`;
+    }
+
+    renderBuilderChain(data, builderState.expiry);
+
+    if (builderState.legs.length === 0) {
+      applyBuilderPreset(builderState.activePreset || "bull_call_vertical");
+    }
+  } catch (err) {
+    if (builderChainStatus) {
+      builderChainStatus.textContent = `Không tải được: ${err.message}`;
+    }
+    appendTerminal(`[BUILDER] Lỗi tải chuỗi options: ${err.message}`, "error");
+  }
+}
+
+function renderBuilderChain(chainData, selectedExpiry) {
+  if (!builderChainTbody) return;
+  builderChainTbody.replaceChildren();
+
+  const contracts = (chainData.contracts || []).filter((c) => !selectedExpiry || c.expiry?.startsWith(selectedExpiry) || c.symbol?.includes(selectedExpiry));
+  const strikeMap = new Map();
+  contracts.forEach((c) => {
+    const s = Number(c.strike);
+    if (!strikeMap.has(s)) {
+      strikeMap.set(s, { call: null, put: null });
+    }
+    if (c.option_type === "call") strikeMap.get(s).call = c;
+    else if (c.option_type === "put") strikeMap.get(s).put = c;
+  });
+
+  const strikes = [...strikeMap.keys()].sort((a, b) => a - b);
+  const currentSpot = builderState.spot || 0;
+
+  strikes.forEach((strike) => {
+    const pair = strikeMap.get(strike);
+    const tr = document.createElement("tr");
+
+    // Call Action cell
+    const tdCallAction = document.createElement("td");
+    if (pair.call) {
+      const btnBuy = document.createElement("button");
+      btnBuy.type = "button";
+      btnBuy.className = "btn-chain-action btn-buy";
+      btnBuy.textContent = "+ Mua";
+      btnBuy.addEventListener("click", () => addLegFromContract(pair.call, 1));
+      const btnSell = document.createElement("button");
+      btnSell.type = "button";
+      btnSell.className = "btn-chain-action btn-sell";
+      btnSell.textContent = "+ Bán";
+      btnSell.addEventListener("click", () => addLegFromContract(pair.call, -1));
+      tdCallAction.append(btnBuy, " ", btnSell);
+    } else {
+      tdCallAction.textContent = "—";
+    }
+    tr.appendChild(tdCallAction);
+
+    // Call IV, Bid, Ask, OI
+    cell(tr, pair.call ? percent(pair.call.mark_iv || 0.65) : "—");
+    cell(tr, pair.call ? number(pair.call.bid, 2) : "—");
+    cell(tr, pair.call ? number(pair.call.ask, 2) : "—");
+    cell(tr, pair.call ? number(pair.call.open_interest, 0) : "—");
+
+    // Strike cell
+    const tdStrike = document.createElement("td");
+    tdStrike.className = "chain-strike-cell";
+    if (currentSpot > 0 && Math.abs(strike - currentSpot) / currentSpot < 0.015) {
+      tdStrike.classList.add("chain-strike-atm");
+    }
+    tdStrike.textContent = number(strike, 0);
+    tr.appendChild(tdStrike);
+
+    // Put Bid, Ask, IV, OI
+    cell(tr, pair.put ? number(pair.put.bid, 2) : "—");
+    cell(tr, pair.put ? number(pair.put.ask, 2) : "—");
+    cell(tr, pair.put ? percent(pair.put.mark_iv || 0.65) : "—");
+    cell(tr, pair.put ? number(pair.put.open_interest, 0) : "—");
+
+    // Put Action cell
+    const tdPutAction = document.createElement("td");
+    if (pair.put) {
+      const btnBuy = document.createElement("button");
+      btnBuy.type = "button";
+      btnBuy.className = "btn-chain-action btn-buy";
+      btnBuy.textContent = "+ Mua";
+      btnBuy.addEventListener("click", () => addLegFromContract(pair.put, 1));
+      const btnSell = document.createElement("button");
+      btnSell.type = "button";
+      btnSell.className = "btn-chain-action btn-sell";
+      btnSell.textContent = "+ Bán";
+      btnSell.addEventListener("click", () => addLegFromContract(pair.put, -1));
+      tdPutAction.append(btnBuy, " ", btnSell);
+    } else {
+      tdPutAction.textContent = "—";
+    }
+    tr.appendChild(tdPutAction);
+
+    builderChainTbody.appendChild(tr);
+  });
+}
+
+function addLegFromContract(contract, position) {
+  const exp = contract.expiry ? String(contract.expiry).split("T")[0] : builderState.expiry;
+  builderState.legs.push({
+    option_type: contract.option_type,
+    strike: Number(contract.strike),
+    expiry: exp,
+    iv: Number(contract.mark_iv || 0.65),
+    spot: builderState.spot || Number(contract.underlying_price || 60000),
+    position: position,
+    quantity: 1,
+    mid_price: position > 0 ? (Number(contract.ask) || Number(contract.mark_price) || 0) : (Number(contract.bid) || Number(contract.mark_price) || 0),
+    bid: Number(contract.bid || 0),
+    ask: Number(contract.ask || 0),
+    symbol: contract.symbol || "",
+  });
+  renderBuilderLegs();
+  evaluateBuilder();
+}
+
+async function applyBuilderPreset(presetName) {
+  if (presetName === "custom") return;
+  try {
+    const payload = {
+      strategy_type: presetName,
+      asset: builderState.asset,
+      expiry: builderState.expiry || undefined,
+    };
+    const res = await getJson("/api/v1/builder/populate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.legs && res.legs.length) {
+      builderState.legs = res.legs.map((leg) => ({
+        option_type: leg.option_type,
+        strike: leg.strike,
+        expiry: leg.expiry ? String(leg.expiry).split("T")[0] : builderState.expiry,
+        iv: leg.iv || 0.65,
+        spot: leg.spot || builderState.spot,
+        position: leg.position || 1,
+        quantity: leg.quantity || 1,
+        mid_price: leg.mid_price || 0,
+        bid: leg.bid || 0,
+        ask: leg.ask || 0,
+        symbol: leg.symbol || "",
+      }));
+      renderBuilderLegs();
+      evaluateBuilder();
+    }
+  } catch (err) {
+    appendTerminal(`[BUILDER] Không thể nạp mẫu ${presetName}: ${err.message}`, "error");
+  }
+}
+
+function renderBuilderLegs() {
+  if (!builderLegsTbody) return;
+  builderLegsTbody.replaceChildren();
+
+  if (!builderState.legs.length) {
+    if (builderLegsEmpty) builderLegsEmpty.hidden = false;
+    return;
+  }
+  if (builderLegsEmpty) builderLegsEmpty.hidden = true;
+
+  builderState.legs.forEach((leg, index) => {
+    const tr = document.createElement("tr");
+
+    // Position (Buy/Sell)
+    const tdPos = document.createElement("td");
+    const selPos = document.createElement("select");
+    const optBuy = document.createElement("option");
+    optBuy.value = "1";
+    optBuy.textContent = "Mua (+1)";
+    const optSell = document.createElement("option");
+    optSell.value = "-1";
+    optSell.textContent = "Bán (-1)";
+    selPos.append(optBuy, optSell);
+    selPos.value = String(leg.position);
+    selPos.addEventListener("change", () => {
+      leg.position = Number(selPos.value);
+      evaluateBuilder();
+    });
+    tdPos.appendChild(selPos);
+    tr.appendChild(tdPos);
+
+    // Qty
+    const tdQty = document.createElement("td");
+    const inpQty = document.createElement("input");
+    inpQty.type = "number";
+    inpQty.min = "1";
+    inpQty.value = String(leg.quantity || 1);
+    inpQty.style.maxWidth = "55px";
+    inpQty.addEventListener("change", () => {
+      leg.quantity = Math.max(1, Number(inpQty.value) || 1);
+      evaluateBuilder();
+    });
+    tdQty.appendChild(inpQty);
+    tr.appendChild(tdQty);
+
+    // Option Type (Call/Put)
+    const tdType = document.createElement("td");
+    const selType = document.createElement("select");
+    const optCall = document.createElement("option");
+    optCall.value = "call";
+    optCall.textContent = "Call";
+    const optPut = document.createElement("option");
+    optPut.value = "put";
+    optPut.textContent = "Put";
+    selType.append(optCall, optPut);
+    selType.value = leg.option_type;
+    selType.addEventListener("change", () => {
+      leg.option_type = selType.value;
+      evaluateBuilder();
+    });
+    tdType.appendChild(selType);
+    tr.appendChild(tdType);
+
+    // Strike
+    const tdStrike = document.createElement("td");
+    const inpStrike = document.createElement("input");
+    inpStrike.type = "number";
+    inpStrike.value = String(leg.strike);
+    inpStrike.addEventListener("change", () => {
+      leg.strike = Number(inpStrike.value);
+      evaluateBuilder();
+    });
+    tdStrike.appendChild(inpStrike);
+    tr.appendChild(tdStrike);
+
+    // Expiry
+    const tdExp = document.createElement("td");
+    tdExp.textContent = leg.expiry ? String(leg.expiry).split("T")[0] : "—";
+    tr.appendChild(tdExp);
+
+    // IV
+    const tdIv = document.createElement("td");
+    const inpIv = document.createElement("input");
+    inpIv.type = "number";
+    inpIv.step = "any";
+    inpIv.value = String(Math.round((leg.iv || 0.65) * 100));
+    inpIv.style.maxWidth = "60px";
+    inpIv.addEventListener("change", () => {
+      leg.iv = (Number(inpIv.value) || 65) / 100;
+      evaluateBuilder();
+    });
+    tdIv.appendChild(inpIv);
+    tr.appendChild(tdIv);
+
+    // Price
+    const tdPrice = document.createElement("td");
+    const inpPrice = document.createElement("input");
+    inpPrice.type = "number";
+    inpPrice.step = "any";
+    inpPrice.value = String(number(leg.mid_price || 0, 2));
+    inpPrice.addEventListener("change", () => {
+      leg.mid_price = Number(inpPrice.value) || 0;
+      evaluateBuilder();
+    });
+    tdPrice.appendChild(inpPrice);
+    tr.appendChild(tdPrice);
+
+    // Remove Action
+    const tdRemove = document.createElement("td");
+    const btnRemove = document.createElement("button");
+    btnRemove.type = "button";
+    btnRemove.className = "btn-remove-leg";
+    btnRemove.setAttribute("aria-label", "Xóa chân");
+    btnRemove.textContent = "✕";
+    btnRemove.addEventListener("click", () => {
+      builderState.legs.splice(index, 1);
+      renderBuilderLegs();
+      evaluateBuilder();
+    });
+    tdRemove.appendChild(btnRemove);
+    tr.appendChild(tdRemove);
+
+    builderLegsTbody.appendChild(tr);
+  });
+}
+
+async function evaluateBuilder() {
+  if (!builderState.legs || !builderState.legs.length) {
+    if (builderLegsEmpty) builderLegsEmpty.hidden = false;
+    if (builderStatusBadge) builderStatusBadge.textContent = "Chưa có chân";
+    if (bmNetPremium) bmNetPremium.textContent = "$0.00";
+    if (bmMaxProfit) bmMaxProfit.textContent = "$0.00";
+    if (bmMaxLoss) bmMaxLoss.textContent = "$0.00";
+    if (bmRrRatio) bmRrRatio.textContent = "--";
+    if (bmBreakeven) bmBreakeven.textContent = "--";
+    if (builderPayoffSvg) builderPayoffSvg.replaceChildren();
+    return;
+  }
+  if (builderLegsEmpty) builderLegsEmpty.hidden = true;
+  if (builderStatusBadge) builderStatusBadge.textContent = "Đang tính toán...";
+
+  try {
+    const payload = {
+      strategy_type: builderState.activePreset || "custom",
+      legs: builderState.legs.map((l) => ({
+        option_type: l.option_type,
+        strike: Number(l.strike),
+        expiry: l.expiry,
+        iv: Number(l.iv) > 2 ? Number(l.iv) / 100 : Number(l.iv) || 0.65,
+        spot: Number(l.spot) || builderState.spot || 60000,
+        position: Number(l.position) || 1,
+        quantity: Number(l.quantity) || 1,
+        mid_price: Number(l.mid_price) || 0,
+        bid: Number(l.bid) || 0,
+        ask: Number(l.ask) || 0,
+        symbol: l.symbol || "",
+      })),
+      risk_free_rate: 0.05,
+    };
+
+    const res = await getJson("/api/v1/builder/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    builderState.evaluation = res;
+    if (builderStatusBadge) builderStatusBadge.textContent = "Đã tính toán";
+    if (bmNetPremium) bmNetPremium.textContent = `$${number(res.net_premium, 2)}`;
+    if (bmMaxProfit) {
+      bmMaxProfit.textContent = Number.isFinite(res.max_profit) ? `$${number(res.max_profit, 2)}` : "Không giới hạn";
+    }
+    if (bmMaxLoss) {
+      bmMaxLoss.textContent = Number.isFinite(res.max_loss) ? `$${number(res.max_loss, 2)}` : "Không giới hạn";
+    }
+    if (bmRrRatio) {
+      bmRrRatio.textContent = res.risk_reward_ratio != null ? number(res.risk_reward_ratio, 2) : "--";
+    }
+    if (bmBreakeven) {
+      bmBreakeven.textContent = res.breakevens?.length ? res.breakevens.map((b) => `$${number(b, 2)}`).join(", ") : "Không có";
+    }
+    if (bgDelta) bgDelta.textContent = number(res.greeks?.delta, 4);
+    if (bgGamma) bgGamma.textContent = number(res.greeks?.gamma, 4);
+    if (bgTheta) bgTheta.textContent = number(res.greeks?.theta, 4);
+    if (bgVega) bgVega.textContent = number(res.greeks?.vega, 4);
+
+    renderBuilderPayoffChart(res.payoff_curve || [], res.breakevens || [], builderState.spot);
+  } catch (err) {
+    if (builderStatusBadge) builderStatusBadge.textContent = "Lỗi tính toán";
+    appendTerminal(`[BUILDER] Lỗi tính toán payoff: ${err.message}`, "error");
+  }
+}
+
+function renderBuilderPayoffChart(curve, breakevens, spot) {
+  if (!builderPayoffSvg) return;
+  builderPayoffSvg.replaceChildren();
+
+  if (!curve || curve.length < 2) return;
+
+  const width = 600;
+  const height = 280;
+  const padLeft = 60;
+  const padRight = 30;
+  const padTop = 30;
+  const padBottom = 40;
+
+  const chartW = width - padLeft - padRight;
+  const chartH = height - padTop - padBottom;
+
+  const spots = curve.map((pt) => pt.spot);
+  const pnls = curve.map((pt) => pt.pnl);
+
+  const minSpot = Math.min(...spots);
+  const maxSpot = Math.max(...spots);
+  let minPnl = Math.min(0, ...pnls);
+  let maxPnl = Math.max(0, ...pnls);
+
+  // Add 10% headroom
+  const pnlSpan = maxPnl - minPnl || 1;
+  minPnl -= pnlSpan * 0.05;
+  maxPnl += pnlSpan * 0.05;
+
+  const scaleX = (s) => padLeft + ((s - minSpot) / (maxSpot - minSpot || 1)) * chartW;
+  const scaleY = (p) => padTop + ((maxPnl - p) / (maxPnl - minPnl || 1)) * chartH;
+
+  const svgNS = "http://www.w3.org/2000/svg";
+
+  // Zero PnL line
+  const zeroY = scaleY(0);
+  const zeroLine = document.createElementNS(svgNS, "line");
+  zeroLine.setAttribute("x1", String(padLeft));
+  zeroLine.setAttribute("y1", String(zeroY));
+  zeroLine.setAttribute("x2", String(width - padRight));
+  zeroLine.setAttribute("y2", String(zeroY));
+  zeroLine.setAttribute("stroke", "#43586c");
+  zeroLine.setAttribute("stroke-width", "1.5");
+  zeroLine.setAttribute("stroke-dasharray", "4 4");
+  builderPayoffSvg.appendChild(zeroLine);
+
+  // Zero PnL label
+  const zeroText = document.createElementNS(svgNS, "text");
+  zeroText.setAttribute("x", String(padLeft - 8));
+  zeroText.setAttribute("y", String(zeroY + 4));
+  zeroText.setAttribute("text-anchor", "end");
+  zeroText.setAttribute("fill", "#7893a8");
+  zeroText.setAttribute("font-size", "11");
+  zeroText.textContent = "$0";
+  builderPayoffSvg.appendChild(zeroText);
+
+  // Current Spot line
+  if (spot >= minSpot && spot <= maxSpot) {
+    const spotX = scaleX(spot);
+    const spotLine = document.createElementNS(svgNS, "line");
+    spotLine.setAttribute("x1", String(spotX));
+    spotLine.setAttribute("y1", String(padTop));
+    spotLine.setAttribute("x2", String(spotX));
+    spotLine.setAttribute("y2", String(height - padBottom));
+    spotLine.setAttribute("stroke", "#8eb5ff");
+    spotLine.setAttribute("stroke-width", "1.5");
+    spotLine.setAttribute("stroke-dasharray", "3 3");
+    builderPayoffSvg.appendChild(spotLine);
+
+    const spotText = document.createElementNS(svgNS, "text");
+    spotText.setAttribute("x", String(spotX));
+    spotText.setAttribute("y", String(padTop - 8));
+    spotText.setAttribute("text-anchor", "middle");
+    spotText.setAttribute("fill", "#8eb5ff");
+    spotText.setAttribute("font-size", "10");
+    spotText.setAttribute("font-weight", "bold");
+    spotText.textContent = `Spot: $${number(spot, 0)}`;
+    builderPayoffSvg.appendChild(spotText);
+  }
+
+  // Payoff path
+  let pathD = "";
+  curve.forEach((pt, i) => {
+    const x = scaleX(pt.spot);
+    const y = scaleY(pt.pnl);
+    pathD += (i === 0 ? "M " : " L ") + x.toFixed(1) + " " + y.toFixed(1);
+  });
+
+  const path = document.createElementNS(svgNS, "path");
+  path.setAttribute("d", pathD);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "#62d4a4");
+  path.setAttribute("stroke-width", "2.5");
+  builderPayoffSvg.appendChild(path);
+
+  // Breakeven dots
+  (breakevens || []).forEach((be) => {
+    if (be >= minSpot && be <= maxSpot) {
+      const beX = scaleX(be);
+      const circle = document.createElementNS(svgNS, "circle");
+      circle.setAttribute("cx", String(beX));
+      circle.setAttribute("cy", String(zeroY));
+      circle.setAttribute("r", "5");
+      circle.setAttribute("fill", "#ffe082");
+      circle.setAttribute("stroke", "#000");
+      circle.setAttribute("stroke-width", "1.5");
+      builderPayoffSvg.appendChild(circle);
+
+      const beText = document.createElementNS(svgNS, "text");
+      beText.setAttribute("x", String(beX));
+      beText.setAttribute("y", String(zeroY + 16));
+      beText.setAttribute("text-anchor", "middle");
+      beText.setAttribute("fill", "#ffe082");
+      beText.setAttribute("font-size", "10");
+      beText.textContent = `BE $${number(be, 0)}`;
+      builderPayoffSvg.appendChild(beText);
+    }
+  });
+
+  // Min/Max spot axis labels
+  const minText = document.createElementNS(svgNS, "text");
+  minText.setAttribute("x", String(padLeft));
+  minText.setAttribute("y", String(height - padBottom + 18));
+  minText.setAttribute("fill", "#7893a8");
+  minText.setAttribute("font-size", "11");
+  minText.textContent = `$${number(minSpot, 0)}`;
+  builderPayoffSvg.appendChild(minText);
+
+  const maxText = document.createElementNS(svgNS, "text");
+  maxText.setAttribute("x", String(width - padRight));
+  maxText.setAttribute("y", String(height - padBottom + 18));
+  maxText.setAttribute("text-anchor", "end");
+  maxText.setAttribute("fill", "#7893a8");
+  maxText.setAttribute("font-size", "11");
+  maxText.textContent = `$${number(maxSpot, 0)}`;
+  builderPayoffSvg.appendChild(maxText);
+}
+
+async function saveBuilderToNotebook() {
+  if (!builderState.legs || !builderState.legs.length) {
+    alert("Vui lòng thêm ít nhất một chân vào chiến lược trước khi lưu.");
+    return;
+  }
+  const payload = {
+    asset: builderState.asset,
+    strategy_type: builderState.activePreset || "custom",
+    legs: builderState.legs,
+    entry_spot: builderState.spot || Number(builderState.legs[0]?.spot || 0),
+    target_profit_pct: 50.0,
+    stop_loss_pct: 50.0,
+    notes: `Lưu từ Strategy Builder (${builderState.activePreset || "custom"})`,
+    source: "builder",
+  };
+  try {
+    const res = await getJson("/api/v1/notebook/positions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    appendTerminal(`[NOTEBOOK] Đã lưu vị thế ${res.position?.id} (${payload.strategy_type}) vào Sổ tay giám sát.`, "success");
+    window.location.hash = "#monitoring";
+  } catch (err) {
+    appendTerminal(`[NOTEBOOK] Lỗi lưu vị thế: ${err.message}`, "error");
+  }
+}
+
+function openOpportunityInBuilder(item) {
+  const asset = item.asset || item.base_coin || (item.symbol ? item.symbol.split("-")[0] : "BTC");
+  builderState.asset = asset;
+  builderState.activePreset = item.strategy || "custom";
+  const legs = [];
+  if (item.legs && Array.isArray(item.legs) && item.legs.length) {
+    item.legs.forEach((l) => {
+      legs.push({
+        option_type: l.option_type || (l.symbol && l.symbol.endsWith("-C") ? "call" : "put"),
+        strike: Number(l.strike) || 0,
+        expiry: l.expiry_at || l.expiry || "",
+        iv: Number(l.implied_volatility || l.mark_iv || 0.65),
+        spot: Number(item.spot_price || item.underlying_price || 0),
+        position: Number(l.position || 1),
+        quantity: 1,
+        mid_price: Number(l.market_price || l.market_mid || 0),
+        bid: Number(l.bid || 0),
+        ask: Number(l.ask || 0),
+        symbol: l.symbol || "",
+      });
+    });
+  } else {
+    legs.push({
+      option_type: item.option_type || (item.symbol && item.symbol.endsWith("-C") ? "call" : "put"),
+      strike: Number(item.strike) || 0,
+      expiry: item.expiry_at || item.expiry || "",
+      iv: Number(item.implied_volatility || item.mark_iv || 0.65),
+      spot: Number(item.spot_price || item.underlying_price || 0),
+      position: 1,
+      quantity: 1,
+      mid_price: Number(item.market_mid || item.fair_price || 0),
+      bid: Number(item.bid_price || 0),
+      ask: Number(item.ask_price || 0),
+      symbol: item.symbol || "",
+    });
+  }
+  builderState.legs = legs;
+  builderState.spot = Number(item.spot_price || item.underlying_price || 0);
+  window.location.hash = "#builder";
+  renderBuilderLegs();
+  evaluateBuilder();
+}
+
+async function saveOpportunityToNotebook(item) {
+  const asset = item.asset || item.base_coin || (item.symbol ? item.symbol.split("-")[0] : "BTC");
+  const payload = {
+    asset: asset,
+    strategy_type: item.strategy || "single_option",
+    legs: item.legs || [
+      {
+        symbol: item.symbol || "",
+        option_type: item.option_type || "call",
+        strike: Number(item.strike) || 0,
+        position: 1,
+        quantity: 1,
+        entry_price: Number(item.market_mid || item.fair_price || 0),
+        expiry: item.expiry_at || item.expiry || "",
+      },
+    ],
+    entry_spot: Number(item.spot_price || item.underlying_price || 0),
+    target_profit_pct: 50.0,
+    stop_loss_pct: 50.0,
+    notes: `Tín hiệu Scanner: Edge=${item.edge_after_costs} | EV=${item.expected_value || item.estimated_ev}`,
+    source: "scanner",
+  };
+  try {
+    const res = await getJson("/api/v1/notebook/positions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    appendTerminal(`[NOTEBOOK] Đã lưu cơ hội ${res.position?.id} (${payload.strategy_type}) vào Sổ tay.`, "success");
+  } catch (err) {
+    appendTerminal(`[NOTEBOOK] Lỗi lưu cơ hội: ${err.message}`, "error");
+  }
+}
+
+// ==========================================
+// Trade Notebook & Smart Monitor Logic
+// ==========================================
+
+async function loadTradeNotebook() {
+  if (nbRefreshBtn) nbRefreshBtn.disabled = true;
+  try {
+    const [positionsData, monitorData] = await Promise.all([
+      getJson("/api/v1/notebook/positions"),
+      getJson("/api/v1/notebook/monitor"),
+    ]);
+    const positions = positionsData.positions || [];
+    const evaluations = monitorData.evaluations || [];
+    renderTradeNotebook(positions, evaluations);
+  } catch (err) {
+    appendTerminal(`[NOTEBOOK] Lỗi nạp Sổ tay & Smart Monitor: ${err.message}`, "error");
+  } finally {
+    if (nbRefreshBtn) nbRefreshBtn.disabled = false;
+  }
+}
+
+function renderTradeNotebook(positions, evaluations) {
+  if (!nbPositionsTbody) return;
+  nbPositionsTbody.replaceChildren();
+
+  const evalMap = new Map();
+  evaluations.forEach((e) => evalMap.set(e.position_id, e));
+
+  let totalPnl = 0;
+  let tpCount = 0;
+  let slCount = 0;
+  let holdCount = 0;
+
+  positions.forEach((pos) => {
+    const ev = evalMap.get(pos.id);
+    const pnl = ev ? Number(ev.unrealized_pnl || 0) : 0;
+    totalPnl += pnl;
+
+    const action = ev?.decision?.action || "REVIEW";
+    if (action === "TAKE_PROFIT") tpCount++;
+    else if (action === "CUT_LOSS") slCount++;
+    else if (action === "HOLD") holdCount++;
+
+    const tr = document.createElement("tr");
+
+    // ID
+    const tdId = document.createElement("td");
+    tdId.textContent = pos.id;
+    tr.appendChild(tdId);
+
+    // Asset & Strategy
+    const tdStrat = document.createElement("td");
+    const strongAsset = document.createElement("strong");
+    strongAsset.textContent = pos.asset;
+    const br = document.createElement("br");
+    const smallStrat = document.createElement("small");
+    smallStrat.className = "muted";
+    smallStrat.textContent = strategyLabel(pos.strategy_type);
+    tdStrat.append(strongAsset, br, smallStrat);
+    tr.appendChild(tdStrat);
+
+    // Legs Summary
+    const tdLegs = document.createElement("td");
+    const legsList = (pos.legs || []).map((l) => `${l.position > 0 ? "+" : "-"}${l.quantity || 1} ${l.option_type?.toUpperCase()} ${number(l.strike, 0)}`).join(" / ");
+    tdLegs.textContent = legsList || "1 leg";
+    tr.appendChild(tdLegs);
+
+    // Spot Entry / Current
+    const tdSpot = document.createElement("td");
+    const curSpot = ev?.current_spot || pos.entry_spot || 0;
+    tdSpot.textContent = `$${number(pos.entry_spot, 1)} → $${number(curSpot, 1)}`;
+    tr.appendChild(tdSpot);
+
+    // Unrealized PnL
+    const tdPnl = document.createElement("td");
+    tdPnl.textContent = `$${number(pnl, 2)}`;
+    tdPnl.className = pnl >= 0 ? "text-success" : "text-danger";
+    tdPnl.style.fontWeight = "bold";
+    tr.appendChild(tdPnl);
+
+    // Smart Monitor Badge
+    const tdAction = document.createElement("td");
+    const badge = document.createElement("span");
+    const actionVn = ev?.decision?.action_vn || "XEM XÉT";
+    badge.textContent = actionVn;
+    if (action === "TAKE_PROFIT") {
+      badge.className = "smart-badge smart-badge-profit";
+    } else if (action === "CUT_LOSS") {
+      badge.className = "smart-badge smart-badge-cut";
+    } else if (action === "HOLD") {
+      badge.className = "smart-badge smart-badge-hold";
+    } else {
+      badge.className = "smart-badge smart-badge-review";
+    }
+    tdAction.appendChild(badge);
+    tr.appendChild(tdAction);
+
+    // Reasons / Triggers
+    const tdReasons = document.createElement("td");
+    tdReasons.textContent = ev?.decision?.reason || pos.notes || "Thesis intact";
+    tr.appendChild(tdReasons);
+
+    // Action buttons (Close / Delete)
+    const tdOps = document.createElement("td");
+    const btnClose = document.createElement("button");
+    btnClose.type = "button";
+    btnClose.className = "btn-action-small";
+    btnClose.textContent = "Đóng";
+    btnClose.addEventListener("click", async () => {
+      try {
+        await getJson(`/api/v1/notebook/positions/${pos.id}/close`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ exit_spot: curSpot, exit_pnl: pnl, notes: "Đóng thủ công từ UI" }),
+        });
+        appendTerminal(`[NOTEBOOK] Đã đóng vị thế ${pos.id}.`, "info");
+        loadTradeNotebook();
+      } catch (e) {
+        appendTerminal(`[NOTEBOOK] Lỗi đóng vị thế: ${e.message}`, "error");
+      }
+    });
+
+    const btnDel = document.createElement("button");
+    btnDel.type = "button";
+    btnDel.className = "btn-action-small btn-danger";
+    btnDel.textContent = "Xóa";
+    btnDel.addEventListener("click", async () => {
+      try {
+        await getJson(`/api/v1/notebook/positions/${pos.id}`, { method: "DELETE" });
+        appendTerminal(`[NOTEBOOK] Đã xóa vị thế ${pos.id}.`, "info");
+        loadTradeNotebook();
+      } catch (e) {
+        appendTerminal(`[NOTEBOOK] Lỗi xóa vị thế: ${e.message}`, "error");
+      }
+    });
+
+    tdOps.append(btnClose, btnDel);
+    tr.appendChild(tdOps);
+
+    nbPositionsTbody.appendChild(tr);
+  });
+
+  if (nbStatTotal) nbStatTotal.textContent = String(positions.length);
+  if (nbStatPnl) {
+    nbStatPnl.textContent = `$${number(totalPnl, 2)}`;
+    nbStatPnl.className = totalPnl >= 0 ? "text-success" : "text-danger";
+  }
+  if (nbStatTp) nbStatTp.textContent = String(tpCount);
+  if (nbStatSl) nbStatSl.textContent = String(slCount);
+  if (nbStatHold) nbStatHold.textContent = String(holdCount);
+
+  if (nbEmptyState) nbEmptyState.hidden = positions.length > 0;
+}
+
+if (nbRefreshBtn) {
+  nbRefreshBtn.addEventListener("click", loadTradeNotebook);
+}
+
 valuationModeInputs.forEach((input) => input.addEventListener("change", syncValuationModeInputs));
 syncValuationModeInputs();
 

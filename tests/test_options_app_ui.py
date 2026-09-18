@@ -41,15 +41,27 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
     assert 'class="app-shell"' in response.text
     assert 'aria-label="Điều hướng workspace"' in response.text
     assert 'data-workspace-link href="#scanner"' in response.text
+    assert 'data-workspace-link href="#builder"' in response.text
     assert 'data-workspace-link href="#live-desk"' in response.text
     assert 'data-workspace-link href="#backtest"' in response.text
     assert 'data-workspace-link href="#monitoring"' in response.text
     assert 'data-workspace-view="scanner"' in response.text
+    assert 'id="strategy-builder-view"' in response.text
+    assert 'data-workspace-view="builder"' in response.text
+    assert 'id="builder-asset-select"' in response.text
+    assert 'id="builder-expiry-select"' in response.text
+    assert 'id="builder-evaluate-btn"' in response.text
+    assert 'id="builder-save-notebook-btn"' in response.text
+    assert 'id="builder-legs-tbody"' in response.text
+    assert 'id="builder-payoff-svg"' in response.text
     assert 'id="live-desk-view"' in response.text
     assert 'data-workspace-view="live-desk"' in response.text
     assert 'data-workspace-view="backtest"' in response.text
     assert 'data-workspace-view="monitoring"' in response.text
     assert 'id="position-monitoring-view"' in response.text
+    assert 'id="notebook-title"' in response.text
+    assert 'id="nb-refresh-btn"' in response.text
+    assert 'id="nb-positions-tbody"' in response.text
     assert 'id="monitoring-state"' in response.text
     assert 'id="monitoring-decisions-body"' in response.text
     assert 'aria-disabled="true"' in response.text
@@ -183,6 +195,14 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "assumed_spread_bps" in javascript.text
     assert "Xem payoff mô hình" in javascript.text
     assert "EV mô hình" in javascript.text
+    assert "/api/v1/options/chain/" in javascript.text
+    assert "/api/v1/builder/evaluate" in javascript.text
+    assert "/api/v1/notebook/positions" in javascript.text
+    assert "/api/v1/notebook/monitor" in javascript.text
+    assert "initStrategyBuilder" in javascript.text
+    assert "loadTradeNotebook" in javascript.text
+    assert "openOpportunityInBuilder" in javascript.text
+    assert "renderBuilderPayoffChart" in javascript.text
 
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
@@ -199,6 +219,10 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert ".live-opportunity-table" in stylesheet.text
     assert ".signal-chart" in stylesheet.text
     assert ".live-feed" in stylesheet.text
+    assert ".builder-panel" in stylesheet.text
+    assert ".payoff-chart-wrap" in stylesheet.text
+    assert ".smart-badge" in stylesheet.text
+    assert ".notebook-panel" in stylesheet.text
 
 
 def test_static_directory_contains_only_the_expected_ui_files() -> None:

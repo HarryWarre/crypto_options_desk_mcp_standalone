@@ -878,3 +878,175 @@ test("captures clean results panel screenshots on initial load and empty scan wi
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator(".results-panel").screenshot({ path: "test-results/screenshots/scanner-mobile-empty.png" });
 });
+
+test("navigates to Strategy Builder, evaluates preset, and renders payoff chart", async ({ page }) => {
+  await page.route("**/api/v1/options/chain/BTC", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        asset: "BTC",
+        spot: 65000,
+        expiries: ["2026-10-30", "2026-11-27"],
+        contracts: [
+          { symbol: "BTC-30OCT26-60000-C", option_type: "call", strike: 60000, expiry: "2026-10-30", mark_iv: 0.65, mark_price: 6500, bid: 6400, ask: 6600, open_interest: 50 },
+          { symbol: "BTC-30OCT26-70000-C", option_type: "call", strike: 70000, expiry: "2026-10-30", mark_iv: 0.60, mark_price: 1500, bid: 1450, ask: 1550, open_interest: 30 },
+          { symbol: "BTC-30OCT26-60000-P", option_type: "put", strike: 60000, expiry: "2026-10-30", mark_iv: 0.65, mark_price: 1200, bid: 1150, ask: 1250, open_interest: 40 },
+          { symbol: "BTC-30OCT26-70000-P", option_type: "put", strike: 70000, expiry: "2026-10-30", mark_iv: 0.60, mark_price: 6200, bid: 6100, ask: 6300, open_interest: 25 },
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/builder/populate", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        strategy_type: "bull_call_vertical",
+        legs: [
+          { option_type: "call", strike: 60000, expiry: "2026-10-30", position: 1, quantity: 1, mid_price: 6500, iv: 0.65, spot: 65000 },
+          { option_type: "call", strike: 70000, expiry: "2026-10-30", position: -1, quantity: 1, mid_price: 1500, iv: 0.60, spot: 65000 },
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/builder/evaluate", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        strategy_type: "bull_call_vertical",
+        net_premium: 5000,
+        max_profit: 5000,
+        max_loss: -5000,
+        risk_reward_ratio: 1.0,
+        breakevens: [65000],
+        greeks: { delta: 0.35, gamma: 0.00002, theta: -15.2, vega: 45.1 },
+        payoff_curve: [
+          { spot: 55000, pnl: -5000 },
+          { spot: 60000, pnl: -5000 },
+          { spot: 65000, pnl: 0 },
+          { spot: 70000, pnl: 5000 },
+          { spot: 75000, pnl: 5000 },
+        ],
+      }),
+    });
+  });
+
+  // Navigate to builder
+  await page.locator('a[href="#builder"]').click();
+  await expect(page.locator("#strategy-builder-view")).toBeVisible();
+  await expect(page.locator("#builder-title")).toContainText("Options Strategy Builder");
+
+  // Verify legs loaded from preset
+  await expect(page.locator("#builder-legs-tbody tr")).toHaveCount(2);
+
+  // Click Evaluate
+  await page.locator("#builder-evaluate-btn").click();
+  await expect(page.locator("#bm-net-premium")).toContainText("5000.00");
+  await expect(page.locator("#bm-max-profit")).toContainText("5000.00");
+  await expect(page.locator("#builder-payoff-svg path")).toBeVisible();
+});
+
+test("saves strategy builder position to trade notebook and verifies smart monitor badge", async ({ page }) => {
+  let createdPosition = null;
+
+  await page.route("**/api/v1/options/chain/BTC", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        asset: "BTC",
+        spot: 65000,
+        expiries: ["2026-10-30"],
+        contracts: [
+          { symbol: "BTC-30OCT26-65000-C", option_type: "call", strike: 65000, expiry: "2026-10-30", mark_iv: 0.65, mark_price: 3000, bid: 2950, ask: 3050, open_interest: 50 },
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/builder/populate", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        strategy_type: "long_call",
+        legs: [
+          { option_type: "call", strike: 65000, expiry: "2026-10-30", position: 1, quantity: 1, mid_price: 3000, iv: 0.65, spot: 65000 },
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/builder/evaluate", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        strategy_type: "long_call",
+        net_premium: 3000,
+        max_profit: null,
+        max_loss: -3000,
+        risk_reward_ratio: null,
+        breakevens: [68000],
+        greeks: { delta: 0.5, gamma: 0.00003, theta: -20, vega: 60 },
+        payoff_curve: [{ spot: 60000, pnl: -3000 }, { spot: 70000, pnl: 2000 }],
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/notebook/positions", async (route) => {
+    if (route.request().method() === "POST") {
+      const data = JSON.parse(route.request().postData());
+      createdPosition = {
+        id: "nb-1234",
+        created_at: new Date().toISOString(),
+        asset: data.asset,
+        strategy_type: data.strategy_type,
+        legs: data.legs,
+        entry_spot: data.entry_spot,
+        status: "open",
+        notes: data.notes,
+        source: data.source,
+      };
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ position: createdPosition }),
+      });
+    } else {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ positions: createdPosition ? [createdPosition] : [] }),
+      });
+    }
+  });
+
+  await page.route("**/api/v1/notebook/monitor", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        evaluations: createdPosition ? [{
+          position_id: "nb-1234",
+          current_spot: 72000,
+          unrealized_pnl: 4000,
+          decision: { action: "TAKE_PROFIT", action_vn: "CHỐT LỜI", reason: "Target reached" },
+        }] : [],
+      }),
+    });
+  });
+
+  // Go to builder, click save to notebook
+  await page.locator('a[href="#builder"]').click();
+  await page.locator("#builder-save-notebook-btn").click();
+
+  // Expect auto-redirect to monitoring workspace
+  await expect(page.locator("#position-monitoring-view")).toBeVisible();
+  await expect(page.locator("#nb-positions-tbody")).toContainText("nb-1234");
+  await expect(page.locator(".smart-badge-profit")).toContainText("CHỐT LỜI");
+});

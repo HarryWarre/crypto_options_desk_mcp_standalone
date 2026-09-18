@@ -27,20 +27,25 @@
             <span class="module-copy"><strong>Scanner</strong><small>Live opportunity scan</small></span>
             <span class="module-status">01</span>
           </a>
+          <a class="module-link" data-workspace-link href="#builder" aria-label="Strategy Builder">
+            <span class="module-icon" aria-hidden="true">🛠</span>
+            <span class="module-copy"><strong>Strategy Builder</strong><small>Payoff &amp; leg modeler</small></span>
+            <span class="module-status">02</span>
+          </a>
           <a class="module-link" data-workspace-link href="#live-desk" aria-label="Live Desk">
             <span class="module-icon" aria-hidden="true">◉</span>
             <span class="module-copy"><strong>Live Desk</strong><small>Realtime option quotes</small></span>
-            <span class="module-status">02</span>
+            <span class="module-status">03</span>
           </a>
           <a class="module-link" data-workspace-link href="#backtest" aria-label="Backtest">
             <span class="module-icon" aria-hidden="true">↗</span>
             <span class="module-copy"><strong>Backtest</strong><small>Historical replay</small></span>
-            <span class="module-status">03</span>
+            <span class="module-status">04</span>
           </a>
           <a class="module-link" data-workspace-link href="#monitoring" aria-label="Position Monitoring">
             <span class="module-icon" aria-hidden="true">◒</span>
             <span class="module-copy"><strong>Position Monitoring</strong><small>Risk &amp; exit review</small></span>
-            <span class="module-status">04</span>
+            <span class="module-status">05</span>
           </a>
         </nav>
 
@@ -335,6 +340,163 @@
           </section>
           </div>
 
+          <div class="workspace-view" id="strategy-builder-view" data-workspace-view="builder" hidden>
+            <section class="panel builder-panel" aria-labelledby="builder-title">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Interactive payoff &amp; multi-leg modeling</p>
+                  <h2 id="builder-title">Options Strategy Builder</h2>
+                  <p class="muted">Xây dựng và tùy biến chiến lược quyền chọn đa chân, phân tích Greeks, mô phỏng payoff và chuyển thẳng vào Sổ tay giám sát.</p>
+                </div>
+                <div class="builder-top-actions">
+                  <button type="button" class="primary-button" id="builder-evaluate-btn">Định giá &amp; Vẽ đồ thị</button>
+                  <button type="button" class="secondary-button" id="builder-save-notebook-btn">💾 Lưu vào Sổ tay / Monitor</button>
+                </div>
+              </div>
+
+              <!-- Top Controls: Asset, Expiry, Presets -->
+              <div class="builder-control-bar">
+                <div class="builder-selectors">
+                  <label>Tài sản
+                    <select id="builder-asset-select">
+                      <option value="BTC" selected>BTC</option>
+                      <option value="ETH">ETH</option>
+                      <option value="SOL">SOL</option>
+                    </select>
+                  </label>
+                  <label>Ngày đáo hạn
+                    <select id="builder-expiry-select">
+                      <option value="">Đang tải chuỗi hợp đồng...</option>
+                    </select>
+                  </label>
+                  <div class="builder-spot-readout">
+                    <span class="muted">Spot hiện tại:</span>
+                    <strong id="builder-spot-display">$0.00</strong>
+                  </div>
+                </div>
+
+                <div class="builder-presets-wrap">
+                  <span class="preset-label">Mẫu chiến lược:</span>
+                  <div class="builder-preset-buttons" id="builder-preset-buttons">
+                    <button type="button" class="preset-chip is-active" data-preset="bull_call_vertical">Bull Call Spread</button>
+                    <button type="button" class="preset-chip" data-preset="bear_put_vertical">Bear Put Spread</button>
+                    <button type="button" class="preset-chip" data-preset="iron_condor">Iron Condor</button>
+                    <button type="button" class="preset-chip" data-preset="iron_butterfly">Iron Fly</button>
+                    <button type="button" class="preset-chip" data-preset="long_straddle">Straddle</button>
+                    <button type="button" class="preset-chip" data-preset="long_strangle">Strangle</button>
+                    <button type="button" class="preset-chip" data-preset="covered_call">Covered Call</button>
+                    <button type="button" class="preset-chip" data-preset="protective_put">Protective Put</button>
+                    <button type="button" class="preset-chip" data-preset="long_call">Long Call</button>
+                    <button type="button" class="preset-chip" data-preset="long_put">Long Put</button>
+                    <button type="button" class="preset-chip" data-preset="custom">Tùy biến</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Main Grid: Left = Legs Editor, Right = Payoff Chart & Greeks -->
+              <div class="builder-main-grid">
+                <!-- Left: Active Legs -->
+                <div class="builder-legs-container">
+                  <div class="builder-section-header">
+                    <h3>Các chân chiến lược (Legs)</h3>
+                    <div class="builder-legs-actions">
+                      <button type="button" class="small-button" id="builder-add-leg-btn">+ Thêm chân</button>
+                      <button type="button" class="small-button text-danger" id="builder-clear-legs-btn">Xóa hết</button>
+                    </div>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="builder-legs-table">
+                      <thead>
+                        <tr>
+                          <th>Vị thế</th>
+                          <th>SL</th>
+                          <th>Loại</th>
+                          <th>Strike ($)</th>
+                          <th>Đáo hạn</th>
+                          <th>IV (%)</th>
+                          <th>Giá ($)</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody id="builder-legs-tbody"></tbody>
+                    </table>
+                  </div>
+                  <div class="state-message" id="builder-legs-empty" hidden>Chưa có chân nào. Chọn một mẫu chiến lược hoặc bấm “+ Thêm chân” / chọn từ Option Chain bên dưới.</div>
+                </div>
+
+                <!-- Right: Payoff Chart & Metrics -->
+                <div class="builder-payoff-container">
+                  <div class="builder-section-header">
+                    <h3>Đồ thị Payoff &amp; Greeks</h3>
+                    <span class="status-badge" id="builder-status-badge">Sẵn sàng</span>
+                  </div>
+
+                  <!-- Summary Metrics -->
+                  <div class="detail-metrics builder-metrics" id="builder-metrics">
+                    <div><span class="metric-label">Chi phí ròng</span><strong id="bm-net-premium">$0.00</strong></div>
+                    <div><span class="metric-label">Lợi nhuận tối đa</span><strong id="bm-max-profit" class="text-success">$0.00</strong></div>
+                    <div><span class="metric-label">Thua lỗ tối đa</span><strong id="bm-max-loss" class="text-danger">$0.00</strong></div>
+                    <div><span class="metric-label">R:R</span><strong id="bm-rr-ratio">--</strong></div>
+                    <div><span class="metric-label">Hòa vốn</span><strong id="bm-breakeven">--</strong></div>
+                  </div>
+
+                  <!-- Greeks Bar -->
+                  <div class="builder-greeks-strip" id="builder-greeks-strip">
+                    <span>Delta: <b id="bg-delta">0.0000</b></span>
+                    <span>Gamma: <b id="bg-gamma">0.0000</b></span>
+                    <span>Theta: <b id="bg-theta">0.0000</b></span>
+                    <span>Vega: <b id="bg-vega">0.0000</b></span>
+                  </div>
+
+                  <!-- Interactive SVG Payoff Chart -->
+                  <div class="payoff-chart-wrap" id="builder-chart-wrap">
+                    <svg id="builder-payoff-svg" class="builder-payoff-svg" viewBox="0 0 600 280" preserveAspectRatio="none" aria-label="Payoff curve"></svg>
+                    <div class="payoff-tooltip" id="builder-chart-tooltip" hidden></div>
+                  </div>
+                  <div class="chart-assumptions">
+                    <p class="chart-caption">Trục hoành: giá spot đáo hạn. Trục tung: P&amp;L (USD). Đường đứt đoạn xanh dương: giá spot hiện tại. Các chấm tròn: điểm hòa vốn.</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Bottom: Live Options Chain Ladder -->
+              <div class="builder-chain-section">
+                <div class="builder-section-header">
+                  <div>
+                    <h3>Chuỗi quyền chọn trực tiếp (Option Chain)</h3>
+                    <p class="muted">Nhấn vào nút <b>+ Mua</b> hoặc <b>+ Bán</b> để gắn trực tiếp hợp đồng vào chiến lược bên trên.</p>
+                  </div>
+                  <span class="status-badge" id="builder-chain-status">Đang tải chain...</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="chain-table">
+                    <thead>
+                      <tr class="chain-super-header">
+                        <th colspan="5" class="chain-calls-header">CALLS</th>
+                        <th class="chain-strike-header">STRIKE</th>
+                        <th colspan="5" class="chain-puts-header">PUTS</th>
+                      </tr>
+                      <tr>
+                        <th>Hành động</th>
+                        <th>IV</th>
+                        <th>Bid</th>
+                        <th>Ask</th>
+                        <th>OI</th>
+                        <th>Giá Strike</th>
+                        <th>Bid</th>
+                        <th>Ask</th>
+                        <th>IV</th>
+                        <th>OI</th>
+                        <th>Hành động</th>
+                      </tr>
+                    </thead>
+                    <tbody id="builder-chain-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </div>
+
           <div class="workspace-view" id="live-desk-view" data-workspace-view="live-desk" hidden>
             <section class="live-desk" aria-labelledby="live-desk-title">
               <div class="live-desk-topbar">
@@ -543,6 +705,46 @@
           </div>
 
           <div class="workspace-view" id="position-monitoring-view" data-workspace-view="monitoring" hidden>
+            <section class="panel notebook-panel" aria-labelledby="notebook-title">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Smart Position Monitor &amp; Trade Journal</p>
+                  <h2 id="notebook-title">Sổ tay giao dịch &amp; Giám sát thông minh</h2>
+                  <p class="muted">Theo dõi PnL trực tiếp cho các chiến lược đa chân (lưu từ Scanner hoặc Builder). Smart Monitor tự động đối chiếu với luận điểm để phát tín hiệu hành động.</p>
+                </div>
+                <div class="notebook-top-actions">
+                  <button type="button" class="primary-button" id="nb-refresh-btn">🔄 Làm mới Smart Monitor</button>
+                </div>
+              </div>
+
+              <div class="detail-metrics notebook-stats-grid">
+                <div><span class="metric-label">Vị thế đang mở</span><strong id="nb-stat-total">0</strong></div>
+                <div><span class="metric-label">PnL tạm tính</span><strong id="nb-stat-pnl">$0.00</strong></div>
+                <div><span class="metric-label">🟢 Cần chốt lời</span><strong id="nb-stat-tp" class="text-success">0</strong></div>
+                <div><span class="metric-label">🔴 Cần cắt lỗ</span><strong id="nb-stat-sl" class="text-danger">0</strong></div>
+                <div><span class="metric-label">🟡 Đang giữ</span><strong id="nb-stat-hold" class="text-warning">0</strong></div>
+              </div>
+
+              <div class="table-wrap">
+                <table class="notebook-table">
+                  <thead>
+                    <tr>
+                      <th>Mã</th>
+                      <th>Tài sản &amp; Chiến lược</th>
+                      <th>Các chân vị thế</th>
+                      <th>Spot vào / Hiện tại</th>
+                      <th>PnL tạm tính</th>
+                      <th>Khuyến nghị Smart Monitor</th>
+                      <th>Luận điểm / Triggers</th>
+                      <th>Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody id="nb-positions-tbody"></tbody>
+                </table>
+              </div>
+              <div class="state-message" id="nb-empty-state">Chưa có vị thế nào trong sổ tay. Bạn có thể lưu vị thế từ Scanner hoặc Strategy Builder.</div>
+            </section>
+
             <section class="panel monitoring-panel" aria-labelledby="monitoring-title">
               <div class="panel-heading">
                 <div>
