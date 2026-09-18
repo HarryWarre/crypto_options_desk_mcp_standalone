@@ -1764,3 +1764,27 @@ async def test_simple_scan_defaults_moneyness_bounds_and_forwards_to_scanner() -
     assert scan_requests[1].min_moneyness == 0.85
     assert scan_requests[1].max_moneyness == 1.15
 
+
+@pytest.mark.asyncio
+async def test_bot_paper_trading_endpoints() -> None:
+    app = create_app(adapter=FakeAdapter())
+
+    # 1. Status
+    res_status = await request(app, "GET", "/api/v1/bot/status?account_id=ic_btc_paper")
+    assert res_status.status_code == 200
+    data = res_status.json()
+    assert "account" in data
+    assert "margin" in data
+    assert "open_positions" in data
+
+    # 2. Trades
+    res_trades = await request(app, "GET", "/api/v1/bot/trades?account_id=ic_btc_paper")
+    assert res_trades.status_code == 200
+    assert "trades" in res_trades.json()
+
+    # 3. Snapshots
+    res_snap = await request(app, "GET", "/api/v1/bot/snapshots?account_id=ic_btc_paper")
+    assert res_snap.status_code == 200
+    assert "snapshots" in res_snap.json()
+
+

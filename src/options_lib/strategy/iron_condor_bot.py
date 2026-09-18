@@ -243,8 +243,13 @@ class IronCondorBot:
         by_expiry: dict[str, list[dict[str, Any]]] = {}
         for c in contracts:
             exp_str = c.get("expiry", "")
+            if not exp_str and c.get("symbol"):
+                parsed_sym = parse_bybit_option_symbol(c["symbol"])
+                if parsed_sym:
+                    exp_str = parsed_sym["expiry"]
             if not exp_str:
                 continue
+
             # Parse expiry datetime
             try:
                 if "T" in exp_str:
@@ -253,6 +258,9 @@ class IronCondorBot:
                     exp_dt = datetime.fromisoformat(f"{exp_str[:10]}T08:00:00+00:00")
             except Exception:
                 continue
+
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=UTC)
 
             dte = (exp_dt - now).total_seconds() / 86400.0
             if self.config.min_dte <= dte <= self.config.max_dte:
@@ -321,8 +329,8 @@ class IronCondorBot:
             return None
 
         def _mid_or_mark(c: dict[str, Any]) -> float:
-            bid = float(c.get("bid", 0) or 0)
-            ask = float(c.get("ask", 0) or 0)
+            bid = float(c.get("bid_price") or c.get("bid") or 0)
+            ask = float(c.get("ask_price") or c.get("ask") or 0)
             if bid > 0 and ask > 0:
                 return (bid + ask) / 2.0
             return float(c.get("mark_price", 0) or 0)
@@ -413,8 +421,8 @@ class IronCondorBot:
                 )
                 res = self.matching_engine.match_order(
                     order=order,
-                    best_bid=float(contract.get("bid", 0) or 0),
-                    best_ask=float(contract.get("ask", 0) or 0),
+                    best_bid=float(contract.get("bid_price") or contract.get("bid") or 0),
+                    best_ask=float(contract.get("ask_price") or contract.get("ask") or 0),
                     spot=spot,
                     mark_price=float(contract.get("mark_price", 0) or 0),
                 )
@@ -610,3 +618,131 @@ class IronCondorBot:
                 return "CLOSED_EXPIRY"
 
         return "HOLDING"
+
+    # --- Live Cycle & CLI Runner ----------------------------------------------
+
+    async def fetch_live_data(self) -> tuple[list[dict[str, Any]], float]:
+        """Fetch live options chain data and spot price from Bybit."""
+        from bybit_api import BybitPublicClient
+
+        client = BybitPublicClient()
+        raw = await client.get_options_chain_data(self.config.asset)
+        spot = await client.get_spot_price(f"{self.config.asset}USDT")
+
+        contracts: list[dict[str, Any]] = []
+        if isinstance(raw, list):
+            contracts = raw
+        elif isinstance(raw, dict):
+            # If wrapped in list/data
+            contracts = raw.get("list", raw.get("data", []))
+
+        return contracts, spot
+
+    async def run_cycle(self) -> str:
+        """Run a single evaluation cycle: manage existing or find and open new."""
+        try:
+            contracts, spot = await self.fetch_live_data()
+        except Exception as e:
+            self._log_event("fetch_error", {"error": str(e)})
+            return "FETCH_ERROR"
+
+        if not contracts or spot <= 0:
+            self._log_event("empty_chain_or_spot", {"contracts": len(contracts), "spot": spot})
+            return "EMPTY_DATA"
+
+        # 1. Manage active position if open
+        if self._active_condor_id:
+            status = self.monitor_and_manage_position(spot, contracts)
+            # Record periodic snapshot
+            margin_sum = self.margin_calculator.evaluate_portfolio(
+                self.paper_account.positions,
+                self.paper_account.equity,
+                spot,
+            )
+            self.storage.record_snapshot(self.paper_account, margin_sum)
+            return status
+
+        # 2. If no position, search for new opportunity
+        candidate = self.select_iron_condor_candidate(contracts, spot)
+        if candidate:
+            success = self.execute_open_condor(candidate, spot)
+            return "OPENED" if success else "OPEN_FAILED"
+
+        self._log_event("no_candidate_found", {"asset": self.config.asset, "spot": spot})
+        return "NO_CANDIDATE"
+
+    async def run_loop(self) -> None:
+        """Continuously run bot cycles until interrupted."""
+        self._running = True
+        self._log_event(
+            "bot_started",
+            {
+                "asset": self.config.asset,
+                "paper": self.config.paper_mode,
+                "interval": self.config.poll_interval_seconds,
+            },
+        )
+        while self._running:
+            try:
+                action = await self.run_cycle()
+                self._log_event("cycle_completed", {"action": action})
+            except Exception as e:
+                self._log_event("cycle_exception", {"error": str(e)})
+
+            # Sleep interval
+            for _ in range(self.config.poll_interval_seconds):
+                if not self._running:
+                    break
+                await asyncio.sleep(1)
+
+        self._log_event("bot_stopped")
+
+
+def main() -> None:
+    """CLI entrypoint for Iron Condor Bot."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Bybit Iron Condor Trading Bot")
+    parser.add_argument("--asset", default="BTC", help="Underlying asset (BTC, ETH, SOL)")
+    parser.add_argument("--paper", dest="paper", action="store_true", default=True, help="Run in paper mode")
+    parser.add_argument("--execute", dest="paper", action="store_false", help="Run in LIVE execution mode")
+    parser.add_argument("--capital", type=float, default=10000.0, help="Initial virtual capital")
+    parser.add_argument("--short-delta", type=float, default=0.15, help="Target short Delta")
+    parser.add_argument("--wing-delta", type=float, default=0.03, help="Target long wing Delta")
+    parser.add_argument("--min-dte", type=int, default=5, help="Min DTE")
+    parser.add_argument("--max-dte", type=int, default=16, help="Max DTE")
+    parser.add_argument("--tp-pct", type=float, default=0.50, help="Take profit percentage")
+    parser.add_argument("--sl-mult", type=float, default=2.0, help="Stop loss credit multiplier")
+    parser.add_argument("--interval", type=int, default=300, help="Poll interval in seconds")
+    parser.add_argument("--once", action="store_true", help="Run single cycle and exit")
+
+    args = parser.parse_args()
+
+    config = IronCondorConfig(
+        asset=args.asset,
+        paper_mode=args.paper,
+        initial_capital=args.capital,
+        target_short_delta=args.short_delta,
+        target_wing_delta=args.wing_delta,
+        min_dte=args.min_dte,
+        max_dte=args.max_dte,
+        target_profit_pct=args.tp_pct,
+        max_loss_multiplier=args.sl_mult,
+        poll_interval_seconds=args.interval,
+    )
+
+    bot = IronCondorBot(config)
+
+    if args.once:
+        result = asyncio.run(bot.run_cycle())
+        print(f"Cycle result: {result}")
+        print(f"Paper Equity: ${bot.paper_account.equity:,.2f} | Positions: {len(bot.paper_account.positions)}")
+    else:
+        try:
+            asyncio.run(bot.run_loop())
+        except KeyboardInterrupt:
+            print("\nBot stopped by user.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1577,6 +1577,45 @@ def create_app(
             }
         )
 
+    # --- Bot Paper Trading Endpoints ------------------------------------------
+
+    @app.get("/api/v1/bot/status")
+    async def get_bot_status(account_id: str = "ic_btc_paper") -> JSONResponse:
+        from options_lib.paper_broker import MarginCalculator, PaperStorage
+
+        storage = PaperStorage()
+        acc = storage.load_account(account_id)
+        calc = MarginCalculator()
+        margin_sum = calc.evaluate_portfolio(acc.positions, acc.equity, 0.0)
+        return JSONResponse(
+            content={
+                "account": acc.to_dict(),
+                "margin": margin_sum.to_dict(),
+                "open_positions": [p.to_dict() for p in acc.positions.values()],
+            }
+        )
+
+    @app.get("/api/v1/bot/trades")
+    async def get_bot_trades(account_id: str = "ic_btc_paper", limit: int = 50) -> JSONResponse:
+        from options_lib.paper_broker import PaperStorage
+
+        storage = PaperStorage()
+        acc = storage.load_account(account_id)
+        return JSONResponse(
+            content={
+                "trades": [t.to_dict() for t in reversed(acc.trade_history[-limit:])],
+                "count": len(acc.trade_history),
+            }
+        )
+
+    @app.get("/api/v1/bot/snapshots")
+    async def get_bot_snapshots(account_id: str = "ic_btc_paper", limit: int = 100) -> JSONResponse:
+        from options_lib.paper_broker import PaperStorage
+
+        storage = PaperStorage()
+        snapshots = storage.get_snapshots(account_id=account_id, limit=limit)
+        return JSONResponse(content={"snapshots": snapshots})
+
     return app
 
 

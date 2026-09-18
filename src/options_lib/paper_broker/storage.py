@@ -283,3 +283,30 @@ class PaperStorage:
             ).fetchall()
             return [dict(r) for r in reversed(rows)]
 
+    def record_snapshot(
+        self,
+        account: PaperAccount,
+        margin_summary: MarginSummary,
+    ) -> None:
+        """Record an instantaneous portfolio snapshot without touching positions table."""
+        now = datetime.now(UTC).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO paper_snapshots (
+                    account_id, timestamp, equity, cash_balance, unrealized_pnl,
+                    margin_used, margin_utilization_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account.account_id,
+                    now,
+                    margin_summary.equity,
+                    account.cash_balance,
+                    account.total_unrealized_pnl,
+                    margin_summary.initial_margin,
+                    margin_summary.margin_utilization_pct,
+                ),
+            )
+
+

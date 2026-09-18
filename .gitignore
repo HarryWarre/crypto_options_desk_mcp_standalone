@@ -15,3 +15,5 @@ test-results/
 playwright-report/
 .worktrees/
 graphify-out/
+portfolio_data/
+logs/
