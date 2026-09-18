@@ -225,3 +225,125 @@ async def test_api_trade_notebook_crud_and_smart_monitor(test_app):
         del_resp = await client.delete(f"/api/v1/notebook/positions/{pos_id}")
         assert del_resp.status_code == 200
         assert del_resp.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_canonical_option_contracts_chain_and_populate():
+    """Verify that canonical OptionContract (expiry_at, bid_price, ask_price, spot_price, Call/Put) works."""
+    from bybit_api.options_market_data import OptionContract, NormalizedOptionUniverse, OptionAsset
+
+    now = datetime.now(UTC)
+    exp = now + timedelta(days=7)
+    contracts = [
+        OptionContract(
+            asset="SOL",
+            symbol="SOL-EXP-110-P-USDT",
+            option_type="Put",
+            strike=110.0,
+            expiry_at=exp,
+            expiry_code="EXP",
+            spot_price=115.0,
+            mark_price=2.5,
+            mark_iv=0.60,
+            bid_price=2.4,
+            ask_price=2.6,
+            bid_iv=0.59,
+            ask_iv=0.61,
+            delta=-0.35,
+            gamma=0.04,
+            theta=-0.15,
+            vega=0.08,
+            volume_24h=100.0,
+            open_interest=500.0,
+            quote_currency="USDT",
+            settle_currency="USDT",
+            quote_timestamp=now,
+        ),
+        OptionContract(
+            asset="SOL",
+            symbol="SOL-EXP-115-C-USDT",
+            option_type="Call",
+            strike=115.0,
+            expiry_at=exp,
+            expiry_code="EXP",
+            spot_price=115.0,
+            mark_price=4.0,
+            mark_iv=0.60,
+            bid_price=3.8,
+            ask_price=4.2,
+            bid_iv=0.59,
+            ask_iv=0.61,
+            delta=0.50,
+            gamma=0.05,
+            theta=-0.20,
+            vega=0.10,
+            volume_24h=200.0,
+            open_interest=800.0,
+            quote_currency="USDT",
+            settle_currency="USDT",
+            quote_timestamp=now,
+        ),
+        OptionContract(
+            asset="SOL",
+            symbol="SOL-EXP-120-C-USDT",
+            option_type="Call",
+            strike=120.0,
+            expiry_at=exp,
+            expiry_code="EXP",
+            spot_price=115.0,
+            mark_price=1.8,
+            mark_iv=0.62,
+            bid_price=1.7,
+            ask_price=1.9,
+            bid_iv=0.61,
+            ask_iv=0.63,
+            delta=0.30,
+            gamma=0.04,
+            theta=-0.12,
+            vega=0.07,
+            volume_24h=150.0,
+            open_interest=600.0,
+            quote_currency="USDT",
+            settle_currency="USDT",
+            quote_timestamp=now,
+        ),
+    ]
+
+    class CanonicalMarketAdapter:
+        async def load_universe(self, assets=None, valuation_time=None):
+            return NormalizedOptionUniverse(
+                assets=(OptionAsset(base_coin="SOL", status="ONLINE", contract_count=3),),
+                contracts=tuple(contracts),
+                issues=(),
+                valuation_time=now,
+            )
+
+    app = create_app(adapter=CanonicalMarketAdapter())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        # Test chain endpoint
+        chain_resp = await client.get("/api/v1/options/chain/SOL")
+        assert chain_resp.status_code == 200
+        chain_data = chain_resp.json()
+        assert chain_data["asset"] == "SOL"
+        assert chain_data["spot"] == 115.0
+        assert len(chain_data["contracts"]) == 3
+        assert len(chain_data["expiries"]) == 1
+        assert chain_data["expiries"][0] == exp.strftime("%Y-%m-%d")
+        assert chain_data["contracts"][0]["option_type"] == "put"
+        assert chain_data["contracts"][0]["bid"] == 2.4
+        assert chain_data["contracts"][0]["ask"] == 2.6
+
+        # Test populate endpoint
+        pop_resp = await client.post(
+            "/api/v1/builder/populate",
+            json={"strategy_type": "bull_call_vertical", "asset": "SOL"},
+        )
+        assert pop_resp.status_code == 200
+        pop_data = pop_resp.json()
+        assert pop_data["strategy_type"] == "bull_call_vertical"
+        assert pop_data["spot"] == 115.0
+        assert len(pop_data["legs"]) == 2
+        assert pop_data["legs"][0]["option_type"] == "call"
+        assert pop_data["legs"][0]["strike"] == 115.0
+        assert pop_data["legs"][1]["strike"] == 120.0
+

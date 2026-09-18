@@ -1,6 +1,6 @@
 # PM-010 — Fix Expiry Date Retrieval in Options Strategy Builder
 
-Status: in-progress  
+Status: verified  
 Branch: `fix/builder-expiry-retrieval`  
 Target: `main`  
 
@@ -84,7 +84,8 @@ In `OptionContract`:
 
 ## Acceptance Criteria
 
-- [ ] `/api/v1/options/chain/{asset}` successfully extracts expiration dates, strike ladders, spot price, and bid/ask quotes from canonical `OptionContract` objects without `AttributeError`.
-- [ ] `/api/v1/builder/populate` correctly populates strategy legs from live option contracts without `AttributeError`.
-- [ ] The Strategy Builder UI successfully populates `#builder-expiry-select` with sorted expiration dates (e.g. `2026-09-25`, `2026-10-02`, etc.) when an asset is selected.
-- [ ] Unit and integration tests verify contract normalization and pass against both canonical `OptionContract` and mocked adapters.
+- [x] `/api/v1/options/chain/{asset}` successfully extracts expiration dates, strike ladders, spot price, and bid/ask quotes from canonical `OptionContract` objects without `AttributeError`.
+- [x] `/api/v1/builder/populate` correctly populates strategy legs from live option contracts without `AttributeError`.
+- [x] The Strategy Builder UI successfully populates `#builder-expiry-select` with sorted expiration dates (e.g. `2026-09-25`, `2026-10-02`, etc.) when an asset is selected.
+- [x] Unit and integration tests verify contract normalization and pass against both canonical `OptionContract` and mocked adapters.
+

@@ -2181,6 +2181,8 @@ function initStrategyBuilder() {
   if (builderAssetSelect) {
     builderAssetSelect.addEventListener("change", () => {
       builderState.asset = builderAssetSelect.value;
+      builderState.expiry = "";
+      builderState.legs = [];
       loadBuilderOptionChain(builderState.asset);
     });
   }
@@ -2190,6 +2192,9 @@ function initStrategyBuilder() {
       builderState.expiry = builderExpirySelect.value;
       if (builderState.chainData) {
         renderBuilderChain(builderState.chainData, builderState.expiry);
+      }
+      if (builderState.activePreset && builderState.activePreset !== "custom") {
+        applyBuilderPreset(builderState.activePreset);
       }
     });
   }
@@ -2274,6 +2279,11 @@ async function loadBuilderOptionChain(asset) {
           builderState.expiry = data.expiries[0];
         }
         builderExpirySelect.value = builderState.expiry;
+      } else {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "Không có kỳ hạn nào";
+        builderExpirySelect.appendChild(opt);
       }
     }
 
@@ -2305,8 +2315,9 @@ function renderBuilderChain(chainData, selectedExpiry) {
     if (!strikeMap.has(s)) {
       strikeMap.set(s, { call: null, put: null });
     }
-    if (c.option_type === "call") strikeMap.get(s).call = c;
-    else if (c.option_type === "put") strikeMap.get(s).put = c;
+    const optType = String(c.option_type || "").toLowerCase();
+    if (optType === "call") strikeMap.get(s).call = c;
+    else if (optType === "put") strikeMap.get(s).put = c;
   });
 
   const strikes = [...strikeMap.keys()].sort((a, b) => a - b);
@@ -2336,7 +2347,7 @@ function renderBuilderChain(chainData, selectedExpiry) {
     tr.appendChild(tdCallAction);
 
     // Call IV, Bid, Ask, OI
-    cell(tr, pair.call ? percent(pair.call.mark_iv || 0.65) : "—");
+    cell(tr, pair.call ? percent(pair.call.mark_iv || pair.call.iv || 0.65) : "—");
     cell(tr, pair.call ? number(pair.call.bid, 2) : "—");
     cell(tr, pair.call ? number(pair.call.ask, 2) : "—");
     cell(tr, pair.call ? number(pair.call.open_interest, 0) : "—");
@@ -2353,7 +2364,7 @@ function renderBuilderChain(chainData, selectedExpiry) {
     // Put Bid, Ask, IV, OI
     cell(tr, pair.put ? number(pair.put.bid, 2) : "—");
     cell(tr, pair.put ? number(pair.put.ask, 2) : "—");
-    cell(tr, pair.put ? percent(pair.put.mark_iv || 0.65) : "—");
+    cell(tr, pair.put ? percent(pair.put.mark_iv || pair.put.iv || 0.65) : "—");
     cell(tr, pair.put ? number(pair.put.open_interest, 0) : "—");
 
     // Put Action cell
@@ -2382,11 +2393,11 @@ function renderBuilderChain(chainData, selectedExpiry) {
 function addLegFromContract(contract, position) {
   const exp = contract.expiry ? String(contract.expiry).split("T")[0] : builderState.expiry;
   builderState.legs.push({
-    option_type: contract.option_type,
+    option_type: String(contract.option_type || "call").toLowerCase(),
     strike: Number(contract.strike),
     expiry: exp,
-    iv: Number(contract.mark_iv || 0.65),
-    spot: builderState.spot || Number(contract.underlying_price || 60000),
+    iv: Number(contract.mark_iv || contract.iv || 0.65),
+    spot: builderState.spot || Number(contract.spot_price || contract.underlying_price || 60000),
     position: position,
     quantity: 1,
     mid_price: position > 0 ? (Number(contract.ask) || Number(contract.mark_price) || 0) : (Number(contract.bid) || Number(contract.mark_price) || 0),

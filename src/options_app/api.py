@@ -1305,27 +1305,36 @@ def create_app(
             contracts = universe.contracts_by_asset.get(asset_norm, ())
             spot = float(universe.spot_prices.get(asset_norm, 0.0) if hasattr(universe, "spot_prices") else 0.0)
             if spot <= 0 and contracts:
-                spot = float(getattr(contracts[0], "underlying_price", 0.0) or 0.0)
+                spot = float(getattr(contracts[0], "spot_price", getattr(contracts[0], "underlying_price", 0.0)) or 0.0)
 
             contract_dicts = []
             expiries = set()
             for c in contracts:
-                exp = c.expiry.isoformat() if hasattr(c.expiry, "isoformat") else str(c.expiry)
-                expiries.add(exp[:10])
-                bid = float(c.bid or 0.0)
-                ask = float(c.ask or 0.0)
-                mid = (bid + ask) / 2.0 if (bid + ask) > 0 else float(getattr(c, "mark_price", 0.0) or 0.0)
+                expiry_val = getattr(c, "expiry_at", getattr(c, "expiry", None))
+                if expiry_val is not None:
+                    exp = expiry_val.isoformat() if hasattr(expiry_val, "isoformat") else str(expiry_val)
+                else:
+                    exp = ""
+                if exp:
+                    expiries.add(exp[:10])
+                bid = float(getattr(c, "bid_price", getattr(c, "bid", 0.0)) or 0.0)
+                ask = float(getattr(c, "ask_price", getattr(c, "ask", 0.0)) or 0.0)
+                mark = float(getattr(c, "mark_price", 0.0) or 0.0)
+                mid = (bid + ask) / 2.0 if (bid + ask) > 0 else mark
                 contract_dicts.append({
                     "symbol": c.symbol,
-                    "option_type": c.option_type,
+                    "option_type": c.option_type.lower(),
                     "strike": float(c.strike),
                     "expiry": exp,
                     "bid": bid,
                     "ask": ask,
                     "mid_price": round(mid, 4),
+                    "mark_price": mark,
                     "iv": float(getattr(c, "mark_iv", 0.80) or 0.80),
+                    "mark_iv": float(getattr(c, "mark_iv", 0.80) or 0.80),
                     "open_interest": float(getattr(c, "open_interest", 0.0) or 0.0),
                     "volume_24h": float(getattr(c, "volume_24h", 0.0) or 0.0),
+                    "spot_price": float(getattr(c, "spot_price", spot) or spot),
                 })
             return JSONResponse(
                 content={
@@ -1354,21 +1363,28 @@ def create_app(
             contracts = universe.contracts_by_asset.get(asset_norm, ())
             spot = float(universe.spot_prices.get(asset_norm, 0.0) if hasattr(universe, "spot_prices") else 0.0)
             if spot <= 0 and contracts:
-                spot = float(getattr(contracts[0], "underlying_price", 0.0) or 0.0)
+                spot = float(getattr(contracts[0], "spot_price", getattr(contracts[0], "underlying_price", 0.0)) or 0.0)
 
-            contract_dicts = [
-                {
+            contract_dicts = []
+            for c in contracts:
+                expiry_val = getattr(c, "expiry_at", getattr(c, "expiry", None))
+                if expiry_val is not None:
+                    exp = expiry_val.isoformat() if hasattr(expiry_val, "isoformat") else str(expiry_val)
+                else:
+                    exp = ""
+                bid = float(getattr(c, "bid_price", getattr(c, "bid", 0.0)) or 0.0)
+                ask = float(getattr(c, "ask_price", getattr(c, "ask", 0.0)) or 0.0)
+                mark = float(getattr(c, "mark_price", 0.0) or 0.0)
+                contract_dicts.append({
                     "symbol": c.symbol,
-                    "option_type": c.option_type,
+                    "option_type": c.option_type.lower(),
                     "strike": float(c.strike),
-                    "expiry": c.expiry.isoformat() if hasattr(c.expiry, "isoformat") else str(c.expiry),
-                    "bid": float(c.bid or 0.0),
-                    "ask": float(c.ask or 0.0),
-                    "mark_price": float(getattr(c, "mark_price", 0.0) or 0.0),
+                    "expiry": exp,
+                    "bid": bid,
+                    "ask": ask,
+                    "mark_price": mark,
                     "iv": float(getattr(c, "mark_iv", 0.80) or 0.80),
-                }
-                for c in contracts
-            ]
+                })
 
             legs = build_template_legs_from_chain(
                 strategy_type=request.strategy_type,

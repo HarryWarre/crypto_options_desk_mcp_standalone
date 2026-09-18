@@ -579,8 +579,8 @@ def build_template_legs_from_chain(
         chain = contracts  # fallback to all
 
     # Sort by strike distance from spot
-    calls = sorted([c for c in chain if c.get("option_type") == "call"], key=lambda c: abs(c["strike"] - spot))
-    puts = sorted([c for c in chain if c.get("option_type") == "put"], key=lambda c: abs(c["strike"] - spot))
+    calls = sorted([c for c in chain if str(c.get("option_type", "")).lower() == "call"], key=lambda c: abs(c["strike"] - spot))
+    puts = sorted([c for c in chain if str(c.get("option_type", "")).lower() == "put"], key=lambda c: abs(c["strike"] - spot))
 
     def _nearest_call(rank: int = 0) -> dict[str, Any] | None:
         return calls[rank] if rank < len(calls) else None
@@ -601,7 +601,7 @@ def build_template_legs_from_chain(
         except ValueError:
             expiry_dt = datetime.now(UTC)
         return BuilderLegInput(
-            option_type=c["option_type"],
+            option_type=str(c.get("option_type", "call")).lower(),
             strike=float(c["strike"]),
             expiry=expiry_dt,
             iv=float(c.get("iv", 0.80) or 0.80),
