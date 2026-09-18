@@ -21,7 +21,12 @@ from options_lib.historical_volatility import (
     HistoricalVolatilityContext,
     HistoricalVolatilityContexts,
 )
-from options_lib.opportunity_scanner import Opportunity, ScanRequest, ScanResult
+from options_lib.opportunity_scanner import (
+    Opportunity,
+    RejectedCandidate,
+    ScanRequest,
+    ScanResult,
+)
 
 VALUATION_TIME = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 DATA_TIME = datetime(2026, 9, 15, 11, 59, 30, tzinfo=UTC)
@@ -59,6 +64,19 @@ class MetricsOpportunity:
 class TheoreticalMetricsOpportunity(MetricsOpportunity):
     expected_value: float | None = None
     valuation_mode: str = "theoretical"
+
+
+@dataclass(frozen=True)
+class CanonicalMetricsOpportunity(MetricsOpportunity):
+    """Fixture for the Phase 5 metrics names without changing the domain seam."""
+
+    model_probability: float = 0.33
+    historical_win_rate: float | None = 0.58
+    reward_risk_ratio: float = 1.0
+    break_even_win_probability: float = 0.5
+    expectancy_after_costs: float = -0.34
+    fair_value_edge: float = 2.5
+    evidence_status: str = "insufficient_evidence"
 
 
 SCENARIO_LEG = {
@@ -982,6 +1000,94 @@ async def test_scan_serializes_expiry_and_metrics_fields_on_opportunities() -> N
     assert serialized["risk_reward_status"] == "available"
     assert serialized["limitations"] == ["Model estimates are not historical outcomes."]
     assert serialized["expected_value_status"] == "not_validated"
+
+
+@pytest.mark.asyncio
+async def test_scan_serializes_phase_five_metrics_without_aliasing_model_to_history() -> None:
+    opportunity = CanonicalMetricsOpportunity()
+    rejection = RejectedCandidate(
+        asset="BTC",
+        symbol="BTC-30DEC26-78000-C",
+        option_type="call",
+        strike=78000,
+        expiry_at=opportunity.expiry_at,
+        reasons=("expectancy_after_costs_below_minimum", "evidence_not_validated"),
+        messages=("Expectancy after costs is not positive", "Historical evidence is unavailable"),
+        quote_timestamp=DATA_TIME,
+    )
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(opportunity,),
+            rejections=(rejection,),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    serialized = body["opportunities"][0]
+    assert serialized["model_probability"] == pytest.approx(0.33)
+    assert serialized["historical_win_rate"] == pytest.approx(0.58)
+    assert serialized["reward_risk_ratio"] == pytest.approx(1.0)
+    assert serialized["break_even_win_probability"] == pytest.approx(0.5)
+    assert serialized["expectancy_after_costs"] == pytest.approx(-0.34)
+    assert serialized["fair_value_edge"] == pytest.approx(2.5)
+    assert serialized["evidence_status"] == "insufficient_evidence"
+
+    legacy_probability_only = body["opportunities"][0]
+    assert legacy_probability_only["win_probability"] == pytest.approx(0.62)
+    assert legacy_probability_only["historical_win_rate"] == pytest.approx(0.58)
+
+    serialized_rejection = body["rejections"][0]
+    assert serialized_rejection["reasons"] == [
+        "expectancy_after_costs_below_minimum",
+        "evidence_not_validated",
+    ]
+    assert serialized_rejection["rejection_reason"] == serialized_rejection["reasons"]
+    assert serialized_rejection["rejection_reasons"] == serialized_rejection["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_win_rate_fallback_is_model_probability_only() -> None:
+    @dataclass(frozen=True)
+    class LegacyOpportunity:
+        symbol: str = "BTC-30DEC26-78000-C"
+        expected_value: float = 1.0
+        win_rate: float = 0.41
+
+    opportunity = LegacyOpportunity()
+
+    def fake_scanner(universe: NormalizedOptionUniverse, scan_request: Any) -> ScanResult:
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(opportunity,),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    response = await request(
+        create_app(adapter=FakeAdapter(), scanner=fake_scanner),
+        "POST",
+        "/api/v1/opportunities/scan",
+        json={"assets": ["BTC"], "strategies": ["long_call"]},
+    )
+
+    assert response.status_code == 200
+    serialized = response.json()["opportunities"][0]
+    assert serialized["model_probability"] == pytest.approx(0.41)
+    assert serialized["historical_win_rate"] is None
 
 
 @pytest.mark.asyncio

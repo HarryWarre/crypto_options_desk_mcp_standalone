@@ -71,11 +71,16 @@ def _opportunity() -> SimpleNamespace:
     )
 
 
-def _config(archive: JsonlOptionSnapshotArchive, policy: ExitPolicy) -> BacktestRunConfig:
+def _config(
+    archive: JsonlOptionSnapshotArchive,
+    policy: ExitPolicy,
+    *,
+    duration: timedelta = timedelta(hours=2),
+) -> BacktestRunConfig:
     return BacktestRunConfig(
         archive=archive,
         start_time=START,
-        end_time=START + timedelta(hours=2),
+        end_time=START + duration,
         assets=("BTC",),
         scan_request=ScanRequest(
             risk_free_rate=0.05,
@@ -154,6 +159,35 @@ def test_snapshot_backtest_settles_at_expiry_without_future_option_quote(tmp_pat
 
     assert result.trades[0].exit_reason == "expiry"
     assert result.trades[0].exit_time == expiry
+
+
+def test_snapshot_backtest_blocks_active_duplicate_but_allows_reentry_after_exit(tmp_path) -> None:
+    archive = JsonlOptionSnapshotArchive(tmp_path / "options.jsonl")
+    archive.save(
+        [
+            _snapshot(START, bid=1100, ask=1300, spot=95_000),
+            _snapshot(START + timedelta(hours=1), bid=1400, ask=1500, spot=95_500),
+            _snapshot(START + timedelta(hours=2), bid=2500, ask=2600, spot=97_000),
+            _snapshot(START + timedelta(hours=3), bid=2500, ask=2600, spot=97_000),
+        ]
+    )
+
+    result = run_snapshot_backtest(
+        _config(
+            archive,
+            ExitPolicy(type="profit_target", profit_target_pct=0.5),
+            duration=timedelta(hours=3),
+        ),
+        scanner=lambda _universe, _request: SimpleNamespace(opportunities=(_opportunity(),)),
+    )
+
+    assert len(result.trades) == 2
+    assert [(trade.entry_time, trade.exit_time) for trade in result.trades] == [
+        (START, START + timedelta(hours=2)),
+        (START + timedelta(hours=2), START + timedelta(hours=3)),
+    ]
+    assert result.trades[0].exit_reason == "profit_target"
+    assert result.trades[1].exit_reason == "profit_target"
 
 
 def test_backtest_requires_archived_data(tmp_path) -> None:

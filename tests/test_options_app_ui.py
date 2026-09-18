@@ -152,6 +152,23 @@ async def test_static_assets_are_served_from_same_origin() -> None:
     assert "expected_value" in javascript.text
     assert "win_probability" in javascript.text
     assert "risk_reward_ratio" in javascript.text
+    assert "model_probability" in javascript.text
+    assert "historical_win_rate" in javascript.text
+    assert "reward_risk_ratio" in javascript.text
+    assert "break_even_win_probability" in javascript.text
+    assert "expectancy_after_costs" in javascript.text
+    assert "fair_value_edge" in javascript.text
+    assert "evidence_status" in javascript.text
+    assert "rejection_reason" in javascript.text
+    assert "Xác suất mô hình" in javascript.text
+    assert "Win rate lịch sử" in javascript.text
+    assert "R:R thông thường" in javascript.text
+    assert "Xác suất hòa vốn" in javascript.text
+    assert "Expectancy sau chi phí" in javascript.text
+    assert "Edge fair value sau phí" in javascript.text
+    assert "Tỷ lệ đóng góp payoff" in javascript.text
+    assert "RR (mô hình)" not in javascript.text
+    assert "Xác suất có lãi (mô hình)" not in javascript.text
     assert "methodology_note" in javascript.text
     assert "breakevens" in javascript.text
     assert 'P&L tại đáo hạn ${number(point.pnl, 2)}' in javascript.text

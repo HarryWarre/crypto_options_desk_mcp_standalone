@@ -8,7 +8,7 @@ guarantee.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -78,6 +78,8 @@ class ValidationConfig:
 
 @dataclass(frozen=True)
 class BacktestMetrics:
+    """Aggregate realized P&L metrics, including cost-adjusted win rate."""
+
     trade_count: int
     wins: int
     losses: int
@@ -87,6 +89,13 @@ class BacktestMetrics:
     average_win: float
     average_loss: float
     max_drawdown: float
+    win_rate: float = 0.0
+
+    @property
+    def historical_win_rate(self) -> float:
+        """Compatibility alias clarifying that ``win_rate`` is realized evidence."""
+
+        return self.win_rate
 
 
 @dataclass(frozen=True)
@@ -105,6 +114,7 @@ class BacktestReport:
     split_timestamp: datetime | None
     lookahead_free: bool
     evidence_note: str
+    evidence_metadata: dict[str, object] = field(default_factory=dict)
 
 
 def validate_backtest(
@@ -148,6 +158,22 @@ def validate_backtest(
         status = BacktestStatus.VALIDATED_NON_POSITIVE_EV
         note = "Held-out expected value is not positive after costs; this is not a guarantee of future returns."
 
+    evidence_metadata = {
+        "evidence_status": status.value,
+        "outcome_type": "historical_realized",
+        "historical_outcomes_used": True,
+        "probability_basis": "historical_net_pnl_after_costs",
+        "win_rate_basis": "historical_net_pnl_after_costs",
+        "win_rate_definition": "wins / completed trades where net_pnl > 0",
+        "costs_included": True,
+        "lookahead_free": config.lookahead_verified,
+        "sample_sufficient": enough_data,
+        "train_sample_count": len(train),
+        "holdout_sample_count": len(holdout),
+        "minimum_train_samples": config.minimum_train_samples,
+        "minimum_holdout_samples": config.minimum_holdout_samples,
+    }
+
     return BacktestReport(
         status=status,
         train=train_metrics,
@@ -156,6 +182,7 @@ def validate_backtest(
         split_timestamp=holdout[0].timestamp if holdout else None,
         lookahead_free=config.lookahead_verified,
         evidence_note=note,
+        evidence_metadata=evidence_metadata,
     )
 
 
@@ -208,6 +235,7 @@ def _metrics(
         average_win=sum(wins) / len(wins) if wins else 0.0,
         average_loss=sum(losses) / len(losses) if losses else 0.0,
         max_drawdown=max_drawdown,
+        win_rate=len(wins) / len(net_values) if net_values else 0.0,
     )
 
 

@@ -7,8 +7,7 @@ Supports straddles, strangles, spreads, condors, butterflies, and ratio spreads.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple, NamedTuple
+from typing import Dict, List, Optional, Tuple
 from enum import Enum
 from collections import defaultdict
 
@@ -73,6 +72,40 @@ class OptionSymbolParser:
     def parse_bybit_symbol(symbol: str) -> Optional[Dict]:
         """Parse Bybit option symbol format: BTC-30DEC24-70000-C"""
         return parse_bybit_option_symbol(symbol)
+
+
+def _quote_price(option: Dict, side: str) -> Tuple[Optional[float], str]:
+    """Return an executable side quote, or an explicit mark fallback."""
+
+    keys = ("ask_price", "ask1Price", "ask") if side == "long" else (
+        "bid_price", "bid1Price", "bid"
+    )
+    for key in keys:
+        value = option.get(key)
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            return price, "executable_bid_ask"
+
+    for key in ("mark_price", "markPrice", "mid_price", "midPrice"):
+        value = option.get(key)
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            return price, "mark_price_fallback"
+    return None, "unavailable"
+
+
+def _quote_status(sources: List[str]) -> str:
+    if not sources or any(source == "unavailable" for source in sources):
+        return "unavailable"
+    if all(source == "executable_bid_ask" for source in sources):
+        return "executable"
+    return "mark_fallback"
 
 
 class StrategyClassifier:
@@ -404,8 +437,15 @@ class StrategyClassifier:
                 call = calls[0]
                 put = puts[0]
                 
-                cost = call['mark_price'] + put['mark_price']
+                call_price, call_source = _quote_price(call, "long")
+                put_price, put_source = _quote_price(put, "long")
+                cost = (
+                    call_price + put_price
+                    if call_price is not None and put_price is not None
+                    else None
+                )
                 atm_distance = abs(strike - underlying_price)
+                quote_sources = [call_source, put_source]
                 
                 straddles.append({
                     'strategy_type': 'straddle',
@@ -416,8 +456,18 @@ class StrategyClassifier:
                     'atm_distance_pct': atm_distance / underlying_price * 100,
                     'call_symbol': call['symbol'],
                     'put_symbol': put['symbol'],
-                    'breakevens': [strike - cost, strike + cost],
-                    'implied_move_pct': cost / underlying_price * 100
+                    'breakevens': [strike - cost, strike + cost] if cost is not None else [],
+                    'implied_move_pct': cost / underlying_price * 100 if cost is not None else 0,
+                    'legs': [call, put],
+                    'positions': [1, 1],
+                    'entry_price_source': (
+                        'executable_bid_ask'
+                        if all(source == 'executable_bid_ask' for source in quote_sources)
+                        else 'mark_price_fallback'
+                        if all(source != 'unavailable' for source in quote_sources)
+                        else 'unavailable'
+                    ),
+                    'quote_status': _quote_status(quote_sources),
                 })
         
         return straddles
@@ -433,7 +483,13 @@ class StrategyClassifier:
         for call in calls:
             for put in puts:
                 if call['strike'] != put['strike']:
-                    cost = call['mark_price'] + put['mark_price']
+                    call_price, call_source = _quote_price(call, "long")
+                    put_price, put_source = _quote_price(put, "long")
+                    cost = (
+                        call_price + put_price
+                        if call_price is not None and put_price is not None
+                        else None
+                    )
                     
                     # Determine OTM vs ITM configuration
                     call_otm = call['strike'] > underlying_price
@@ -454,7 +510,17 @@ class StrategyClassifier:
                         'breakevens': [
                             min(put['strike'], call['strike']) - cost,
                             max(put['strike'], call['strike']) + cost
-                        ]
+                        ] if cost is not None else [],
+                        'legs': [put, call],
+                        'positions': [1, 1],
+                        'entry_price_source': (
+                            'executable_bid_ask'
+                            if call_source == put_source == 'executable_bid_ask'
+                            else 'mark_price_fallback'
+                            if call_source != 'unavailable' and put_source != 'unavailable'
+                            else 'unavailable'
+                        ),
+                        'quote_status': _quote_status([put_source, call_source]),
                     })
         
         return strangles
@@ -470,8 +536,18 @@ class StrategyClassifier:
                 if long_call['strike'] != short_call['strike']:
                     # Bull call spread: long lower strike, short higher strike
                     if long_call['strike'] < short_call['strike']:
-                        net_cost = long_call['mark_price'] - short_call['mark_price']
-                        max_profit = (short_call['strike'] - long_call['strike']) - net_cost
+                        long_price, long_source = _quote_price(long_call, "long")
+                        short_price, short_source = _quote_price(short_call, "short")
+                        net_cost = (
+                            long_price - short_price
+                            if long_price is not None and short_price is not None
+                            else None
+                        )
+                        max_profit = (
+                            (short_call['strike'] - long_call['strike']) - net_cost
+                            if net_cost is not None
+                            else None
+                        )
                         
                         spreads.append({
                             'strategy_type': 'bull_call_spread',
@@ -481,8 +557,20 @@ class StrategyClassifier:
                             'net_cost': net_cost,
                             'max_profit': max_profit,
                             'max_loss': net_cost,
-                            'breakeven': long_call['strike'] + net_cost,
-                            'width': short_call['strike'] - long_call['strike']
+                            'breakeven': long_call['strike'] + net_cost if net_cost is not None else None,
+                            'width': short_call['strike'] - long_call['strike'],
+                            'long_symbol': long_call['symbol'],
+                            'short_symbol': short_call['symbol'],
+                            'legs': [long_call, short_call],
+                            'positions': [1, -1],
+                            'entry_price_source': (
+                                'executable_bid_ask'
+                                if long_source == short_source == 'executable_bid_ask'
+                                else 'mark_price_fallback'
+                                if long_source != 'unavailable' and short_source != 'unavailable'
+                                else 'unavailable'
+                            ),
+                            'quote_status': _quote_status([long_source, short_source]),
                         })
         
         return spreads
@@ -498,9 +586,19 @@ class StrategyClassifier:
                 if long_put['strike'] != short_put['strike']:
                     # Bull put spread: short higher strike, long lower strike
                     if long_put['strike'] < short_put['strike']:
-                        net_credit = short_put['mark_price'] - long_put['mark_price']
+                        long_price, long_source = _quote_price(long_put, "long")
+                        short_price, short_source = _quote_price(short_put, "short")
+                        net_credit = (
+                            short_price - long_price
+                            if long_price is not None and short_price is not None
+                            else None
+                        )
                         max_profit = net_credit
-                        max_loss = (short_put['strike'] - long_put['strike']) - net_credit
+                        max_loss = (
+                            (short_put['strike'] - long_put['strike']) - net_credit
+                            if net_credit is not None
+                            else None
+                        )
                         
                         spreads.append({
                             'strategy_type': 'bull_put_spread',
@@ -510,8 +608,20 @@ class StrategyClassifier:
                             'net_credit': net_credit,
                             'max_profit': max_profit,
                             'max_loss': max_loss,
-                            'breakeven': short_put['strike'] - net_credit,
-                            'width': short_put['strike'] - long_put['strike']
+                            'breakeven': short_put['strike'] - net_credit if net_credit is not None else None,
+                            'width': short_put['strike'] - long_put['strike'],
+                            'long_symbol': long_put['symbol'],
+                            'short_symbol': short_put['symbol'],
+                            'legs': [long_put, short_put],
+                            'positions': [1, -1],
+                            'entry_price_source': (
+                                'executable_bid_ask'
+                                if long_source == short_source == 'executable_bid_ask'
+                                else 'mark_price_fallback'
+                                if long_source != 'unavailable' and short_source != 'unavailable'
+                                else 'unavailable'
+                            ),
+                            'quote_status': _quote_status([long_source, short_source]),
                         })
         
         return spreads
