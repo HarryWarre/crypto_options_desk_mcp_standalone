@@ -859,6 +859,16 @@ class NotebookPositionCloseRequest(BaseModel):
     notes: str | None = None
 
 
+class BotControlPayload(BaseModel):
+    """Payload for bot control actions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["start", "stop", "cycle", "close_all", "reset"]
+    interval_seconds: int | None = None
+    capital: float | None = None
+
+
 def create_app(
     adapter: ScannerAdapter | None = None,
     scanner: Callable[[NormalizedOptionUniverse, ScanRequest], ScanResult] = scan_opportunities,
@@ -1579,21 +1589,53 @@ def create_app(
 
     # --- Bot Paper Trading Endpoints ------------------------------------------
 
+    @app.post("/api/v1/bot/control")
+    async def control_bot(payload: BotControlPayload) -> JSONResponse:
+        from options_app.bot_manager import get_bot_manager
+
+        bm = get_bot_manager()
+        if payload.action == "start":
+            res = await bm.start(interval=payload.interval_seconds)
+        elif payload.action == "stop":
+            res = await bm.stop()
+        elif payload.action == "cycle":
+            status = await bm.run_cycle()
+            res = {"status": status, "message": f"Cycle triggered: {status}"}
+        elif payload.action == "close_all":
+            res = await bm.emergency_close_all()
+        elif payload.action == "reset":
+            cap = payload.capital or 10000.0
+            res = await bm.reset_account(capital=cap)
+        else:
+            return JSONResponse(status_code=400, content={"error": f"Unknown action: {payload.action}"})
+
+        return JSONResponse(content={"result": res, "current_status": bm.get_status()})
+
     @app.get("/api/v1/bot/status")
     async def get_bot_status(account_id: str = "ic_btc_paper") -> JSONResponse:
-        from options_lib.paper_broker import MarginCalculator, PaperStorage
+        from options_app.bot_manager import get_bot_manager
 
-        storage = PaperStorage()
-        acc = storage.load_account(account_id)
-        calc = MarginCalculator()
-        margin_sum = calc.evaluate_portfolio(acc.positions, acc.equity, 0.0)
-        return JSONResponse(
-            content={
-                "account": acc.to_dict(),
-                "margin": margin_sum.to_dict(),
-                "open_positions": [p.to_dict() for p in acc.positions.values()],
-            }
-        )
+        bm = get_bot_manager()
+        return JSONResponse(content=bm.get_status())
+
+    @app.websocket("/api/v1/bot/stream")
+    async def bot_stream_endpoint(websocket: WebSocket) -> None:
+        from options_app.bot_manager import get_bot_manager
+
+        bm = get_bot_manager()
+        await websocket.accept()
+        await bm.register_subscriber(websocket)
+        try:
+            while True:
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+                elif data == "cycle":
+                    await bm.run_cycle()
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        finally:
+            bm.unregister_subscriber(websocket)
 
     @app.get("/api/v1/bot/trades")
     async def get_bot_trades(account_id: str = "ic_btc_paper", limit: int = 50) -> JSONResponse:
