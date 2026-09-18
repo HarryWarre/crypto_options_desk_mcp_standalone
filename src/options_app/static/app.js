@@ -791,6 +791,31 @@ function renderOpportunityExplanation(item, index) {
   parts.push(`${modelMode ? "IV edge mô hình" : "IV edge"}: ${percent(item?.iv_edge)}`);
   extra.textContent = parts.join(" · ");
   card.appendChild(extra);
+
+  const actions = document.createElement("div");
+  actions.className = "explanation-card-actions";
+
+  const openBuilderBtn = document.createElement("button");
+  openBuilderBtn.type = "button";
+  openBuilderBtn.className = "btn-scanner-action";
+  openBuilderBtn.textContent = "🛠 Mở trong Strategy Builder";
+  openBuilderBtn.addEventListener("click", () => openOpportunityInBuilder(item));
+
+  const saveNbBtn = document.createElement("button");
+  saveNbBtn.type = "button";
+  saveNbBtn.className = "btn-scanner-action";
+  saveNbBtn.textContent = "➕ Lưu Sổ tay";
+  saveNbBtn.addEventListener("click", () => saveOpportunityToNotebook(item));
+
+  const viewPayoffBtn = document.createElement("button");
+  viewPayoffBtn.type = "button";
+  viewPayoffBtn.className = "btn-scanner-action";
+  viewPayoffBtn.textContent = "📈 Xem Payoff chi tiết";
+  viewPayoffBtn.addEventListener("click", () => showOpportunityDetail(item));
+
+  actions.append(openBuilderBtn, saveNbBtn, viewPayoffBtn);
+  card.appendChild(actions);
+
   return card;
 }
 
@@ -2500,10 +2525,6 @@ function renderBuilderLegs() {
     optPut.textContent = "Put";
     selType.append(optCall, optPut);
     selType.value = leg.option_type;
-    selType.addEventListener("change", () => {
-      leg.option_type = selType.value;
-      evaluateBuilder();
-    });
     tdType.appendChild(selType);
     tr.appendChild(tdType);
 
@@ -2512,10 +2533,6 @@ function renderBuilderLegs() {
     const inpStrike = document.createElement("input");
     inpStrike.type = "number";
     inpStrike.value = String(leg.strike);
-    inpStrike.addEventListener("change", () => {
-      leg.strike = Number(inpStrike.value);
-      evaluateBuilder();
-    });
     tdStrike.appendChild(inpStrike);
     tr.appendChild(tdStrike);
 
@@ -2550,6 +2567,40 @@ function renderBuilderLegs() {
     });
     tdPrice.appendChild(inpPrice);
     tr.appendChild(tdPrice);
+
+    // Contract sync helper when strike or option_type changes
+    const onLegContractChanged = () => {
+      leg.option_type = selType.value;
+      leg.strike = Number(inpStrike.value) || 0;
+      if (builderState.chainData && Array.isArray(builderState.chainData.contracts)) {
+        const matching = builderState.chainData.contracts.find((c) => {
+          const typeMatch = String(c.option_type || "").toLowerCase() === leg.option_type.toLowerCase();
+          const strikeMatch = Math.abs(Number(c.strike) - leg.strike) < 0.01;
+          const expMatch = !leg.expiry || !c.expiry || c.expiry.startsWith(leg.expiry.split("T")[0]) || (c.symbol && c.symbol.includes(leg.expiry.split("T")[0]));
+          return typeMatch && strikeMatch && expMatch;
+        }) || builderState.chainData.contracts.find((c) => {
+          const typeMatch = String(c.option_type || "").toLowerCase() === leg.option_type.toLowerCase();
+          const strikeMatch = Math.abs(Number(c.strike) - leg.strike) < 0.01;
+          return typeMatch && strikeMatch;
+        });
+
+        if (matching) {
+          const mMid = matching.mark_price || (matching.bid && matching.ask ? (matching.bid + matching.ask) / 2 : matching.bid || matching.ask || 0);
+          const mIv = matching.mark_iv || matching.iv || 0.65;
+          leg.mid_price = Number(mMid) || leg.mid_price;
+          leg.iv = Number(mIv) || leg.iv;
+          leg.bid = Number(matching.bid) || 0;
+          leg.ask = Number(matching.ask) || 0;
+          leg.symbol = matching.symbol || leg.symbol;
+          inpPrice.value = String(number(leg.mid_price, 2));
+          inpIv.value = String(Math.round(leg.iv * 100));
+        }
+      }
+      evaluateBuilder();
+    };
+
+    selType.addEventListener("change", onLegContractChanged);
+    inpStrike.addEventListener("change", onLegContractChanged);
 
     // Remove Action
     const tdRemove = document.createElement("td");
@@ -2612,12 +2663,39 @@ async function evaluateBuilder() {
 
     builderState.evaluation = res;
     if (builderStatusBadge) builderStatusBadge.textContent = "Đã tính toán";
-    if (bmNetPremium) bmNetPremium.textContent = `$${number(res.net_premium, 2)}`;
+    if (bmNetPremium) {
+      const netP = Number(res.net_premium) || 0;
+      if (netP < -0.001) {
+        bmNetPremium.textContent = `+$${number(Math.abs(netP), 2)} (Credit)`;
+        bmNetPremium.className = "text-success";
+      } else if (netP > 0.001) {
+        bmNetPremium.textContent = `$${number(netP, 2)} (Debit)`;
+        bmNetPremium.className = "text-danger";
+      } else {
+        bmNetPremium.textContent = "$0.00";
+        bmNetPremium.className = "";
+      }
+    }
     if (bmMaxProfit) {
-      bmMaxProfit.textContent = Number.isFinite(res.max_profit) ? `$${number(res.max_profit, 2)}` : "Không giới hạn";
+      if (res.max_profit === null || res.max_profit === undefined) {
+        bmMaxProfit.textContent = "Không giới hạn";
+        bmMaxProfit.className = "text-success";
+      } else if (res.max_profit < 0) {
+        bmMaxProfit.textContent = `Lỗ mọi kịch bản ($${number(Math.abs(res.max_profit), 2)})`;
+        bmMaxProfit.className = "text-danger";
+      } else {
+        bmMaxProfit.textContent = `$${number(res.max_profit, 2)}`;
+        bmMaxProfit.className = "text-success";
+      }
     }
     if (bmMaxLoss) {
-      bmMaxLoss.textContent = Number.isFinite(res.max_loss) ? `$${number(res.max_loss, 2)}` : "Không giới hạn";
+      if (res.max_loss === null || res.max_loss === undefined) {
+        bmMaxLoss.textContent = "Không giới hạn";
+        bmMaxLoss.className = "text-danger";
+      } else {
+        bmMaxLoss.textContent = `$${number(res.max_loss, 2)}`;
+        bmMaxLoss.className = "text-danger";
+      }
     }
     if (bmRrRatio) {
       bmRrRatio.textContent = res.risk_reward_ratio != null ? number(res.risk_reward_ratio, 2) : "--";
@@ -2803,65 +2881,144 @@ async function saveBuilderToNotebook() {
   }
 }
 
-function openOpportunityInBuilder(item) {
+async function openOpportunityInBuilder(item) {
   const asset = item.asset || item.base_coin || (item.symbol ? item.symbol.split("-")[0] : "BTC");
   builderState.asset = asset;
   builderState.activePreset = item.strategy || "custom";
+
+  // Determine common expiry
+  const oppExp = opportunityExpiry(item);
+  if (oppExp) {
+    builderState.expiry = String(oppExp).split("T")[0];
+  }
+
   const legs = [];
-  if (item.legs && Array.isArray(item.legs) && item.legs.length) {
-    item.legs.forEach((l) => {
+  const rawLegs = opportunityLegs(item);
+  if (rawLegs.length) {
+    rawLegs.forEach((l) => {
+      const bid = Number(l.bid_price ?? l.bid ?? 0);
+      const ask = Number(l.ask_price ?? l.ask ?? 0);
+      const mark = Number(l.mark_price ?? l.market_price ?? l.market_mid ?? (bid && ask ? (bid + ask) / 2 : bid || ask || 0));
+      const pos = Number(l.position ?? (inferredLegPosition ? inferredLegPosition(item.strategy, l, rawLegs) : 1));
+      const mid = pos > 0 ? (ask > 0 ? ask : mark) : (bid > 0 ? bid : mark);
+      const exp = l.expiry_at || l.expiry || oppExp || "";
+
       legs.push({
-        option_type: l.option_type || (l.symbol && l.symbol.endsWith("-C") ? "call" : "put"),
-        strike: Number(l.strike) || 0,
-        expiry: l.expiry_at || l.expiry || "",
-        iv: Number(l.implied_volatility || l.mark_iv || 0.65),
-        spot: Number(item.spot_price || item.underlying_price || 0),
-        position: Number(l.position || 1),
+        option_type: String(l.option_type || (l.symbol && l.symbol.endsWith("-C") ? "call" : "put")).toLowerCase(),
+        strike: Number(legStrike(l)) || 0,
+        expiry: exp ? String(exp).split("T")[0] : builderState.expiry,
+        iv: Number(l.market_iv ?? l.implied_volatility ?? l.fair_iv ?? 0.65),
+        spot: Number(l.spot_price ?? item.spot_price ?? item.underlying_price ?? 0),
+        position: pos,
         quantity: 1,
-        mid_price: Number(l.market_price || l.market_mid || 0),
-        bid: Number(l.bid || 0),
-        ask: Number(l.ask || 0),
+        mid_price: mid,
+        bid: bid,
+        ask: ask,
         symbol: l.symbol || "",
       });
     });
   } else {
+    const bid = Number(item.bid_price ?? 0);
+    const ask = Number(item.ask_price ?? 0);
+    const mid = Number(item.market_mid ?? item.fair_price ?? item.mark_price ?? (bid && ask ? (bid + ask) / 2 : bid || ask || 0));
     legs.push({
-      option_type: item.option_type || (item.symbol && item.symbol.endsWith("-C") ? "call" : "put"),
+      option_type: String(item.option_type || (item.symbol && item.symbol.endsWith("-C") ? "call" : "put")).toLowerCase(),
       strike: Number(item.strike) || 0,
-      expiry: item.expiry_at || item.expiry || "",
-      iv: Number(item.implied_volatility || item.mark_iv || 0.65),
-      spot: Number(item.spot_price || item.underlying_price || 0),
+      expiry: oppExp ? String(oppExp).split("T")[0] : builderState.expiry,
+      iv: Number(item.market_iv ?? item.implied_volatility ?? 0.65),
+      spot: Number(item.spot_price ?? item.underlying_price ?? 0),
       position: 1,
       quantity: 1,
-      mid_price: Number(item.market_mid || item.fair_price || 0),
-      bid: Number(item.bid_price || 0),
-      ask: Number(item.ask_price || 0),
+      mid_price: mid,
+      bid: bid,
+      ask: ask,
       symbol: item.symbol || "",
     });
   }
+
   builderState.legs = legs;
   builderState.spot = Number(item.spot_price || item.underlying_price || 0);
+
+  if (builderAssetSelect) {
+    builderAssetSelect.value = asset;
+  }
+  if (builderSpotDisplay && builderState.spot > 0) {
+    builderSpotDisplay.textContent = `$${number(builderState.spot, 2)}`;
+  }
+
   window.location.hash = "#builder";
+
+  // Pre-load option chain for the asset in background, sync expiry, and render
+  try {
+    const chainData = await getJson(`/api/v1/options/chain/${asset}`);
+    builderState.chainData = chainData;
+    if (chainData.spot) builderState.spot = chainData.spot;
+    if (builderExpirySelect) {
+      builderExpirySelect.replaceChildren();
+      (chainData.expiries || []).forEach((exp) => {
+        const opt = document.createElement("option");
+        opt.value = exp;
+        opt.textContent = exp;
+        builderExpirySelect.appendChild(opt);
+      });
+      if (builderState.expiry && chainData.expiries && chainData.expiries.includes(builderState.expiry)) {
+        builderExpirySelect.value = builderState.expiry;
+      } else if (chainData.expiries && chainData.expiries.length) {
+        builderState.expiry = chainData.expiries[0];
+        builderExpirySelect.value = builderState.expiry;
+      }
+    }
+    if (builderChainStatus) {
+      builderChainStatus.textContent = `${chainData.contracts?.length || 0} hợp đồng`;
+    }
+    renderBuilderChain(chainData, builderState.expiry);
+  } catch (err) {
+    console.warn("Could not preload builder chain for opportunity:", err);
+  }
+
   renderBuilderLegs();
   evaluateBuilder();
 }
 
 async function saveOpportunityToNotebook(item) {
   const asset = item.asset || item.base_coin || (item.symbol ? item.symbol.split("-")[0] : "BTC");
+  const rawLegs = opportunityLegs(item);
+  const oppExp = opportunityExpiry(item);
+
+  const mappedLegs = rawLegs.length
+    ? rawLegs.map((l) => {
+        const bid = Number(l.bid_price ?? l.bid ?? 0);
+        const ask = Number(l.ask_price ?? l.ask ?? 0);
+        const mark = Number(l.mark_price ?? l.market_price ?? l.market_mid ?? (bid && ask ? (bid + ask) / 2 : bid || ask || 0));
+        const pos = Number(l.position ?? (inferredLegPosition ? inferredLegPosition(item.strategy, l, rawLegs) : 1));
+        const entry = pos > 0 ? (ask > 0 ? ask : mark) : (bid > 0 ? bid : mark);
+        const exp = l.expiry_at || l.expiry || oppExp || "";
+        return {
+          symbol: l.symbol || "",
+          option_type: String(l.option_type || (l.symbol && l.symbol.endsWith("-C") ? "call" : "put")).toLowerCase(),
+          strike: Number(legStrike(l)) || 0,
+          position: pos,
+          quantity: 1,
+          entry_price: entry,
+          expiry: exp ? String(exp).split("T")[0] : "",
+        };
+      })
+    : [
+        {
+          symbol: item.symbol || "",
+          option_type: String(item.option_type || (item.symbol && item.symbol.endsWith("-C") ? "call" : "put")).toLowerCase(),
+          strike: Number(item.strike) || 0,
+          position: 1,
+          quantity: 1,
+          entry_price: Number(item.market_mid || item.fair_price || item.mark_price || 0),
+          expiry: oppExp ? String(oppExp).split("T")[0] : "",
+        },
+      ];
+
   const payload = {
     asset: asset,
     strategy_type: item.strategy || "single_option",
-    legs: item.legs || [
-      {
-        symbol: item.symbol || "",
-        option_type: item.option_type || "call",
-        strike: Number(item.strike) || 0,
-        position: 1,
-        quantity: 1,
-        entry_price: Number(item.market_mid || item.fair_price || 0),
-        expiry: item.expiry_at || item.expiry || "",
-      },
-    ],
+    legs: mappedLegs,
     entry_spot: Number(item.spot_price || item.underlying_price || 0),
     target_profit_pct: 50.0,
     stop_loss_pct: 50.0,
@@ -3045,6 +3202,25 @@ window.addEventListener("hashchange", syncWorkspaceFromHash);
 syncWorkspaceFromHash();
 
 clearTerminalButton.addEventListener("click", clearTerminal);
+
+const detailOpenBuilderBtn = document.querySelector("#detail-open-builder");
+const detailSaveNotebookBtn = document.querySelector("#detail-save-notebook");
+
+if (detailOpenBuilderBtn) {
+  detailOpenBuilderBtn.addEventListener("click", () => {
+    if (selectedOpportunity) {
+      openOpportunityInBuilder(selectedOpportunity);
+    }
+  });
+}
+
+if (detailSaveNotebookBtn) {
+  detailSaveNotebookBtn.addEventListener("click", () => {
+    if (selectedOpportunity) {
+      saveOpportunityToNotebook(selectedOpportunity);
+    }
+  });
+}
 
 closeDetailButton.addEventListener("click", () => {
   detailPanel.hidden = true;

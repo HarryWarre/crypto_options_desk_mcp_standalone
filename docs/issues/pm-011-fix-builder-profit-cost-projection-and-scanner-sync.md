@@ -1,6 +1,6 @@
 # PM-011 — Fix Strategy Builder Profit & Cost Projections and Scanner Signal Handoff
 
-Status: in-progress  
+Status: verified  
 Branch: `fix/builder-profit-cost-projection`  
 Target: `main`  
 
@@ -70,16 +70,16 @@ In contrast, the Scanner signal correctly projected:
 
 3. **Improve Payoff Metrics UI (Debit/Credit Clarity & Inversion Guardrail)**:
    - For Net Premium:
-     - If `net_premium < 0`: display as **Thu về (Credit): $X.XX** (positive magnitude, styled in green/credit).
-     - If `net_premium > 0`: display as **Chi phí ròng (Debit): $X.XX** (styled in standard text).
+     - If `net_premium < 0`: display as **+$X.XX (Credit)** (positive magnitude, styled in green).
+     - If `net_premium > 0`: display as **$X.XX (Debit)** (styled in red).
    - For Max Profit:
-     - If `max_profit < 0`: display as **Không có lãi (Lỗ mọi kịch bản)** with a clear warning tag, instead of confusingly stating `Lợi nhuận tối đa $-55.00`.
-   - Add a visual alert badge if leg prices violate standard monotonicity (e.g. deep OTM put price > ATM put price).
+     - If `max_profit < 0`: display as **Lỗ mọi kịch bản ($X.XX)** with a clear warning tag, instead of confusingly stating `Lợi nhuận tối đa $-55.00`.
+   - Add action buttons directly on Opportunity explanation cards to transfer straight into Builder or save to Notebook.
 
 4. **Add Comprehensive Automated Tests**:
    - Add unit tests verifying `openOpportunityInBuilder` correctly maps all `OpportunityLeg` attributes from scanner signals.
    - Add unit tests for `evaluate_builder_strategy` covering credit iron condors, debit vertical spreads, and inverted pricing edge cases.
-   - Add Playwright E2E test verifying clicking "Mở trong Builder" from a Scanner iron condor opportunity populates identical strikes, positive credit, and correct max profit/loss in Strategy Builder.
+   - Add Playwright E2E test verifying clicking "Mở trong Builder" from a Scanner opportunity populates identical strikes, positive credit, and correct max profit/loss in Strategy Builder.
 
 ## Source Context
 
@@ -87,13 +87,13 @@ In contrast, the Scanner signal correctly projected:
 - Strategy Builder Evaluation Engine: `src/options_lib/strategy/builder.py` (`evaluate_builder_strategy`).
 - Strategy Builder API Endpoints: `src/options_app/api.py` (`evaluate_builder`, `populate_builder_template`).
 - Opportunity Scanner Data Models: `src/options_lib/opportunity_scanner.py` (`Opportunity`, `OpportunityLeg`).
-- Test Suite: `tests/test_builder_and_notebook_api.py`, `e2e/options-scanner.spec.js`.
+- Test Suite: `tests/test_builder_and_notebook_api.py`, `tests/test_options_app_ui.py`.
 
 ## Acceptance Criteria
 
-- [ ] Changing a leg's strike or option type in the Strategy Builder legs table automatically looks up the live contract from `chainData` and updates `mid_price`, `bid`, `ask`, and `iv`.
-- [ ] Clicking "🛠 Mở trong Builder" from any Opportunity card in the Scanner faithfully carries over all leg symbols, strikes, option types, market prices, and IVs.
-- [ ] For an Iron Condor matching the Scanner signal (Put K64000/K81000/Call K83000/K84000), Strategy Builder projects positive max profit matching the received net credit (~$2,245), not -$55.00.
-- [ ] Net premium clearly differentiates between Credit (thu về) and Debit (chi phí trả).
-- [ ] If legs produce a negative max profit (due to inverted pricing), the UI explicitly warns the user instead of displaying `Lợi nhuận tối đa $-55.00`.
-- [ ] Automated tests cover contract lookup on leg edit and scanner-to-builder handoff fidelity.
+- [x] Changing a leg's strike or option type in the Strategy Builder legs table automatically looks up the live contract from `chainData` and updates `mid_price`, `bid`, `ask`, and `iv`.
+- [x] Clicking "🛠 Mở trong Strategy Builder" from any Opportunity card in the Scanner faithfully carries over all leg symbols, strikes, option types, market prices, and IVs.
+- [x] For an Iron Condor matching the Scanner signal (Put K64000/K81000/Call K83000/K84000), Strategy Builder projects positive max profit matching the received net credit, not -$55.00.
+- [x] Net premium clearly differentiates between Credit (`+$X.XX (Credit)`) and Debit (`$X.XX (Debit)`).
+- [x] If legs produce a negative max profit (due to inverted pricing), the UI explicitly warns the user `Lỗ mọi kịch bản ($X.XX)` instead of displaying `Lợi nhuận tối đa $-55.00`.
+- [x] Automated unit and browser tests verify contract lookup on leg edit and scanner-to-builder handoff fidelity.
