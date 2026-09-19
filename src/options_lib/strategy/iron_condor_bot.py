@@ -430,13 +430,16 @@ class IronCondorBot:
                     strategy_id=candidate.condor_id,
                     leg_role=role,
                 )
-                res = self.matching_engine.match_order(
-                    order=order,
-                    best_bid=float(contract.get("bid_price") or contract.get("bid") or 0),
-                    best_ask=float(contract.get("ask_price") or contract.get("ask") or 0),
-                    spot=spot,
-                    mark_price=float(contract.get("mark_price", 0) or 0),
-                )
+                if self.config.use_deribit_testnet and self.deribit_adapter:
+                    res = self.deribit_adapter.execute_order(order, spot=spot)
+                else:
+                    res = self.matching_engine.match_order(
+                        order=order,
+                        best_bid=float(contract.get("bid_price") or contract.get("bid") or 0),
+                        best_ask=float(contract.get("ask_price") or contract.get("ask") or 0),
+                        spot=spot,
+                        mark_price=float(contract.get("mark_price", 0) or 0),
+                    )
                 if not res.is_filled:
                     self._log_event("leg_execution_failed", {"symbol": sym, "error": res.message})
                     return False
@@ -517,13 +520,16 @@ class IronCondorBot:
                     order_type=OrderType.MARKET,
                     strategy_id=self._active_condor_id,
                 )
-                res = self.matching_engine.match_order(
-                    order=order,
-                    best_bid=float(contract.get("bid", 0) or leg.current_mark * 0.95),
-                    best_ask=float(contract.get("ask", 0) or leg.current_mark * 1.05),
-                    spot=spot,
-                    mark_price=float(contract.get("mark_price", 0) or leg.current_mark),
-                )
+                if self.config.use_deribit_testnet and self.deribit_adapter:
+                    res = self.deribit_adapter.execute_order(order, spot=spot)
+                else:
+                    res = self.matching_engine.match_order(
+                        order=order,
+                        best_bid=float(contract.get("bid", 0) or leg.current_mark * 0.95),
+                        best_ask=float(contract.get("ask", 0) or leg.current_mark * 1.05),
+                        spot=spot,
+                        mark_price=float(contract.get("mark_price", 0) or leg.current_mark),
+                    )
                 trade = self.paper_account.apply_fill(
                     symbol=leg.symbol,
                     side=close_side,
@@ -633,7 +639,39 @@ class IronCondorBot:
     # --- Live Cycle & CLI Runner ----------------------------------------------
 
     async def fetch_live_data(self) -> tuple[list[dict[str, Any]], float]:
-        """Fetch live options chain data and spot price from Bybit."""
+        """Fetch live options chain data and spot price from Deribit Testnet or Bybit."""
+        if self.config.use_deribit_testnet and self.deribit_adapter:
+            summaries = self.deribit_adapter.client.get_book_summary_by_currency(
+                self.config.asset, "option"
+            )
+            contracts: list[dict[str, Any]] = []
+            spot = 0.0
+            for s in summaries:
+                name = s.get("instrument_name", "")
+                parts = name.split("-")
+                if len(parts) >= 4:
+                    try:
+                        dt = datetime.strptime(parts[1], "%d%b%y")
+                        contracts.append(
+                            {
+                                "symbol": name,
+                                "strike": float(parts[2]),
+                                "option_type": "call" if parts[3].upper() == "C" else "put",
+                                "expiry": dt.strftime("%Y-%m-%d"),
+                                "bid": float(s.get("bid_price") or 0.0),
+                                "ask": float(s.get("ask_price") or 0.0),
+                                "mark_price": float(s.get("mark_price") or 0.0),
+                            }
+                        )
+                        if spot == 0.0 and s.get("estimated_delivery_price"):
+                            spot = float(s["estimated_delivery_price"])
+                    except Exception:
+                        continue
+            if spot == 0.0:
+                ticker = self.deribit_adapter.client.get_ticker(f"{self.config.asset}-PERPETUAL")
+                spot = float(ticker.get("index_price", 0.0) or ticker.get("mark_price", 0.0))
+            return contracts, spot
+
         from bybit_api import BybitPublicClient
 
         client = BybitPublicClient()
@@ -717,6 +755,7 @@ def main() -> None:
     parser.add_argument("--asset", default="BTC", help="Underlying asset (BTC, ETH, SOL)")
     parser.add_argument("--paper", dest="paper", action="store_true", default=True, help="Run in paper mode")
     parser.add_argument("--execute", dest="paper", action="store_false", help="Run in LIVE execution mode")
+    parser.add_argument("--deribit-testnet", dest="deribit_testnet", action="store_true", default=False, help="Execute orders on Deribit Testnet")
     parser.add_argument("--capital", type=float, default=10000.0, help="Initial virtual capital")
     parser.add_argument("--short-delta", type=float, default=0.15, help="Target short Delta")
     parser.add_argument("--wing-delta", type=float, default=0.03, help="Target long wing Delta")
@@ -732,6 +771,7 @@ def main() -> None:
     config = IronCondorConfig(
         asset=args.asset,
         paper_mode=args.paper,
+        use_deribit_testnet=args.deribit_testnet,
         initial_capital=args.capital,
         target_short_delta=args.short_delta,
         target_wing_delta=args.wing_delta,

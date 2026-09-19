@@ -52,6 +52,16 @@ class DeribitClient:
         self.base_url = self.TESTNET_URL if testnet else self.MAINNET_URL
         self.timeout = timeout
 
+        if not os.getenv("DERIBIT_TESTNET_CLIENT_ID"):
+            from pathlib import Path
+            env_path = Path(__file__).resolve().parents[3] / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
+
         self.client_id = client_id or os.getenv("DERIBIT_TESTNET_CLIENT_ID", "")
         self.client_secret = client_secret or os.getenv("DERIBIT_TESTNET_CLIENT_SECRET", "")
 
