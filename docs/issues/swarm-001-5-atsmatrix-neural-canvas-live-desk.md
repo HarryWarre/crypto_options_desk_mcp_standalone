@@ -2,7 +2,7 @@
 
 **Mã Sub-Issue:** SWARM-001.5  
 **Master Issue:** [SWARM-001](swarm-001-multi-agent-trading-swarm-and-visual-desk.md)  
-**Trạng thái:** To Do  
+**Trạng thái:** Completed (Commit `0b99492`)  
 **Target:** `main`  
 **File cần thêm/sửa:**
 - `src/options_app/static/atsmatrix-canvas.js` (Mới)
