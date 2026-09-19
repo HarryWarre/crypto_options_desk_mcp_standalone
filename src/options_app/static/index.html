@@ -566,15 +566,16 @@
                 <div class="market-strip-empty">Bật live feed để nhận quote option liên tục.</div>
               </div>
 
-              <!-- AUTOMATED OPTIONS BOT CONTROL & MONITORING PANEL -->
-              <article class="desk-panel bot-panel" id="bot-panel" aria-labelledby="bot-panel-title">
+              <!-- ATSMATRIX MULTI-AGENT NEURAL SWARM DESK -->
+              <article class="desk-panel bot-panel atsmatrix-panel" id="bot-panel" aria-labelledby="bot-panel-title">
                 <div class="desk-panel-heading bot-panel-header">
                   <div class="bot-header-left">
-                    <span class="desk-panel-label">EXECUTION ENGINE</span>
+                    <span class="desk-panel-label">ATSMatrix Multi-Agent Swarm</span>
                     <h3 id="bot-panel-title">
-                      <span class="bot-icon" aria-hidden="true">🤖</span>
-                      Automated Iron Condor Bot
+                      <span class="bot-icon" aria-hidden="true">🧠</span>
+                      Neural Options Desk
                       <span class="bot-badge bot-badge-idle" id="bot-status-badge">IDLE</span>
+                      <span class="swarm-badge-mode" id="swarm-mode-badge">AUTONOMOUS</span>
                     </h3>
                   </div>
                   <div class="bot-controls">
@@ -585,37 +586,123 @@
                   </div>
                 </div>
 
-                <!-- Bot Stat Grid -->
+                <!-- Deribit Live Telemetry Strip -->
                 <div class="bot-stat-grid" id="bot-stat-grid">
                   <div class="bot-stat-card">
-                    <span class="bot-stat-label">VỐN KHẢ DỤNG (EQUITY)</span>
+                    <span class="bot-stat-label">DERIBIT EQUITY (USD / CRYPTO)</span>
                     <strong class="bot-stat-value" id="bot-stat-equity">$10,000.00</strong>
-                    <small class="bot-stat-sub" id="bot-stat-cash">Cash: $10,000.00</small>
+                    <small class="bot-stat-sub" id="bot-stat-crypto">0.1667 BTC</small>
                   </div>
                   <div class="bot-stat-card">
-                    <span class="bot-stat-label">LÃI/LỖ CHƯA CHỐT (UNREALIZED)</span>
-                    <strong class="bot-stat-value" id="bot-stat-unrealized">$0.00</strong>
-                    <small class="bot-stat-sub" id="bot-stat-compounded">Đã chốt: $0.00</small>
+                    <span class="bot-stat-label">CASH / MARGIN BALANCE</span>
+                    <strong class="bot-stat-value" id="bot-stat-cash">$10,000.00</strong>
+                    <small class="bot-stat-sub" id="bot-stat-initial-margin">Init Margin: $0.00</small>
                   </div>
                   <div class="bot-stat-card">
-                    <span class="bot-stat-label">SỬ DỤNG MARGIN (PMM)</span>
-                    <strong class="bot-stat-value" id="bot-stat-margin">0.0%</strong>
+                    <span class="bot-stat-label">PMM MARGIN UTILIZATION</span>
+                    <strong class="bot-stat-value" id="bot-stat-margin">0.0% <span class="stat-cap-tag">/ 60% CAP</span></strong>
                     <div class="bot-margin-meter-wrap">
                       <div class="bot-margin-meter" id="bot-margin-meter" style="width: 0%"></div>
                     </div>
                   </div>
                   <div class="bot-stat-card">
-                    <span class="bot-stat-label">TRẠNG THÁI CHU KỲ (CYCLE)</span>
-                    <strong class="bot-stat-value" id="bot-stat-cycle-status">WAITING</strong>
-                    <small class="bot-stat-sub" id="bot-stat-cycle-time">Chưa quét</small>
+                    <span class="bot-stat-label">PORTFOLIO DELTA &amp; UNREALIZED</span>
+                    <strong class="bot-stat-value" id="bot-stat-unrealized">$0.00</strong>
+                    <small class="bot-stat-sub" id="bot-stat-delta">Net Delta: +0.00 Δ</small>
                   </div>
                 </div>
 
-                <!-- Active 4-Legs Iron Condor Container -->
-                <div class="bot-condor-wrap" id="bot-condor-wrap">
+                <!-- View Switcher Tabs -->
+                <div class="swarm-view-tabs" role="tablist">
+                  <button type="button" class="swarm-tab-btn active" id="tab-btn-canvas" role="tab" aria-selected="true">
+                    <span>🧠</span> Neural Swarm Canvas
+                  </button>
+                  <button type="button" class="swarm-tab-btn" id="tab-btn-equity" role="tab" aria-selected="false">
+                    <span>📈</span> Deribit Equity Curve (1D/1W/1M)
+                  </button>
+                  <button type="button" class="swarm-tab-btn" id="tab-btn-positions" role="tab" aria-selected="false">
+                    <span>📋</span> Open Positions &amp; Strategy Legs
+                  </button>
+                </div>
+
+                <!-- VIEW 1: Neural Swarm Canvas -->
+                <div class="swarm-view-content active" id="view-swarm-canvas">
+                  <div class="swarm-canvas-container">
+                    <canvas id="swarm-neural-canvas"></canvas>
+
+                    <!-- Canvas Floating Overlay HUD -->
+                    <div class="swarm-hud-overlay">
+                      <div class="hud-item">
+                        <span class="hud-label">REGIME</span>
+                        <strong class="hud-val" id="hud-regime-val">Scanning...</strong>
+                      </div>
+                      <div class="hud-item">
+                        <span class="hud-label">FAVORED</span>
+                        <strong class="hud-val" id="hud-favored-val">Evaluating...</strong>
+                      </div>
+                      <div class="hud-item">
+                        <span class="hud-label">LAST VERDICT</span>
+                        <strong class="hud-val" id="hud-verdict-val">READY</strong>
+                      </div>
+                    </div>
+
+                    <!-- Slide-out Node Inspector Drawer -->
+                    <aside class="node-inspector-drawer" id="node-inspector-drawer" aria-hidden="true">
+                      <div class="drawer-header">
+                        <div class="drawer-title-wrap">
+                          <span class="drawer-icon" id="drawer-node-icon">🔬</span>
+                          <div>
+                            <h4 id="drawer-node-title">Agent Telemetry</h4>
+                            <span class="drawer-role" id="drawer-node-role">Sub-agent overview</span>
+                          </div>
+                        </div>
+                        <button type="button" class="drawer-close-btn" id="drawer-close-btn" title="Đóng">✕</button>
+                      </div>
+                      <div class="drawer-body" id="drawer-body-content">
+                        <!-- Populated dynamically by ATSMatrix visualizer selection -->
+                        <div class="drawer-empty-msg">Nhấp vào một agent node trên canvas để xem chi tiết telemetry, thesis và chỉ số risk.</div>
+                      </div>
+                    </aside>
+                  </div>
+                </div>
+
+                <!-- VIEW 2: Deribit Equity Curve -->
+                <div class="swarm-view-content" id="view-swarm-equity">
+                  <div class="equity-chart-toolbar">
+                    <div class="equity-metrics-strip">
+                      <div class="eq-metric">
+                        <span>Current Equity</span>
+                        <strong id="eq-metric-current">$10,000.00</strong>
+                      </div>
+                      <div class="eq-metric">
+                        <span>Peak Equity</span>
+                        <strong id="eq-metric-peak">$10,000.00</strong>
+                      </div>
+                      <div class="eq-metric">
+                        <span>Max Drawdown</span>
+                        <strong id="eq-metric-drawdown">0.00%</strong>
+                      </div>
+                      <div class="eq-metric">
+                        <span>Margin Peak</span>
+                        <strong id="eq-metric-margin">0.0%</strong>
+                      </div>
+                    </div>
+                    <div class="equity-timeframe-selector">
+                      <button type="button" class="btn-timeframe active" data-timeframe="1d">1D</button>
+                      <button type="button" class="btn-timeframe" data-timeframe="1w">1W</button>
+                      <button type="button" class="btn-timeframe" data-timeframe="1m">1M</button>
+                    </div>
+                  </div>
+                  <div class="equity-chart-canvas-wrap">
+                    <canvas id="swarm-equity-canvas" height="320"></canvas>
+                  </div>
+                </div>
+
+                <!-- VIEW 3: Positions & Strategy Legs -->
+                <div class="swarm-view-content" id="view-swarm-positions">
                   <div class="bot-condor-meta" id="bot-condor-meta">
                     <div class="condor-meta-title">
-                      <span>VỊ THẾ HIỆN TẠI:</span>
+                      <span>VỊ THẾ CHIẾN LƯỢC ĐANG MỞ:</span>
                       <strong id="bot-condor-id">Chưa có vị thế mở</strong>
                     </div>
                     <div class="condor-tp-progress" id="bot-tp-progress">
@@ -642,16 +729,28 @@
                         </tr>
                       </thead>
                       <tbody id="bot-legs-body">
-                        <tr><td colspan="9" class="bot-empty-cell">Không có vị thế Iron Condor nào đang chạy. Bấm "Quét ngay" hoặc "Bật Bot" để tự động tìm cơ hội.</td></tr>
+                        <tr><td colspan="9" class="bot-empty-cell">Không có vị thế option nào đang chạy. Bấm "Quét chu kỳ" hoặc "Bật Swarm" để tự động tìm cơ hội.</td></tr>
                       </tbody>
                     </table>
                   </div>
                 </div>
 
-                <!-- Action message bar -->
-                <div class="bot-message-bar" id="bot-message-bar">
-                  <span class="bot-message-dot"></span>
-                  <span id="bot-message-text">Sẵn sàng. Dữ liệu kết nối qua WebSocket /api/v1/bot/stream.</span>
+                <!-- Cyberpunk Telemetry Terminal Log Stream -->
+                <div class="swarm-terminal-panel" id="swarm-terminal-panel">
+                  <div class="terminal-header">
+                    <div class="terminal-title">
+                      <span class="terminal-dot pulse-dot"></span>
+                      <span>SWARM TELEMETRY STREAM</span>
+                      <small id="bot-stat-cycle-time">Chưa quét</small>
+                    </div>
+                    <div class="terminal-actions">
+                      <span class="terminal-status-msg" id="bot-message-text">Sẵn sàng. WebSocket connected.</span>
+                      <button type="button" class="btn-terminal-clear" id="terminal-clear-btn" title="Xóa log">Xóa</button>
+                    </div>
+                  </div>
+                  <div class="terminal-body" id="swarm-terminal-log">
+                    <div class="terminal-line"><span class="log-time">[INIT]</span> <span class="log-tag log-tag-system">SYSTEM</span> Neural Swarm Desk initialized. Listening to Deribit &amp; multi-agent pipeline.</div>
+                  </div>
                 </div>
               </article>
 
