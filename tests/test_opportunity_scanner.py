@@ -1097,4 +1097,258 @@ def test_iron_condor_iv_rv_regime_filtering() -> None:
     assert any("iv_rv_spread_below_minimum" in r.reasons for r in result_low.scan.rejections)
 
 
+# ─── SCAN-008.1: Bot Regime Edge Filter Tests ────────────────────────────────
 
+
+def _make_hv_context(rv: float) -> HistoricalVolatilityContexts:
+    return HistoricalVolatilityContexts((
+        HistoricalVolatilityContext(
+            asset="BTC",
+            period_days=30,
+            available=True,
+            status="available",
+            historical_volatility=rv,
+            as_of=VALUATION_TIME,
+            requested_at=VALUATION_TIME,
+            retrieved_at=VALUATION_TIME,
+        ),
+    ))
+
+
+class TestStraddleIVDiscountFilter:
+    """BOT-010: Long straddle/strangle must have RV >= IV to enter.
+    _new_strategy_fixture() produces straddles with market_iv=0.20.
+    """
+
+    def test_straddle_rejected_when_iv_expensive(self) -> None:
+        """IV=20%, RV=15% → RV < IV → reject with iv_expensive_relative_to_rv."""
+        result = scan_opportunities_with_historical_context(
+            _new_strategy_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("long_straddle",),
+                enforce_bot_regime=True,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.15),
+        )
+        straddles = [op for op in result.scan.opportunities if op.strategy == "long_straddle"]
+        assert len(straddles) == 0, "Straddle should be rejected when IV > RV"
+        assert any("iv_expensive_relative_to_rv" in r.reasons for r in result.scan.rejections)
+
+    def test_straddle_accepted_when_rv_exceeds_iv(self) -> None:
+        """IV=20%, RV=25% → RV >= IV → accept."""
+        result = scan_opportunities_with_historical_context(
+            _new_strategy_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("long_straddle",),
+                enforce_bot_regime=True,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.25),
+        )
+        straddles = [op for op in result.scan.opportunities if op.strategy == "long_straddle"]
+        assert len(straddles) >= 1, "Straddle should be accepted when RV >= IV"
+
+    def test_straddle_not_filtered_without_enforce_bot_regime(self) -> None:
+        """Backward compat: enforce_bot_regime=False → no IV discount filter."""
+        result = scan_opportunities_with_historical_context(
+            _new_strategy_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("long_straddle",),
+                enforce_bot_regime=False,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.05),  # Very cheap RV, but filter is off
+        )
+        straddles = [op for op in result.scan.opportunities if op.strategy == "long_straddle"]
+        assert len(straddles) >= 1, "Without enforce_bot_regime, straddle should not be filtered"
+
+
+def _calendar_fixture() -> NormalizedOptionUniverse:
+    """Two expiries with same strike=100 for calendar spread."""
+    near_expiry = VALUATION_TIME + timedelta(days=10)
+    far_expiry = VALUATION_TIME + timedelta(days=40)
+    contracts = [
+        # Boundary strikes for surface fitting
+        replace(_contract("BTC", 80, option_type="Call", ask=20.0, bid=19.0, delta=0.80, mark_iv=0.50), spot_price=100.0, expiry_at=near_expiry),
+        replace(_contract("BTC", 120, option_type="Call", ask=0.10, bid=0.08, delta=0.05, mark_iv=0.50), spot_price=100.0, expiry_at=near_expiry),
+        # Near-term leg (sell)
+        replace(_contract("BTC", 100, option_type="Call", ask=5.0, bid=4.5, delta=0.50, mark_iv=0.50), spot_price=100.0, expiry_at=near_expiry),
+        # Far-term boundary + leg
+        replace(
+            _contract("BTC", 80, option_type="Call", ask=22.0, bid=21.0, delta=0.80, mark_iv=0.50),
+            spot_price=100.0, expiry_at=far_expiry, expiry_code="25OCT26", symbol="BTC-80-C-FAR",
+        ),
+        replace(
+            _contract("BTC", 120, option_type="Call", ask=0.20, bid=0.15, delta=0.05, mark_iv=0.50),
+            spot_price=100.0, expiry_at=far_expiry, expiry_code="25OCT26", symbol="BTC-120-C-FAR",
+        ),
+        replace(
+            _contract("BTC", 100, option_type="Call", ask=7.0, bid=6.5, delta=0.50, mark_iv=0.50),
+            spot_price=100.0, expiry_at=far_expiry, expiry_code="25OCT26", symbol="BTC-100-C-FAR",
+        ),
+    ]
+    return _universe(*contracts)
+
+
+class TestCalendarSpreadRVCeilingFilter:
+    """BOT-009: Calendar spread requires RV <= 55%."""
+
+    def test_calendar_rejected_when_rv_above_ceiling(self) -> None:
+        """RV=65% > ceiling 55% → reject with rv_above_calendar_ceiling."""
+        result = scan_opportunities_with_historical_context(
+            _calendar_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("calendar_spread",),
+                enforce_bot_regime=True,
+                calendar_max_rv=0.55,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.65),
+        )
+        calendars = [op for op in result.scan.opportunities if op.strategy == "calendar_spread"]
+        assert len(calendars) == 0, "Calendar should be rejected when RV > ceiling"
+        assert any("rv_above_calendar_ceiling" in r.reasons for r in result.scan.rejections)
+
+    def test_calendar_accepted_when_rv_below_ceiling(self) -> None:
+        """RV=45% <= ceiling 55% → accept."""
+        result = scan_opportunities_with_historical_context(
+            _calendar_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("calendar_spread",),
+                enforce_bot_regime=True,
+                calendar_max_rv=0.55,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.45),
+        )
+        calendars = [op for op in result.scan.opportunities if op.strategy == "calendar_spread"]
+        assert len(calendars) >= 1, "Calendar should be accepted when RV <= ceiling"
+
+    def test_calendar_not_filtered_without_enforce_bot_regime(self) -> None:
+        """Backward compat: enforce_bot_regime=False → no RV ceiling filter."""
+        result = scan_opportunities_with_historical_context(
+            _calendar_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("calendar_spread",),
+                enforce_bot_regime=False,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.90),  # Very high RV, but filter is off
+        )
+        calendars = [op for op in result.scan.opportunities if op.strategy == "calendar_spread"]
+        assert len(calendars) >= 1, "Without enforce_bot_regime, calendar should not be RV-filtered"
+
+
+def _iron_butterfly_fixture() -> NormalizedOptionUniverse:
+    """Iron butterfly: ATM body at 100, wings at 90/110, spot=100, IV=0.50."""
+    contracts = [
+        replace(_contract("BTC", 70, option_type="Put", ask=0.10, bid=0.08, delta=-0.01, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 130, option_type="Call", ask=0.10, bid=0.08, delta=0.01, mark_iv=0.50), spot_price=100.0),
+        # Wings
+        replace(_contract("BTC", 90, option_type="Put", ask=0.50, bid=0.40, delta=-0.10, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 110, option_type="Call", ask=0.50, bid=0.40, delta=0.10, mark_iv=0.50), spot_price=100.0),
+        # ATM body (short straddle at same strike)
+        replace(_contract("BTC", 100, option_type="Call", ask=5.0, bid=4.5, delta=0.50, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 100, option_type="Put", ask=5.0, bid=4.5, delta=-0.50, mark_iv=0.50), spot_price=100.0),
+    ]
+    return _universe(*contracts)
+
+
+class TestIronButterflyIVRVSpreadFilter:
+    """BOT-008: Iron butterfly requires IV - RV >= 5.0 vol points."""
+
+    def test_iron_butterfly_rejected_when_iv_rv_spread_too_thin(self) -> None:
+        """IV=50%, RV=48% → spread = 2 vol pts < 5.0 threshold → reject."""
+        result = scan_opportunities_with_historical_context(
+            _iron_butterfly_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("iron_butterfly",),
+                enforce_bot_regime=True,
+                butterfly_min_iv_rv_spread=5.0,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.48),
+        )
+        butterflies = [op for op in result.scan.opportunities if op.strategy == "iron_butterfly"]
+        assert len(butterflies) == 0, "Iron butterfly should be rejected when IV-RV spread too thin"
+        assert any("iv_rv_spread_below_butterfly_minimum" in r.reasons for r in result.scan.rejections)
+
+    def test_iron_butterfly_accepted_when_iv_rv_spread_sufficient(self) -> None:
+        """IV=50%, RV=40% → spread = 10 vol pts >= 5.0 threshold → accept."""
+        result = scan_opportunities_with_historical_context(
+            _iron_butterfly_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("iron_butterfly",),
+                enforce_bot_regime=True,
+                butterfly_min_iv_rv_spread=5.0,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.40),
+        )
+        butterflies = [op for op in result.scan.opportunities if op.strategy == "iron_butterfly"]
+        assert len(butterflies) >= 1, "Iron butterfly should be accepted when IV-RV spread is sufficient"
+
+    def test_iron_butterfly_not_filtered_without_enforce_bot_regime(self) -> None:
+        """Backward compat: enforce_bot_regime=False → no IV-RV filter for butterfly."""
+        result = scan_opportunities_with_historical_context(
+            _iron_butterfly_fixture(),
+            ScanRequest(
+                risk_free_rate=0.0,
+                strategies=("iron_butterfly",),
+                enforce_bot_regime=False,
+                valuation_mode="synthetic",
+            ),
+            _make_hv_context(rv=0.49),  # Thin spread, but filter is off
+        )
+        butterflies = [op for op in result.scan.opportunities if op.strategy == "iron_butterfly"]
+        assert len(butterflies) >= 1, "Without enforce_bot_regime, butterfly should not be IV-RV filtered"
+
+
+class TestBotRegimeBackwardCompatibility:
+    """All regime filters must be inactive when enforce_bot_regime=False."""
+
+    def test_scan_request_accepts_new_fields_with_defaults(self) -> None:
+        req = ScanRequest(risk_free_rate=0.0)
+        assert req.enforce_bot_regime is False
+        assert req.straddle_min_rv_iv_ratio == 1.0
+        assert req.calendar_max_rv == 0.55
+        assert req.calendar_max_spot_drift_pct == 2.0
+        assert req.butterfly_min_iv_rv_spread == 5.0
+        assert req.credit_spread_min_credit_ratio == 0.15
+
+    def test_existing_iron_condor_filter_unchanged(self) -> None:
+        """ic_min_iv_rv_spread still works independently of enforce_bot_regime."""
+        contracts = [
+            replace(_contract("BTC", 60, option_type="Put", ask=0.10, bid=0.08, delta=-0.01, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 140, option_type="Call", ask=0.10, bid=0.08, delta=0.01, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 80, option_type="Put", ask=0.60, bid=0.50, delta=-0.08, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 120, option_type="Call", ask=0.60, bid=0.50, delta=0.08, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 70, option_type="Put", ask=0.20, bid=0.15, delta=-0.03, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 90, option_type="Put", ask=1.50, bid=1.40, delta=-0.15, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 110, option_type="Call", ask=1.50, bid=1.40, delta=0.15, mark_iv=0.50), spot_price=100.0),
+            replace(_contract("BTC", 130, option_type="Call", ask=0.20, bid=0.15, delta=0.03, mark_iv=0.50), spot_price=100.0),
+        ]
+        universe = _universe(*contracts)
+        # enforce_bot_regime=False but ic_min_iv_rv_spread still active
+        request = ScanRequest(
+            assets=("BTC",),
+            risk_free_rate=0.0,
+            strategies=("iron_condor",),
+            ic_min_iv_rv_spread=6.0,
+            enforce_bot_regime=False,
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities_with_historical_context(
+            universe, request, _make_hv_context(rv=0.48)
+        )
+        assert len(result.scan.opportunities) == 0, "ic_min_iv_rv_spread should work independently"
+        assert any("iv_rv_spread_below_minimum" in r.reasons for r in result.scan.rejections)

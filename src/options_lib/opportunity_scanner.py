@@ -102,6 +102,12 @@ class ScanRequest:
     ic_target_short_delta: float = 0.15
     ic_target_wing_delta: float = 0.03
     ic_min_iv_rv_spread: float | None = None
+    enforce_bot_regime: bool = False
+    straddle_min_rv_iv_ratio: float = 1.0
+    calendar_max_rv: float = 0.55
+    calendar_max_spot_drift_pct: float = 2.0
+    butterfly_min_iv_rv_spread: float = 5.0
+    credit_spread_min_credit_ratio: float = 0.15
 
     def __post_init__(self) -> None:
         _finite("risk_free_rate", self.risk_free_rate)
@@ -128,6 +134,11 @@ class ScanRequest:
             "ic_target_short_delta",
             "ic_target_wing_delta",
             "ic_min_iv_rv_spread",
+            "straddle_min_rv_iv_ratio",
+            "calendar_max_rv",
+            "calendar_max_spot_drift_pct",
+            "butterfly_min_iv_rv_spread",
+            "credit_spread_min_credit_ratio",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -643,7 +654,7 @@ def scan_opportunities_with_historical_context(
         tuple(_selected_assets(universe, request)),
         requested_at=_as_utc(universe.valuation_time),
     )
-    if request.ic_min_iv_rv_spread is not None:
+    if request.ic_min_iv_rv_spread is not None or request.enforce_bot_regime:
         context_by_asset = {
             c.asset: c for c in contexts if c.available and c.historical_volatility is not None
         }
@@ -651,10 +662,11 @@ def scan_opportunities_with_historical_context(
         new_rejections = list(scan.rejections)
         req_thresh = (
             request.ic_min_iv_rv_spread
-            if request.ic_min_iv_rv_spread > 1.0
-            else request.ic_min_iv_rv_spread * 100.0
+            if (request.ic_min_iv_rv_spread is not None and request.ic_min_iv_rv_spread > 1.0)
+            else (request.ic_min_iv_rv_spread * 100.0 if request.ic_min_iv_rv_spread is not None else 3.0)
         )
         for op in scan.opportunities:
+            # 1. Iron Condor
             if op.strategy == "iron_condor" and op.asset in context_by_asset:
                 ctx = context_by_asset[op.asset]
                 rv = ctx.historical_volatility
@@ -664,7 +676,8 @@ def scan_opportunities_with_historical_context(
                 else:
                     iv = sum(l.market_iv for l in op.legs) / max(1, len(op.legs))
                 eff_spread = (iv - rv) * 100.0 if max(iv, rv) <= 2.0 else (iv - rv)
-                if eff_spread < req_thresh:
+                threshold = req_thresh if request.ic_min_iv_rv_spread is not None else 3.0
+                if eff_spread < threshold:
                     new_rejections.append(
                         RejectedCandidate(
                             asset=op.asset,
@@ -674,13 +687,137 @@ def scan_opportunities_with_historical_context(
                             expiry_at=op.expiry_at,
                             reasons=("iv_rv_spread_below_minimum",),
                             messages=(
-                                f"IV - RV spread {eff_spread:.2f} is below threshold {req_thresh:.2f}",
+                                f"IV - RV spread {eff_spread:.2f} is below threshold {threshold:.2f}",
                             ),
                             quote_timestamp=op.quote_timestamp,
                             strategy="iron_condor",
                         )
                     )
                     continue
+
+            # 2. Long Straddle & Long Strangle (BOT-010 IV Discount Filter)
+            if request.enforce_bot_regime and op.strategy in {"long_straddle", "long_strangle"} and op.asset in context_by_asset:
+                ctx = context_by_asset[op.asset]
+                raw_rv = ctx.historical_volatility
+                norm_rv = raw_rv if raw_rv <= 2.0 else raw_rv / 100.0
+                ivs = [l.market_iv for l in op.legs if l.market_iv > 0]
+                mean_iv = sum(ivs) / len(ivs) if ivs else 0.0
+                norm_iv = mean_iv if mean_iv <= 2.0 else mean_iv / 100.0
+                req_ratio = request.straddle_min_rv_iv_ratio
+                if norm_iv > 0 and (norm_rv < norm_iv * req_ratio):
+                    new_rejections.append(
+                        RejectedCandidate(
+                            asset=op.asset,
+                            symbol=op.symbol,
+                            option_type="multi",
+                            strike=op.strike,
+                            expiry_at=op.expiry_at,
+                            reasons=("iv_expensive_relative_to_rv",),
+                            messages=(
+                                f"Option IV ({norm_iv * 100:.1f}%) is higher than RV ({norm_rv * 100:.1f}%); expected RV >= IV * {req_ratio:.2f}",
+                            ),
+                            quote_timestamp=op.quote_timestamp,
+                            strategy=op.strategy,
+                        )
+                    )
+                    continue
+
+            # 3. Calendar Spread (BOT-009 RV Ceiling & Consolidation Spot Drift Filter)
+            if request.enforce_bot_regime and op.strategy == "calendar_spread":
+                if op.asset in context_by_asset:
+                    ctx = context_by_asset[op.asset]
+                    raw_rv = ctx.historical_volatility
+                    norm_rv = raw_rv if raw_rv <= 2.0 else raw_rv / 100.0
+                    if norm_rv > request.calendar_max_rv:
+                        new_rejections.append(
+                            RejectedCandidate(
+                                asset=op.asset,
+                                symbol=op.symbol,
+                                option_type="multi",
+                                strike=op.strike,
+                                expiry_at=op.expiry_at,
+                                reasons=("rv_above_calendar_ceiling",),
+                                messages=(
+                                    f"Asset RV ({norm_rv * 100:.1f}%) exceeds calendar spread ceiling ({request.calendar_max_rv * 100:.1f}%)",
+                                ),
+                                quote_timestamp=op.quote_timestamp,
+                                strategy=op.strategy,
+                            )
+                        )
+                        continue
+
+                spot = op.spot_price if op.spot_price > 0 else (op.legs[0].spot_price if op.legs else 0.0)
+                if spot > 0.0:
+                    drift_pct = abs(op.strike - spot) / spot * 100.0
+                    if drift_pct > request.calendar_max_spot_drift_pct:
+                        new_rejections.append(
+                            RejectedCandidate(
+                                asset=op.asset,
+                                symbol=op.symbol,
+                                option_type="multi",
+                                strike=op.strike,
+                                expiry_at=op.expiry_at,
+                                reasons=("calendar_strike_drift_too_wide",),
+                                messages=(
+                                    f"Calendar strike ({op.strike:g}) drifts {drift_pct:.2f}% from spot ({spot:g}), exceeding max allowed drift ({request.calendar_max_spot_drift_pct:.2f}%)",
+                                ),
+                                quote_timestamp=op.quote_timestamp,
+                                strategy=op.strategy,
+                            )
+                        )
+                        continue
+
+            # 4. Iron Butterfly (BOT-008 Pinning & High IV-RV Spread)
+            if request.enforce_bot_regime and op.strategy == "iron_butterfly" and op.asset in context_by_asset:
+                ctx = context_by_asset[op.asset]
+                rv = ctx.historical_volatility
+                short_legs = [l for l in op.legs if l.position < 0]
+                if short_legs:
+                    iv = sum(l.market_iv for l in short_legs) / len(short_legs)
+                else:
+                    iv = sum(l.market_iv for l in op.legs) / max(1, len(op.legs))
+                eff_spread = (iv - rv) * 100.0 if max(iv, rv) <= 2.0 else (iv - rv)
+                if eff_spread < request.butterfly_min_iv_rv_spread:
+                    new_rejections.append(
+                        RejectedCandidate(
+                            asset=op.asset,
+                            symbol=op.symbol,
+                            option_type="multi",
+                            strike=op.strike,
+                            expiry_at=op.expiry_at,
+                            reasons=("iv_rv_spread_below_butterfly_minimum",),
+                            messages=(
+                                f"Iron Butterfly IV - RV spread {eff_spread:.2f} is below threshold {request.butterfly_min_iv_rv_spread:.2f}",
+                            ),
+                            quote_timestamp=op.quote_timestamp,
+                            strategy="iron_butterfly",
+                        )
+                    )
+                    continue
+
+            # 5. Vertical Credit Spreads (BOT-007 Minimum Credit Ratio)
+            if request.enforce_bot_regime and op.strategy in {"bull_put_vertical", "bear_call_vertical"}:
+                if len(op.legs) == 2:
+                    width = abs(op.legs[1].strike - op.legs[0].strike)
+                    credit = -op.entry_price if op.entry_price < 0 else (op.net_credit or 0.0)
+                    if width > 0 and (credit / width < request.credit_spread_min_credit_ratio):
+                        new_rejections.append(
+                            RejectedCandidate(
+                                asset=op.asset,
+                                symbol=op.symbol,
+                                option_type="multi",
+                                strike=op.strike,
+                                expiry_at=op.expiry_at,
+                                reasons=("credit_ratio_below_minimum",),
+                                messages=(
+                                    f"Credit spread credit/width ratio ({credit/width*100:.1f}%) is below minimum ({request.credit_spread_min_credit_ratio*100:.1f}%)",
+                                ),
+                                quote_timestamp=op.quote_timestamp,
+                                strategy=op.strategy,
+                            )
+                        )
+                        continue
+
             kept_ops.append(op)
         scan = replace(scan, opportunities=tuple(kept_ops), rejections=tuple(new_rejections))
 
@@ -1222,7 +1359,7 @@ def _append_theoretical_multi_leg(
                 )
                 for leg, value, position in zip(legs, fair_values, positions)
             ),
-            net_credit=-ask_price if strategy == "iron_condor" and ask_price is not None else None,
+            net_credit=-ask_price if (strategy in {"iron_condor", "iron_butterfly"} or (strategy in {"bull_put_vertical", "bear_call_vertical"} and ask_price is not None and ask_price < 0)) and ask_price is not None else None,
             short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
             wing_delta=(abs(legs[0].delta) + abs(legs[3].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
         )
@@ -2120,9 +2257,9 @@ def _scan_multi_leg_candidate(
                 for leg, value, position in zip(legs, valued, positions)
             ),
             breakevens=breakevens,
-            net_credit=-entry if strategy == "iron_condor" else None,
-            short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
-            wing_delta=(abs(legs[0].delta) + abs(legs[3].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
+            net_credit=-entry if strategy in {"iron_condor", "iron_butterfly"} else None,
+            short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy in {"iron_condor", "iron_butterfly"} and len(legs) >= 4 else None,
+            wing_delta=(abs(legs[0].delta) + abs(legs[3].delta)) / 2.0 if strategy in {"iron_condor", "iron_butterfly"} and len(legs) >= 4 else None,
         )
     )
 
