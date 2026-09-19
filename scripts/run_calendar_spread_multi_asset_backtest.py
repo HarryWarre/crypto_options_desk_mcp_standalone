@@ -20,9 +20,9 @@ ASSETS = ["BTC", "ETH", "SOL", "DOGE", "MNT", "XRP"]
 
 def run_calendar_spread_portfolio_backtest(
     days: int = 75,
-    tp_pct: float = 0.30,
-    sl_pct: float = 0.35,
-    max_concurrent: int = 4,
+    tp_pct: float = 0.25,
+    sl_pct: float = 0.30,
+    max_concurrent: int = 3,
 ) -> dict:
     all_trades = []
     asset_metrics = {}
@@ -51,13 +51,16 @@ def run_calendar_spread_portfolio_backtest(
         cfg = CalendarSpreadBacktestConfig(
             initial_capital=10000.0,
             min_near_dte=4,
-            max_near_dte=15,
-            min_far_dte=20,
-            max_far_dte=60,
+            max_near_dte=12,
+            min_far_dte=16,
+            max_far_dte=45,
             target_profit_pct=tp_pct,
             max_loss_pct=sl_pct,
             max_concurrent_positions=max_concurrent,
             slippage_bps=5.0,
+            max_trend_sma_dist=0.02,
+            max_spot_drift_pct=0.07,
+            max_realized_vol=0.55,
         )
         engine = CalendarSpreadBacktestEngine(cfg)
         res: CalendarSpreadBacktestResult = engine.run(df)
@@ -131,3 +134,4 @@ def run_calendar_spread_portfolio_backtest(
 
 if __name__ == "__main__":
     run_calendar_spread_portfolio_backtest()
+

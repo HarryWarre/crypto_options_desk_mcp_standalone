@@ -1,12 +1,13 @@
 """Fast, Vectorized Historical Backtest Engine for Calendar Spread Strategy.
 
-Simulates multi-tenor Calendar Spreads (Sell Near-Term, Buy Far-Term at ATM strike):
-1. Pair Matching: Locates nearest available Far-Term (>20 DTE) and Near-Term (5-15 DTE) at common ATM strike.
-2. Net Debit Execution: Long far-month contract + Short near-month contract.
+Simulates multi-tenor Calendar Spreads (Sell Near-Term Week 1, Buy Far-Term Week 2 at ATM strike):
+1. Pair Matching: Near-Term (4–9 DTE) and Far-Term (11–20 DTE) at common ATM strike.
+2. Robust Valuation: Combines empirical orderbook mark prices with Black-Scholes pricing
+   fallback for non-downsampled multi-tenor timestamps.
 3. Lifecycle Engine:
-   - 30% Take Profit on Net Debit.
-   - 35% Stop Loss on spread value decay.
-   - Near-term roll / close when Near DTE <= 1.0.
+   - 25% - 30% Take Profit on Net Debit.
+   - Stop Loss on sustained spread value decay.
+   - Near-term expiration harvest: Captures peak theta decay when Near DTE <= 0.5 day.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import py_vollib.black_scholes as bs
 
 
 @dataclass
@@ -25,15 +27,18 @@ class CalendarSpreadBacktestConfig:
     """Configuration for Calendar Spread Backtest."""
 
     initial_capital: float = 10000.0
-    min_near_dte: int = 5
-    max_near_dte: int = 15
-    min_far_dte: int = 20
-    max_far_dte: int = 60
-    target_profit_pct: float = 0.30
-    max_loss_pct: float = 0.35
-    roll_dte: float = 1.0
+    min_near_dte: int = 4
+    max_near_dte: int = 12
+    min_far_dte: int = 16
+    max_far_dte: int = 45
+    target_profit_pct: float = 0.25   # Take profit at 25% ROI
+    max_loss_pct: float = 0.30        # Stop loss at 30% loss
+    roll_dte: float = 0.5             # Harvest near-term expiry
     slippage_bps: float = 5.0
-    max_concurrent_positions: int = 4
+    max_concurrent_positions: int = 3
+    max_trend_sma_dist: float = 0.02  # Trend consolidation filter (<= 2.0% from SMA20)
+    max_spot_drift_pct: float = 0.07  # Early stop if spot drifts >7% from strike
+    max_realized_vol: float = 0.55    # Realized vol ceiling to avoid trend breakouts
 
 
 @dataclass
@@ -99,6 +104,20 @@ class CalendarSpreadBacktestEngine:
     def __init__(self, config: CalendarSpreadBacktestConfig | None = None):
         self.config = config or CalendarSpreadBacktestConfig()
 
+    def _price_leg(
+        self, option_type: str, spot: float, strike: float, dte: float, iv: float = 0.65
+    ) -> float:
+        """Black-Scholes valuation fallback when contract is omitted from downsampled snapshot."""
+        if dte <= 0.001:
+            return max(0.0, spot - strike) if option_type == "call" else max(0.0, strike - spot)
+        try:
+            t = max(0.001, dte / 365.0)
+            flag = "c" if option_type == "call" else "p"
+            val = float(bs.black_scholes(flag, spot, strike, t, 0.05, max(0.1, iv)))
+            return max(0.0, val)
+        except Exception:
+            return max(0.0, spot - strike) if option_type == "call" else max(0.0, strike - spot)
+
     def run(self, df: pd.DataFrame) -> CalendarSpreadBacktestResult:
         if df.empty:
             return CalendarSpreadBacktestResult(
@@ -129,6 +148,11 @@ class CalendarSpreadBacktestEngine:
             grouped[ts] = (group, mark_lookup)
 
         timestamps = sorted(grouped.keys())
+        spot_series = pd.Series({ts: grouped[ts][0]["underlying_price"].iloc[0] for ts in timestamps})
+        sma20 = spot_series.rolling(20, min_periods=5).mean()
+        ret = spot_series.pct_change()
+        vol_series = ret.rolling(24, min_periods=5).std() * np.sqrt(365 * 12)
+
         capital = self.config.initial_capital
         peak_capital = capital
         max_dd_usd = 0.0
@@ -145,6 +169,9 @@ class CalendarSpreadBacktestEngine:
                 continue
 
             spot = float(chain["underlying_price"].iloc[0])
+            sma_val = sma20.loc[ts]
+            dist_from_sma = abs(spot - sma_val) / sma_val if pd.notnull(sma_val) and sma_val > 0 else 0.0
+            rv = vol_series.loc[ts] if ts in vol_series.index and pd.notnull(vol_series.loc[ts]) else 0.40
 
             # 1. Manage existing open positions
             remaining: list[CalendarSpreadTradeRecord] = []
@@ -161,21 +188,18 @@ class CalendarSpreadBacktestEngine:
             can_enter = (
                 len(open_positions) < self.config.max_concurrent_positions
                 and (last_entry_time is None or (ts - last_entry_time).total_seconds() >= 6 * 3600)
+                and (dist_from_sma <= self.config.max_trend_sma_dist)
+                and (rv <= self.config.max_realized_vol)
             )
 
             if can_enter:
                 candidate = self._find_candidate(chain, ts, spot)
                 if candidate is not None:
-                    already_open = any(
-                        p.strike == candidate.strike and p.near_expiry == candidate.near_expiry
-                        for p in open_positions
-                    )
-                    if not already_open:
-                        open_positions.append(candidate)
-                        last_entry_time = ts
+                    open_positions.append(candidate)
+                    last_entry_time = ts
 
             # 3. Track equity
-            unrealized = sum(self._calc_unrealized(p, mark_lookup, spot) for p in open_positions)
+            unrealized = sum(self._calc_unrealized(p, mark_lookup, ts, spot) for p in open_positions)
             current_equity = capital + unrealized
 
             equity_curve.append({
@@ -216,25 +240,15 @@ class CalendarSpreadBacktestEngine:
         if calls.empty:
             return None
 
+        # Week 1 near calls
         near_calls = calls[(calls["dte"] >= self.config.min_near_dte) & (calls["dte"] <= self.config.max_near_dte)]
-        far_calls = calls[calls["dte"] >= self.config.min_far_dte]
+        # Week 2 far calls
+        far_calls = calls[(calls["dte"] >= self.config.min_far_dte) & (calls["dte"] <= self.config.max_far_dte)]
 
         if near_calls.empty or far_calls.empty:
-            # Fallback: pick shortest available and longest available if window differs
-            all_dtes = sorted(calls["dte"].unique())
-            if len(all_dtes) < 2:
-                return None
-            near_dtes = [d for d in all_dtes if d >= 4.0]
-            if not near_dtes:
-                return None
-            shortest = near_dtes[0]
-            longest = all_dtes[-1]
-            if longest <= shortest:
-                return None
-            near_calls = calls[calls["dte"] == shortest]
-            far_calls = calls[calls["dte"] == longest]
+            return None
 
-        # Find common strikes
+        # Common strikes
         near_strikes = set(near_calls["strike"])
         far_strikes = set(far_calls["strike"])
         common = near_strikes.intersection(far_strikes)
@@ -242,8 +256,10 @@ class CalendarSpreadBacktestEngine:
         if not common:
             return None
 
-        # Pick ATM strike closest to spot
+        # ATM strike
         atm_strike = min(common, key=lambda s: abs(s - spot))
+        if abs(atm_strike - spot) / spot > 0.025:
+            return None
 
         near_row = near_calls[near_calls["strike"] == atm_strike].iloc[0]
         far_row = far_calls[far_calls["strike"] == atm_strike].iloc[0]
@@ -252,8 +268,8 @@ class CalendarSpreadBacktestEngine:
         far_expiry = far_row["expiry"]
 
         slip = self.config.slippage_bps / 10000.0
-        near_price = float(near_row["mark_price"]) * (1.0 - slip)  # Sold
-        far_price = float(far_row["mark_price"]) * (1.0 + slip)    # Bought
+        near_price = float(near_row["mark_price"]) * (1.0 - slip)  # Sold near-term
+        far_price = float(far_row["mark_price"]) * (1.0 + slip)    # Bought far-term
 
         raw_debit = far_price - near_price
         if raw_debit <= 0:
@@ -290,8 +306,17 @@ class CalendarSpreadBacktestEngine:
         spot: float,
         force_close: bool = False,
     ) -> tuple[CalendarSpreadTradeRecord, float]:
-        near_mark = mark_lookup.get((pos.near_expiry, pos.option_type, pos.strike), max(0.0, spot - pos.strike))
-        far_mark = mark_lookup.get((pos.far_expiry, pos.option_type, pos.strike), max(0.0, spot - pos.strike))
+        near_dte = (pos.near_expiry - ts).total_seconds() / 86400.0
+        far_dte = (pos.far_expiry - ts).total_seconds() / 86400.0
+
+        near_mark = mark_lookup.get(
+            (pos.near_expiry, pos.option_type, pos.strike),
+            self._price_leg(pos.option_type, spot, pos.strike, near_dte),
+        )
+        far_mark = mark_lookup.get(
+            (pos.far_expiry, pos.option_type, pos.strike),
+            self._price_leg(pos.option_type, spot, pos.strike, far_dte),
+        )
 
         slip = self.config.slippage_bps / 10000.0
         # Closing value: Sell far leg, Buy back near leg
@@ -299,7 +324,6 @@ class CalendarSpreadBacktestEngine:
         fee = min(spot * 0.0006, max(0.0001, abs(current_spread_val) * 0.08))
         net_closing_val = max(0.0, current_spread_val - fee)
 
-        near_dte = (pos.near_expiry - ts).total_seconds() / 86400.0
         pnl = (net_closing_val - pos.entry_debit) * pos.qty
 
         if force_close:
@@ -311,8 +335,8 @@ class CalendarSpreadBacktestEngine:
             pos.holding_hours = (ts - pos.entry_time).total_seconds() / 3600.0
             return pos, pnl
 
-        # 1. Near-term expiration: harvest maximum near theta
-        if near_dte <= 0.05:
+        # 1. Near-term expiration harvest: Peak theta captured
+        if near_dte <= self.config.roll_dte:
             pos.exit_time = ts
             pos.spot_exit = spot
             pos.exit_credit = net_closing_val
@@ -321,17 +345,17 @@ class CalendarSpreadBacktestEngine:
             pos.holding_hours = (ts - pos.entry_time).total_seconds() / 3600.0
             return pos, pnl
 
-        # 2. 30% Take Profit
+        # 2. 25% Take Profit
         if net_closing_val >= pos.entry_debit * (1.0 + self.config.target_profit_pct):
             pos.exit_time = ts
             pos.spot_exit = spot
             pos.exit_credit = net_closing_val
             pos.realized_pnl = pnl
-            pos.exit_reason = "TP_30"
+            pos.exit_reason = "TP_25"
             pos.holding_hours = (ts - pos.entry_time).total_seconds() / 3600.0
             return pos, pnl
 
-        # 3. Stop loss (value dropped by 35%)
+        # 3. Stop loss
         if net_closing_val <= pos.entry_debit * (1.0 - self.config.max_loss_pct):
             pos.exit_time = ts
             pos.spot_exit = spot
@@ -341,13 +365,36 @@ class CalendarSpreadBacktestEngine:
             pos.holding_hours = (ts - pos.entry_time).total_seconds() / 3600.0
             return pos, pnl
 
+        # 4. Early spot drift cut (protect against severe directional trend drag)
+        if self.config.max_spot_drift_pct > 0 and abs(spot - pos.strike) / pos.strike >= self.config.max_spot_drift_pct:
+            pos.exit_time = ts
+            pos.spot_exit = spot
+            pos.exit_credit = net_closing_val
+            pos.realized_pnl = pnl
+            pos.exit_reason = "SPOT_DRIFT_CUT"
+            pos.holding_hours = (ts - pos.entry_time).total_seconds() / 3600.0
+            return pos, pnl
+
         return pos, 0.0
 
     def _calc_unrealized(
-        self, pos: CalendarSpreadTradeRecord, mark_lookup: dict[tuple[Any, str, float], float], spot: float
+        self,
+        pos: CalendarSpreadTradeRecord,
+        mark_lookup: dict[tuple[Any, str, float], float],
+        ts: datetime,
+        spot: float,
     ) -> float:
-        near_mark = mark_lookup.get((pos.near_expiry, pos.option_type, pos.strike), pos.near_entry_price)
-        far_mark = mark_lookup.get((pos.far_expiry, pos.option_type, pos.strike), pos.far_entry_price)
+        near_dte = (pos.near_expiry - ts).total_seconds() / 86400.0
+        far_dte = (pos.far_expiry - ts).total_seconds() / 86400.0
+
+        near_mark = mark_lookup.get(
+            (pos.near_expiry, pos.option_type, pos.strike),
+            self._price_leg(pos.option_type, spot, pos.strike, near_dte),
+        )
+        far_mark = mark_lookup.get(
+            (pos.far_expiry, pos.option_type, pos.strike),
+            self._price_leg(pos.option_type, spot, pos.strike, far_dte),
+        )
         current_val = far_mark - near_mark
         return (current_val - pos.entry_debit) * pos.qty
 
@@ -401,3 +448,4 @@ class CalendarSpreadBacktestEngine:
             trades=trades,
             equity_curve=equity_curve,
         )
+
