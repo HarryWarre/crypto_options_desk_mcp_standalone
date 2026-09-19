@@ -179,3 +179,70 @@ def test_iron_condor_stop_loss():
         assert len(bot.paper_account.positions) == 0
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_iron_condor_defense_roll_untested():
+    temp_dir = tempfile.mkdtemp()
+    try:
+        cfg = IronCondorConfig(
+            asset="BTC",
+            paper_mode=True,
+            initial_capital=10000.0,
+            defense_enabled=True,
+            defense_delta_threshold=0.30,
+            defense_spot_proximity_pct=0.02,
+            db_path=str(Path(temp_dir) / "test.db"),
+            log_dir=str(Path(temp_dir) / "logs"),
+            qty=0.1,
+        )
+        bot = IronCondorBot(cfg)
+        spot = 65000.0
+        chain = _build_mock_chain(spot=spot, dte_days=10)
+
+        candidate = bot.select_iron_condor_candidate(chain, spot)
+        opened = bot.execute_open_condor(candidate, spot)
+        assert opened
+        initial_credit = bot._entry_credit
+
+        # Simulate spot rising toward short call 69,000:
+        breached_spot = 68200.0  # within 2% of 69,000
+        # When spot rallies, old puts decay significantly and new ATM/OTM puts exist
+        defense_chain = []
+        for c in chain:
+            c_copy = dict(c)
+            if c["strike"] == 69000.0 and c["option_type"] == "call":
+                c_copy["delta"] = 0.35  # delta breached
+                c_copy["bid"] = 1200.0
+                c_copy["ask"] = 1250.0
+                c_copy["mark_price"] = 1225.0
+            elif c["option_type"] == "put":
+                if c["strike"] == 61000.0:  # old short put decayed
+                    c_copy["delta"] = -0.04
+                    c_copy["bid"] = 70.0
+                    c_copy["ask"] = 80.0
+                    c_copy["mark_price"] = 75.0
+                elif c["strike"] == 58000.0:  # old long put decayed
+                    c_copy["delta"] = -0.01
+                    c_copy["bid"] = 10.0
+                    c_copy["ask"] = 20.0
+                    c_copy["mark_price"] = 15.0
+                elif c["strike"] == 64000.0:  # new short put closer to spot
+                    c_copy["delta"] = -0.16
+                    c_copy["bid"] = 620.0
+                    c_copy["ask"] = 650.0
+                    c_copy["mark_price"] = 635.0
+            defense_chain.append(c_copy)
+
+        action = bot.monitor_and_manage_position(breached_spot, defense_chain)
+        assert action == "DEFENSE_ROLLED_PUT_SPREAD"
+        assert bot._defense_rolled is True
+        assert len(bot._active_legs) == 4
+        # Total credit increased to buffer threatened call side
+        assert bot._entry_credit > initial_credit
+
+        # Second evaluation should not trigger another roll (already rolled)
+        action_after = bot.monitor_and_manage_position(breached_spot, defense_chain)
+        assert action_after == "HOLDING"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+

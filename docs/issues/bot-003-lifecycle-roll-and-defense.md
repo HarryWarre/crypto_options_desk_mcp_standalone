@@ -1,6 +1,6 @@
 # BOT-003 — Lifecycle Management, Compounding & Defensive Rolling
 
-**Status:** backlog  
+**Status:** completed  
 **Branch:** `feat/options-neutral-spread-paper-bot`  
 **Target:** `main`
 
@@ -12,13 +12,13 @@ When operating an aggressive options strategy (maximizing growth across the enti
 
 ## 2. Decision Rules & Thresholds
 - **Take Profit (TP):** Close all 4 legs when Unrealized PnL >= 50% of Net Credit Collected.
-- **Defense Trigger:** When spot price breaches 0.50 standard deviations toward a short strike, initiate "Roll Untested Side" to restore Delta neutrality.
+- **Defense Trigger:** When spot price breaches 0.50 standard deviations or Delta >= 0.30 toward a short strike, initiate "Roll Untested Side" to restore Delta neutrality and collect buffer credit.
 - **Stop Loss (SL) / Circuit Breaker:** Liquidate position if Unrealized Loss exceeds 2.0x Net Credit Collected.
 - **Time Exit:** Close or roll when DTE <= 1.0 day.
 
 ## 3. Sub-tasks
-- [ ] **BOT-003A**: Real-time position mark-to-market evaluation loop.
-- [ ] **BOT-003B**: 50% TP automatic close & immediate capital recycling trigger.
-- [ ] **BOT-003C**: Defense engine: Roll untested side algorithm.
-- [ ] **BOT-003D**: DTE <= 1 rollover & emergency stop-loss protection.
+- [x] **BOT-003A**: Real-time position mark-to-market evaluation loop.
+- [x] **BOT-003B**: 50% TP automatic close & immediate capital recycling trigger.
+- [x] **BOT-003C**: Defense engine: Roll untested side algorithm.
+- [x] **BOT-003D**: DTE <= 1 rollover & emergency stop-loss protection.
 

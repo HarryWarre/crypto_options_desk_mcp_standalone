@@ -61,6 +61,11 @@ class IronCondorConfig:
     max_margin_utilization: float = 0.85
     roll_dte: float = 1.0  # close or roll when DTE <= 1 day
 
+    # Defense engine (BOT-003)
+    defense_enabled: bool = True
+    defense_delta_threshold: float = 0.30  # Roll untested side when short delta >= 0.30
+    defense_spot_proximity_pct: float = 0.02  # or spot within 2% of short strike
+
     # Position sizing
     qty: float = 0.0  # 0 = auto-size based on account margin
     poll_interval_seconds: int = 300  # check every 5 minutes
@@ -145,6 +150,7 @@ class IronCondorBot:
         self._entry_credit: float = 0.0
         self._entry_time: str | None = None
         self._total_compounded_profit: float = 0.0
+        self._defense_rolled: bool = False
 
         # Setup paths & logging
         self._log_path = Path(config.log_dir) / config.asset
@@ -472,6 +478,7 @@ class IronCondorBot:
             # Record state
             self._active_condor_id = candidate.condor_id
             self._active_legs = executed_legs
+            self._defense_rolled = False
             short_credit = sum(l.entry_price for l in executed_legs if l.side == "Sell")
             long_debit = sum(l.entry_price for l in executed_legs if l.side == "Buy")
             self._entry_credit = (short_credit - long_debit) * qty
@@ -558,6 +565,7 @@ class IronCondorBot:
             self._active_condor_id = None
             self._active_legs = []
             self._entry_credit = 0.0
+            self._defense_rolled = False
 
             # Persist
             margin_sum = self.margin_calculator.evaluate_portfolio(
@@ -570,6 +578,170 @@ class IronCondorBot:
 
         return 0.0
 
+    def execute_defense_roll_untested(
+        self,
+        breached_side: str,
+        spot: float,
+        current_chain: list[dict[str, Any]],
+    ) -> bool:
+        """Roll untested credit spread closer to spot to collect buffer credit and restore neutrality (BOT-003)."""
+        if not self._active_condor_id or not self._active_legs:
+            return False
+
+        chain_by_sym = {c["symbol"]: c for c in current_chain}
+        untested_roles = ("short_put", "long_put") if breached_side == "call" else ("short_call", "long_call")
+        legs_to_close = [l for l in self._active_legs if l.role in untested_roles]
+
+        if len(legs_to_close) != 2:
+            return False
+
+        closing_cost = 0.0
+        for leg in legs_to_close:
+            close_side = "Buy" if leg.side == "Sell" else "Sell"
+            contract = chain_by_sym.get(leg.symbol, {})
+            order = PaperOrder(
+                symbol=leg.symbol,
+                side=close_side,
+                qty=leg.qty,
+                order_type=OrderType.MARKET,
+                strategy_id=self._active_condor_id,
+            )
+            if self.config.use_deribit_testnet and self.deribit_adapter:
+                res = self.deribit_adapter.execute_order(order, spot=spot)
+            else:
+                res = self.matching_engine.match_order(
+                    order=order,
+                    best_bid=float(contract.get("bid", 0) or leg.current_mark * 0.95),
+                    best_ask=float(contract.get("ask", 0) or leg.current_mark * 1.05),
+                    spot=spot,
+                    mark_price=float(contract.get("mark_price", 0) or leg.current_mark),
+                )
+            self.paper_account.apply_fill(
+                symbol=leg.symbol,
+                side=close_side,
+                qty=leg.qty,
+                price=res.filled_price,
+                fee=res.fee,
+                spot=spot,
+                strategy_id=self._active_condor_id,
+                order_id=res.order_id,
+            )
+            if leg.side == "Sell":
+                closing_cost += res.filled_price * leg.qty
+            else:
+                closing_cost -= res.filled_price * leg.qty
+
+        # Remove closed legs from _active_legs
+        self._active_legs = [l for l in self._active_legs if l.role not in untested_roles]
+
+        # 2. Find new rolled untested candidates from chain
+        target_opt_type = "put" if breached_side == "call" else "call"
+        qty = legs_to_close[0].qty
+
+        sub_contracts = [
+            c for c in current_chain
+            if str(c.get("option_type", "")).lower() == target_opt_type
+            and (c["strike"] < spot if target_opt_type == "put" else c["strike"] > spot)
+        ]
+
+        if len(sub_contracts) < 2:
+            self._log_event("defense_roll_failed", {"reason": "insufficient_contracts_in_chain"})
+            return False
+
+        # Pick short strike near target_short_delta
+        sub_contracts.sort(key=lambda c: abs(abs(float(c.get("delta", 0.0) or 0.0)) - self.config.target_short_delta))
+        new_short_contract = sub_contracts[0]
+
+        # Pick long wing strike near target_wing_delta
+        wing_contracts = [
+            c for c in sub_contracts
+            if (c["strike"] < new_short_contract["strike"] if target_opt_type == "put" else c["strike"] > new_short_contract["strike"])
+        ]
+        if not wing_contracts:
+            self._log_event("defense_roll_failed", {"reason": "no_wing_contracts"})
+            return False
+
+        wing_contracts.sort(key=lambda c: abs(abs(float(c.get("delta", 0.0) or 0.0)) - self.config.target_wing_delta))
+        new_long_contract = wing_contracts[0]
+
+        short_role = "short_put" if target_opt_type == "put" else "short_call"
+        long_role = "long_put" if target_opt_type == "put" else "long_call"
+        legs_to_open = [
+            (new_long_contract, "Buy", long_role),
+            (new_short_contract, "Sell", short_role),
+        ]
+
+        rolled_credit = 0.0
+        for contract, side, role in legs_to_open:
+            sym = contract["symbol"]
+            order = PaperOrder(
+                symbol=sym,
+                side=side,
+                qty=qty,
+                order_type=OrderType.MARKET,
+                strategy_id=self._active_condor_id,
+                leg_role=role,
+            )
+            if self.config.use_deribit_testnet and self.deribit_adapter:
+                res = self.deribit_adapter.execute_order(order, spot=spot)
+            else:
+                res = self.matching_engine.match_order(
+                    order=order,
+                    best_bid=float(contract.get("bid", 0) or 0),
+                    best_ask=float(contract.get("ask", 0) or 0),
+                    spot=spot,
+                    mark_price=float(contract.get("mark_price", 0) or 0),
+                )
+            self.paper_account.apply_fill(
+                symbol=sym,
+                side=side,
+                qty=qty,
+                price=res.filled_price,
+                fee=res.fee,
+                spot=spot,
+                strategy_id=self._active_condor_id,
+                leg_role=role,
+                order_id=res.order_id,
+            )
+            self._active_legs.append(
+                IronCondorLeg(
+                    symbol=sym,
+                    side=side,
+                    strike=float(contract["strike"]),
+                    option_type=target_opt_type,
+                    delta=float(contract.get("delta", 0.0) or 0.0),
+                    entry_price=res.filled_price,
+                    current_mark=res.filled_price,
+                    qty=qty,
+                    role=role,
+                )
+            )
+            if side == "Sell":
+                rolled_credit += res.filled_price * qty
+            else:
+                rolled_credit -= res.filled_price * qty
+
+        net_added_credit = rolled_credit - closing_cost
+        self._entry_credit += net_added_credit
+        self._defense_rolled = True
+
+        margin_sum = self.margin_calculator.evaluate_portfolio(
+            self.paper_account.positions,
+            self.paper_account.equity,
+            spot,
+        )
+        self.storage.save_account(self.paper_account, margin_summary=margin_sum)
+        self._log_event(
+            "iron_condor_defended_roll_untested",
+            {
+                "breached_side": breached_side,
+                "rolled_side": target_opt_type,
+                "net_added_credit": round(net_added_credit, 4),
+                "new_total_credit": round(self._entry_credit, 4),
+            },
+        )
+        return True
+
     # --- Position Lifecycle & Monitoring --------------------------------------
 
     def monitor_and_manage_position(
@@ -577,7 +749,7 @@ class IronCondorBot:
         spot: float,
         current_chain: list[dict[str, Any]],
     ) -> str:
-        """Check active Iron Condor against Take Profit (50%), Stop Loss, and Expiry."""
+        """Check active Iron Condor against Take Profit (50%), Defense Rolling, Stop Loss, and Expiry."""
         if not self._active_condor_id or not self._active_legs:
             return "NO_ACTIVE_POSITION"
 
@@ -591,6 +763,8 @@ class IronCondorBot:
                 mark = (bid + ask) / 2.0 if bid > 0 and ask > 0 else float(c.get("mark_price", 0) or leg.current_mark)
                 quotes[leg.symbol] = mark
                 leg.current_mark = mark
+                if "delta" in c:
+                    leg.delta = float(c["delta"])
 
         # Update paper account mark to market
         self.paper_account.mark_to_market(quotes)
@@ -612,7 +786,36 @@ class IronCondorBot:
             self.execute_close_condor("50_PERCENT_TP", spot, current_chain)
             return "CLOSED_TP"
 
-        # 2. STOP-LOSS CIRCUIT BREAKER
+        # 2. DEFENSIVE ROLLING (BOT-003: Roll Untested Side before SL breach)
+        if self.config.defense_enabled and not getattr(self, "_defense_rolled", False):
+            short_call = next((l for l in self._active_legs if l.role == "short_call"), None)
+            short_put = next((l for l in self._active_legs if l.role == "short_put"), None)
+
+            call_breached = (
+                short_call is not None
+                and (
+                    abs(short_call.delta) >= self.config.defense_delta_threshold
+                    or spot >= short_call.strike * (1.0 - self.config.defense_spot_proximity_pct)
+                )
+            )
+            put_breached = (
+                short_put is not None
+                and (
+                    abs(short_put.delta) >= self.config.defense_delta_threshold
+                    or spot <= short_put.strike * (1.0 + self.config.defense_spot_proximity_pct)
+                )
+            )
+
+            if call_breached and not put_breached:
+                success = self.execute_defense_roll_untested("call", spot, current_chain)
+                if success:
+                    return "DEFENSE_ROLLED_PUT_SPREAD"
+            elif put_breached and not call_breached:
+                success = self.execute_defense_roll_untested("put", spot, current_chain)
+                if success:
+                    return "DEFENSE_ROLLED_CALL_SPREAD"
+
+        # 3. STOP-LOSS CIRCUIT BREAKER
         max_allowed_loss = self._entry_credit * self.config.max_loss_multiplier
         if unrealized <= -max_allowed_loss:
             self._log_event(
@@ -622,7 +825,7 @@ class IronCondorBot:
             self.execute_close_condor("STOP_LOSS", spot, current_chain)
             return "CLOSED_SL"
 
-        # 3. EXPIRY CHECK
+        # 4. EXPIRY CHECK
         parsed = parse_bybit_option_symbol(self._active_legs[0].symbol)
         if parsed and parsed.get("expiry_date"):
             exp_dt = parsed["expiry_date"]
