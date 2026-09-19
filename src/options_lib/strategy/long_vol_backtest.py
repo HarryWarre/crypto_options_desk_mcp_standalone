@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 import py_vollib.black_scholes as bs
 
+from options_lib.risk.portfolio_risk_engine import calculate_backtest_position_size
+
 
 @dataclass
 class LongVolBacktestConfig:
@@ -37,6 +39,11 @@ class LongVolBacktestConfig:
     slippage_bps: float = 5.0
     max_concurrent_positions: int = 3
     cooldown_hours: float = 6.0
+    dynamic_sizing: bool = True
+    risk_pct_per_trade: float = 0.02
+    max_margin_utilization: float = 0.60
+    asset: str = "BTC"
+    fixed_qty: float | None = None
 
 
 @dataclass
@@ -187,7 +194,7 @@ class LongVolBacktestEngine:
             )
 
             if can_enter:
-                candidate = self._find_candidate(chain, ts, spot, rv_val)
+                candidate = self._find_candidate(chain, ts, spot, rv_val, capital)
                 if candidate is not None:
                     open_positions.append(candidate)
                     last_entry_time = ts
@@ -225,7 +232,7 @@ class LongVolBacktestEngine:
         return self._build_results(closed_trades, equity_curve, capital - self.config.initial_capital, max_dd_usd, max_dd_pct)
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float, rv_val: float
+        self, chain: pd.DataFrame, ts: datetime, spot: float, rv_val: float, capital: float = 10000.0
     ) -> LongVolTradeRecord | None:
         chain = chain.copy()
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
@@ -263,8 +270,23 @@ class LongVolBacktestEngine:
         fee = min(spot * 0.0006 * 2, max(0.0002, raw_debit * 0.08))
         net_debit = raw_debit + fee
 
-        notional = self.config.initial_capital / self.config.max_concurrent_positions
-        qty = max(0.001, round(notional / spot, 4))
+        max_loss_per_unit = max(1.0, net_debit)
+        if self.config.fixed_qty is not None:
+            qty = self.config.fixed_qty
+        elif self.config.dynamic_sizing:
+            qty = calculate_backtest_position_size(
+                current_equity=capital,
+                asset=self.config.asset,
+                max_loss_per_unit=max_loss_per_unit,
+                risk_pct=self.config.risk_pct_per_trade,
+                max_margin_utilization=self.config.max_margin_utilization,
+            )
+        else:
+            notional = self.config.initial_capital / self.config.max_concurrent_positions
+            qty = max(0.001, round(notional / spot, 4))
+
+        if qty <= 0:
+            return None
         iv_val = float(c_row.get("iv", avg_iv))
 
         return LongVolTradeRecord(

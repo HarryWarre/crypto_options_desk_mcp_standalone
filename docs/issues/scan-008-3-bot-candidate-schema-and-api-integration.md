@@ -2,7 +2,7 @@
 
 **Mã Sub-Issue:** SCAN-008.3  
 **Master Issue:** [SCAN-008](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-bot-aligned-strategy-scanner.md)  
-**Trạng thái:** To Do  
+**Trạng thái:** Completed  
 **Target:** `main`  
 **File cần sửa:**
 - `src/options_lib/opportunity_scanner.py`
@@ -60,8 +60,8 @@ Hiện tại:
 
 ## 3. Tiêu Chí Nghiệm Thu (Acceptance Criteria)
 
-- [ ] Gọi `/api/scan?bot_preset=calendar` tự động cấu hình các tham số DTE, RV ceiling, SMA20 filter chuẩn theo BOT-009.
-- [ ] Mọi cơ hội trả về đều chứa `bot_metadata` với đầy đủ `entry_payload`.
-- [ ] Endpoint `POST /api/bot/execute-scanner-candidate` nhận payload và thực thi thành công qua `DeribitBrokerAdapter` (hoặc mock client trong môi trường test).
-- [ ] Test E2E và API test trong `tests/test_options_app_api.py` pass 100%.
-- [ ] UI hiển thị trực quan nhãn Bot Ready và nút bấm hành động.
+- [x] Gọi `/api/scan?bot_preset=calendar` tự động cấu hình các tham số DTE, RV ceiling, SMA20 filter chuẩn theo BOT-009.
+- [x] Mọi cơ hội trả về đều chứa `bot_metadata` với đầy đủ `entry_payload`.
+- [x] Endpoint `POST /api/bot/execute-scanner-candidate` nhận payload và thực thi thành công qua `DeribitBrokerAdapter` (hoặc mock client trong môi trường test).
+- [x] Test E2E và API test trong `tests/test_options_app_api.py` và UI test trong `tests/test_options_app_ui.py` pass 100%.
+- [x] UI hiển thị trực quan nhãn Bot Ready và nút bấm hành động `⚡ Đặt lệnh Testnet (Bot)`.

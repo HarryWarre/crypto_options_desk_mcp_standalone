@@ -19,6 +19,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_lib.risk.portfolio_risk_engine import calculate_backtest_position_size
+
 
 @dataclass
 class IronButterflyBacktestConfig:
@@ -33,6 +35,12 @@ class IronButterflyBacktestConfig:
     roll_dte: float = 1.0
     slippage_bps: float = 5.0
     max_concurrent_positions: int = 4
+    dynamic_sizing: bool = True
+    risk_pct_per_trade: float = 0.02
+    max_margin_utilization: float = 0.60
+    asset: str = "BTC"
+    fixed_qty: float | None = None
+
 
 
 @dataclass
@@ -162,7 +170,7 @@ class IronButterflyBacktestEngine:
             )
 
             if can_enter:
-                candidate = self._find_candidate(chain, ts, spot)
+                candidate = self._find_candidate(chain, ts, spot, capital)
                 if candidate is not None:
                     already_open = any(
                         p.expiry == candidate.expiry and p.atm_strike == candidate.atm_strike
@@ -205,7 +213,7 @@ class IronButterflyBacktestEngine:
         return self._build_results(closed_trades, equity_curve, capital - self.config.initial_capital, max_dd_usd, max_dd_pct)
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float
+        self, chain: pd.DataFrame, ts: datetime, spot: float, capital: float = 10000.0
     ) -> IronButterflyTradeRecord | None:
         chain = chain.copy()
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
@@ -259,8 +267,25 @@ class IronButterflyBacktestEngine:
         if net_credit <= 0:
             return None
 
-        notional = self.config.initial_capital / self.config.max_concurrent_positions
-        qty = max(0.001, round(notional / spot, 4))
+        wing_width = max(abs(atm_strike - lp_strike), abs(lc_strike - atm_strike))
+        max_loss_per_unit = max(1.0, wing_width - net_credit)
+
+        if self.config.fixed_qty is not None:
+            qty = self.config.fixed_qty
+        elif self.config.dynamic_sizing:
+            qty = calculate_backtest_position_size(
+                current_equity=capital,
+                asset=self.config.asset,
+                max_loss_per_unit=max_loss_per_unit,
+                risk_pct=self.config.risk_pct_per_trade,
+                max_margin_utilization=self.config.max_margin_utilization,
+            )
+        else:
+            notional = self.config.initial_capital / self.config.max_concurrent_positions
+            qty = max(0.001, round(notional / spot, 4))
+
+        if qty <= 0:
+            return None
 
         return IronButterflyTradeRecord(
             trade_id=f"ib_{len(sub)}_{int(atm_strike)}",

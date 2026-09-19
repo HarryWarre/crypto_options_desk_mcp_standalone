@@ -264,6 +264,8 @@ const STRATEGY_LABELS = Object.freeze({
   calendar_spread: "Calendar spread",
   butterfly: "Butterfly",
   broken_wing_butterfly: "Broken-wing butterfly",
+  wheel_csp: "The Wheel (Cash-Secured Put)",
+  wheel_cc: "The Wheel (Covered Call)",
 });
 
 const STRATEGY_GROUPS = Object.freeze({
@@ -728,6 +730,15 @@ function renderOpportunityExplanation(item, index) {
   } else {
     heading.append(title, badge);
   }
+
+  if (item?.bot_metadata) {
+    const botBadge = document.createElement("span");
+    botBadge.className = `badge ${item.bot_metadata.is_bot_ready ? "positive" : ""}`.trim();
+    botBadge.textContent = item.bot_metadata.is_bot_ready
+      ? `🤖 Bot Ready (${item.bot_metadata.target_bot})`
+      : `🤖 Bot (${item.bot_metadata.target_bot})`;
+    heading.appendChild(botBadge);
+  }
   card.appendChild(heading);
 
   const symbolText = opportunitySymbol(item);
@@ -790,6 +801,12 @@ function renderOpportunityExplanation(item, index) {
     explanationFact("Evidence", evidenceStatusLabel(evidenceStatus(item)), ""),
     explanationFact("Thanh khoản", `OI ${number(item?.open_interest, 0)} · Vol ${number(item?.volume_24h, 0)}`, ""),
   );
+  if (item?.bot_metadata) {
+    facts.append(
+      explanationFact("Target Bot", item.bot_metadata.target_bot || "—", "positive"),
+      explanationFact("Bot Readiness", `${(Number(item.bot_metadata.readiness_score || 0) * 100).toFixed(0)}%`, item.bot_metadata.is_bot_ready ? "positive" : "")
+    );
+  }
   const historicalRate = historicalWinRate(item);
   if (historicalRate !== undefined) {
     facts.append(explanationFact("Win rate lịch sử", estimateProbability(historicalRate), ""));
@@ -846,6 +863,37 @@ function renderOpportunityExplanation(item, index) {
   viewPayoffBtn.addEventListener("click", () => showOpportunityDetail(item));
 
   actions.append(openBuilderBtn, saveNbBtn, viewPayoffBtn);
+
+  if (item?.bot_metadata && item.bot_metadata.is_bot_ready) {
+    const tradeBtn = document.createElement("button");
+    tradeBtn.type = "button";
+    tradeBtn.className = "btn-scanner-action btn-bot-trade";
+    tradeBtn.appendChild(createSvgIcon("zap"));
+    tradeBtn.appendChild(document.createTextNode(" ⚡ Đặt lệnh Testnet (Bot)"));
+    tradeBtn.addEventListener("click", async () => {
+      const targetBot = item.bot_metadata.target_bot;
+      const confirmMsg = `Bạn có chắc muốn gửi ứng viên scanner này tới Testnet Broker?\n\nChiến lược: ${strategyLabel(item.strategy)}\nBot phụ trách: ${targetBot}\nĐiểm sẵn sàng: ${(Number(item.bot_metadata.readiness_score || 0) * 100).toFixed(0)}%`;
+      if (!window.confirm(confirmMsg)) return;
+      tradeBtn.disabled = true;
+      tradeBtn.textContent = " Đang gửi lệnh…";
+      try {
+        const res = await postJson("/api/bot/execute-scanner-candidate", {
+          strategy: item.strategy,
+          target_bot: targetBot,
+          entry_payload: item.bot_metadata.entry_payload,
+          readiness_score: item.bot_metadata.readiness_score,
+        });
+        appendTerminal(`[BOT EXECUTE] Đã đặt lệnh thành công cho ${item.strategy}: ${JSON.stringify(res.orders || res)}`, "success");
+        tradeBtn.textContent = " ✓ Đã đặt lệnh";
+      } catch (err) {
+        appendTerminal(`[BOT EXECUTE] LỖI đặt lệnh: ${err.message}`, "error");
+        tradeBtn.textContent = " ✕ Lỗi đặt lệnh";
+        tradeBtn.disabled = false;
+      }
+    });
+    actions.appendChild(tradeBtn);
+  }
+
   card.appendChild(actions);
 
   return card;
@@ -1445,6 +1493,21 @@ async function getJson(path, options = {}) {
   return payload;
 }
 
+async function postJson(path, body, options = {}) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json", ...(options.headers || {}) },
+    body: JSON.stringify(body),
+    ...options,
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : { error: { message: await response.text() } };
+  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "Yêu cầu thất bại");
+  return payload;
+}
+
 async function streamJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -1569,6 +1632,13 @@ function scanPayloadFromForm() {
     assumed_spread_bps: optionalNumber(data, "assumed_spread_bps") ?? 100,
     include_unvalidated: true,
   };
+  const botPreset = data.get("bot_preset");
+  if (botPreset) {
+    payload.bot_preset = botPreset;
+  }
+  if (data.has("enforce_bot_regime")) {
+    payload.enforce_bot_regime = data.get("enforce_bot_regime") === "true" || data.get("enforce_bot_regime") === "on";
+  }
   if (!useAdvancedFilters) {
     Object.assign(payload, {
       market_view: "custom",
@@ -1990,6 +2060,29 @@ form.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
+
+const botPresetSelect = document.querySelector("#bot-preset-select");
+if (botPresetSelect) {
+  botPresetSelect.addEventListener("change", (e) => {
+    const preset = e.target.value;
+    if (!preset) return;
+    const strategyMap = {
+      wheel: ["wheel_csp", "wheel_cc"],
+      vertical_credit: ["call_vertical", "put_vertical"],
+      iron_butterfly: ["iron_butterfly"],
+      calendar: ["calendar_spread"],
+      long_vol: ["long_straddle", "long_strangle"],
+      iron_condor: ["iron_condor"],
+    };
+    const targetStrategies = strategyMap[preset];
+    if (targetStrategies) {
+      form.querySelectorAll("input[name=strategies]").forEach((cb) => {
+        cb.checked = targetStrategies.includes(cb.value);
+      });
+      appendTerminal(`[PRESET] Đã áp dụng preset "${preset}": chiến lược [${targetStrategies.join(", ")}].`, "info");
+    }
+  });
+}
 
 liveToggle.addEventListener("click", () => {
   if (liveDesk.isWanted()) {

@@ -213,6 +213,15 @@ class OpportunityLeg:
 
 
 @dataclass(frozen=True)
+class BotCandidateMetadata:
+    target_bot: str
+    is_bot_ready: bool
+    bot_readiness_score: float
+    entry_payload: dict[str, Any]
+    disqualification_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Opportunity:
     asset: str
     symbol: str
@@ -288,6 +297,7 @@ class Opportunity:
     net_credit: float | None = None
     short_delta: float | None = None
     wing_delta: float | None = None
+    bot_metadata: BotCandidateMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -361,6 +371,70 @@ _SUPPORTED_STRATEGIES = (
     + _WHEEL_STRATEGIES
 )
 _MAX_MULTI_LEG_CANDIDATES = 10_000
+
+
+def _build_bot_metadata(op: Opportunity) -> BotCandidateMetadata:
+    strat = op.strategy
+    if strat in {"wheel_csp", "wheel_cc"}:
+        target_bot = "wheel"
+    elif strat in {"bull_put_vertical", "bear_call_vertical"}:
+        target_bot = "vertical_spread"
+    elif strat == "iron_butterfly":
+        target_bot = "iron_butterfly"
+    elif strat == "calendar_spread":
+        target_bot = "calendar"
+    elif strat in {"long_straddle", "long_strangle"}:
+        target_bot = "long_vol"
+    elif strat == "iron_condor":
+        target_bot = "iron_condor"
+    else:
+        target_bot = "generic"
+
+    disqualifications: list[str] = []
+    if op.edge_after_costs is not None and op.edge_after_costs < 0:
+        disqualifications.append("negative_edge")
+    if op.max_loss is not None and math.isinf(op.max_loss) and strat not in {"wheel_cc", "covered_call"}:
+        disqualifications.append("infinite_max_loss")
+    if not op.legs:
+        disqualifications.append("missing_legs")
+
+    is_ready = len(disqualifications) == 0
+    score = 1.0 if is_ready else max(0.0, 1.0 - 0.25 * len(disqualifications))
+
+    entry_payload: dict[str, Any] = {
+        "bot_type": target_bot,
+        "strategy": strat,
+        "asset": op.asset,
+        "symbol": op.symbol,
+        "strike": op.strike,
+        "expiry_at": op.expiry_at.isoformat() if op.expiry_at else None,
+        "dte": op.dte,
+        "spot_price": op.spot_price,
+        "net_credit": op.net_credit,
+        "entry_price": op.executable_entry if op.executable_entry is not None else op.estimated_entry,
+        "quantity": 1.0,
+        "legs": [
+            {
+                "symbol": leg.symbol,
+                "option_type": leg.option_type,
+                "strike": leg.strike,
+                "position": leg.position,
+                "bid": leg.bid_price,
+                "ask": leg.ask_price,
+                "mark_iv": leg.market_iv,
+                "delta": leg.delta,
+            }
+            for leg in op.legs
+        ],
+    }
+
+    return BotCandidateMetadata(
+        target_bot=target_bot,
+        is_bot_ready=is_ready,
+        bot_readiness_score=score,
+        entry_payload=entry_payload,
+        disqualification_reasons=tuple(disqualifications),
+    )
 
 
 def scan_opportunities(
@@ -615,6 +689,7 @@ def scan_opportunities(
             return (0.0, -edge_val, -item.iv_edge, item.asset, item.symbol)
 
     opportunities.sort(key=_opportunity_sort_key)
+    opportunities = [replace(op, bot_metadata=_build_bot_metadata(op)) for op in opportunities]
     if request.max_results is not None:
         opportunities = opportunities[: request.max_results]
     return ScanResult(

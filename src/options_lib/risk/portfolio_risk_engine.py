@@ -214,3 +214,51 @@ class PortfolioRiskEngine:
             rejection_reasons=tuple(rejection_reasons),
             warnings=tuple(warnings),
         )
+
+
+def calculate_backtest_position_size(
+    current_equity: float,
+    max_loss_per_unit: float,
+    asset: str = "BTC",
+    risk_pct: float = 0.02,
+    max_margin_utilization: float = 0.60,
+    current_margin_used: float = 0.0,
+    fixed_qty: float | None = None,
+) -> float:
+    """Calculate dynamic position size for backtest replay matching exchange standards."""
+    if fixed_qty is not None:
+        return max(0.0, float(fixed_qty))
+    if current_equity <= 0 or max_loss_per_unit <= 0:
+        return 0.0
+
+    spec = DEFAULT_ASSET_SPECS.get(
+        asset.upper(),
+        AssetLotSpec(min_trade_amount=0.1, step_size=0.1, decimals=1),
+    )
+
+    risk_budget = current_equity * risk_pct
+    raw_qty = risk_budget / max(0.0001, max_loss_per_unit)
+    steps = math.floor(raw_qty / spec.step_size)
+    qty = round(steps * spec.step_size, spec.decimals)
+
+    if qty < spec.min_trade_amount:
+        min_risk = spec.min_trade_amount * max_loss_per_unit
+        # Allow 1 minimum viable lot as long as single-trade risk stays within 5% of equity
+        if min_risk <= current_equity * 0.05:
+            qty = spec.min_trade_amount
+        else:
+            return 0.0
+
+    # Margin check
+    max_allowed_margin = current_equity * max_margin_utilization
+    unit_margin = max(1.0, max_loss_per_unit)
+    total_margin = current_margin_used + (qty * unit_margin)
+    if total_margin > max_allowed_margin:
+        avail = max(0.0, max_allowed_margin - current_margin_used)
+        scaled_steps = math.floor((avail / max(0.0001, unit_margin)) / spec.step_size)
+        qty = round(scaled_steps * spec.step_size, spec.decimals)
+        if qty < spec.min_trade_amount:
+            return 0.0
+
+    return max(0.0, qty)
+

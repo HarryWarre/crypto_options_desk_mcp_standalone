@@ -80,3 +80,21 @@ def test_long_vol_backtest_empty():
     res = engine.run(pd.DataFrame())
     assert res.total_trades == 0
     assert res.total_net_pnl == 0.0
+
+
+def test_long_vol_dynamic_sizing():
+    df = _generate_synthetic_straddle_chain(days=15)
+    cfg = LongVolBacktestConfig(
+        initial_capital=10000.0,
+        min_rv_iv_ratio=0.50,
+        dynamic_sizing=True,
+        asset="BTC",
+        risk_pct_per_trade=0.02,
+    )
+    engine = LongVolBacktestEngine(cfg)
+    res = engine.run(df)
+    assert res.total_trades > 0
+    for tr in res.trades:
+        assert tr.qty > 0
+        assert round(tr.qty % 0.1, 4) in (0.0, 0.1)
+

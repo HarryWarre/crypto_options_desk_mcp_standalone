@@ -102,10 +102,12 @@ _STRUCTURED_SCAN_STRATEGIES = frozenset(
         "broken_wing_butterfly",
     }
 )
+_WHEEL_SCAN_STRATEGIES = frozenset({"wheel_csp", "wheel_cc"})
 _SUPPORTED_SCAN_STRATEGIES = (
     frozenset({"long_call", "long_put", "iron_condor", "iron_butterfly"})
     | _VERTICAL_SCAN_STRATEGIES
     | _STRUCTURED_SCAN_STRATEGIES
+    | _WHEEL_SCAN_STRATEGIES
 )
 _SIMPLE_VIEW_STRATEGIES = {
     "up": ("long_call", "bull_call_vertical"),
@@ -336,6 +338,26 @@ class ScanFilters(BaseModel):
     ic_target_short_delta: float = Field(default=0.15, gt=0, lt=1)
     ic_target_wing_delta: float = Field(default=0.03, gt=0, lt=1)
     ic_min_iv_rv_spread: float | None = Field(default=None)
+    bot_preset: (
+        Literal[
+            "wheel",
+            "vertical_credit",
+            "vertical_spread",
+            "iron_butterfly",
+            "calendar",
+            "long_vol",
+            "iron_condor",
+        ]
+        | None
+    ) = None
+    enforce_bot_regime: bool = False
+    straddle_min_rv_iv_ratio: float = 1.0
+    calendar_max_rv: float = 0.55
+    calendar_max_spot_drift_pct: float = 2.0
+    butterfly_min_iv_rv_spread: float = 5.0
+    credit_spread_min_credit_ratio: float = 0.15
+    wheel_cost_basis: float | None = None
+    wheel_min_apy: float = 0.15
 
     @field_validator(
         "risk_free_rate",
@@ -360,6 +382,13 @@ class ScanFilters(BaseModel):
         "ic_target_short_delta",
         "ic_target_wing_delta",
         "ic_min_iv_rv_spread",
+        "straddle_min_rv_iv_ratio",
+        "calendar_max_rv",
+        "calendar_max_spot_drift_pct",
+        "butterfly_min_iv_rv_spread",
+        "credit_spread_min_credit_ratio",
+        "wheel_cost_basis",
+        "wheel_min_apy",
         mode="before",
     )
     @classmethod
@@ -439,8 +468,45 @@ class ScanFilters(BaseModel):
                 # Older scanner versions have no EV filter.  The API applies
                 # it to their returned opportunities below instead.
                 "min_expected_value",
+                "bot_preset",
             }
         )
+        if self.bot_preset is not None:
+            values["enforce_bot_regime"] = True
+            if self.bot_preset == "wheel":
+                values["strategies"] = ("wheel_csp", "wheel_cc")
+                if self.min_dte is None:
+                    values["min_dte"] = 7.0
+                if self.max_dte is None:
+                    values["max_dte"] = 30.0
+                if self.min_delta is None:
+                    values["min_delta"] = 0.15
+                if self.max_delta is None:
+                    values["max_delta"] = 0.35
+            elif self.bot_preset in {"vertical_credit", "vertical_spread"}:
+                values["strategies"] = ("bull_put_vertical", "bear_call_vertical")
+                if self.min_dte is None:
+                    values["min_dte"] = 7.0
+                if self.max_dte is None:
+                    values["max_dte"] = 45.0
+                values["credit_spread_min_credit_ratio"] = 0.15
+            elif self.bot_preset == "iron_butterfly":
+                values["strategies"] = ("iron_butterfly",)
+                values["butterfly_min_iv_rv_spread"] = 5.0
+            elif self.bot_preset == "calendar":
+                values["strategies"] = ("calendar_spread",)
+                values["calendar_max_rv"] = 0.55
+                values["calendar_max_spot_drift_pct"] = 2.0
+                if self.min_dte is None:
+                    values["min_dte"] = 7.0
+                if self.max_dte is None:
+                    values["max_dte"] = 45.0
+            elif self.bot_preset == "long_vol":
+                values["strategies"] = ("long_straddle", "long_strangle")
+                values["straddle_min_rv_iv_ratio"] = 1.0
+            elif self.bot_preset == "iron_condor":
+                values["strategies"] = ("iron_condor",)
+                values["ic_min_iv_rv_spread"] = 5.0
         if self.market_view is not None:
             values["strategies"] = (
                 (self.strategy_preference,)
@@ -977,8 +1043,47 @@ def create_app(
         )
         return JSONResponse(content=_serialize(catalog))
 
+    @app.get("/api/scan")
+    @app.get("/api/v1/opportunities/scan")
+    async def scan_get(
+        bot_preset: str | None = None,
+        asset: str = "BTC",
+        valuation_mode: str = "synthetic",
+    ) -> JSONResponse:
+        strat_map = {
+            "calendar": ["calendar_spread"],
+            "wheel": ["wheel_csp", "wheel_cc"],
+            "vertical_credit": ["bull_put_vertical", "bear_call_vertical"],
+            "vertical_spread": ["bull_put_vertical", "bear_call_vertical"],
+            "iron_butterfly": ["iron_butterfly"],
+            "long_vol": ["long_straddle", "long_strangle"],
+            "iron_condor": ["iron_condor"],
+        }
+        strats = strat_map.get(bot_preset, ["long_call", "long_put"])
+        filters = ScanFilters(
+            assets=[asset],
+            bot_preset=bot_preset,  # type: ignore[arg-type]
+            valuation_mode=valuation_mode,  # type: ignore[arg-type]
+            strategies=strats,
+        )
+        scan_request = filters.to_scan_request()
+        result = await _execute_scan(
+            scan_request,
+            market_adapter,
+            scanner,
+            historical_volatility_loader=history_loader,
+            strategy_head=strategy_head,
+            strategy_head_loader=strategy_head_loader,
+            head_mode=filters.head_mode,
+            head_model_path=filters.head_model_path,
+            head_config=filters.head_config,
+        )
+        return JSONResponse(content=_serialize_scan_result(result, filters, scan_request))
+
     @app.post("/api/v1/opportunities/scan")
-    async def scan(filters: ScanFilters) -> JSONResponse:
+    async def scan(filters: ScanFilters, bot_preset: str | None = None) -> JSONResponse:
+        if bot_preset and not filters.bot_preset:
+            filters.bot_preset = bot_preset  # type: ignore[assignment]
         scan_request = filters.to_scan_request()
         result = await _execute_scan(
             scan_request,
@@ -1679,6 +1784,68 @@ def create_app(
                 "currency": currency or bm.asset,
                 "count": len(history),
                 "data": history,
+            }
+        )
+
+    @app.post("/api/v1/bot/execute-scanner-candidate")
+    @app.post("/api/bot/execute-scanner-candidate")
+    async def execute_scanner_candidate(payload: dict[str, Any]) -> JSONResponse:
+        from options_app.bot_manager import get_bot_manager
+        from options_lib.paper_broker.matching_engine import PaperOrder
+
+        bm = get_bot_manager()
+        entry_payload = (
+            payload.get("entry_payload")
+            or payload.get("candidate", {}).get("bot_metadata", {}).get("entry_payload")
+            or payload
+        )
+        bot_type = entry_payload.get("bot_type") or "manual"
+        legs_data = entry_payload.get("legs") or []
+        quantity = float(entry_payload.get("quantity") or 0.1)
+        results = []
+        orders_submitted = []
+
+        for leg in legs_data:
+            symbol = leg.get("symbol")
+            if not symbol:
+                continue
+            position = leg.get("position", 1)
+            side = "Buy" if position > 0 else "Sell"
+            price = leg.get("bid") if side == "Sell" else leg.get("ask")
+            order = PaperOrder(
+                symbol=symbol,
+                side=side,
+                qty=quantity,
+                price=price,
+                strategy_id=f"scanner_{bot_type}",
+            )
+            try:
+                res = bm.deribit_adapter.execute_order(order)
+                results.append({
+                    "symbol": res.symbol,
+                    "side": res.side,
+                    "status": res.status,
+                    "filled_qty": res.filled_qty,
+                    "filled_price": res.filled_price,
+                    "order_id": res.order_id,
+                    "message": res.message,
+                })
+                orders_submitted.append(order.order_id)
+            except Exception as exc:
+                results.append({
+                    "symbol": symbol,
+                    "side": side,
+                    "status": "Rejected",
+                    "message": str(exc),
+                })
+
+        return JSONResponse(
+            content={
+                "status": "ok",
+                "bot_type": bot_type,
+                "orders_count": len(results),
+                "orders": results,
+                "orders_submitted": orders_submitted,
             }
         )
 

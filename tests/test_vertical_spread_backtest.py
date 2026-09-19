@@ -92,3 +92,27 @@ def test_vertical_spread_backtest_empty_df():
     assert res.total_trades == 0
     assert res.total_net_pnl == 0.0
 
+
+def test_vertical_spread_dynamic_sizing():
+    df = _generate_synthetic_chain_history(days=15)
+    # Dynamic sizing on BTC -> quantized to 0.1 BTC lot size
+    cfg = VerticalSpreadBacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=True,
+        risk_pct_per_trade=0.02,
+        asset="BTC",
+    )
+    result = VerticalSpreadBacktestEngine(cfg).run(df)
+    assert result.total_trades > 0
+    assert result.trades[0].qty == 0.1
+
+    # Fixed qty override
+    cfg_fixed = VerticalSpreadBacktestConfig(
+        initial_capital=10000.0,
+        fixed_qty=0.5,
+    )
+    res_fixed = VerticalSpreadBacktestEngine(cfg_fixed).run(df)
+    assert res_fixed.total_trades > 0
+    assert res_fixed.trades[0].qty == 0.5
+
+

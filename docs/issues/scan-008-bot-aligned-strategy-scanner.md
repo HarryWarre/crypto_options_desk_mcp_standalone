@@ -2,9 +2,9 @@
 
 **Mã Issue:** SCAN-008  
 **Tiêu đề:** Đồng bộ hóa Scanner với Các Bộ Lọc Edge & Tiêu Chí Tuyển Chọn Của 6 Options Trading Bots  
-**Trạng thái:** To Do / Backlog  
+**Trạng thái:** Completed  
 **Target:** `main`  
-**Nhánh dự kiến:** `feat/scan-008-bot-aligned-scanner`  
+**Nhánh dự kiến:** `main`  
 **Liên kết tham chiếu:**
 - [BOT-000 Master Roadmap](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/bot-000-multi-strategy-options-roadmap.md)
 - [BOT-006: The Wheel](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/bot-006-wheel-strategy-bot.md)
@@ -59,20 +59,20 @@ Nâng cấp `src/options_lib/opportunity_scanner.py` và các API liên quan tro
 
 Để triển khai mạch lạc và kiểm thử độc lập, issue lớn này được chia thành 3 sub-issues:
 
-### 4.1. [SCAN-008.1 — Volatility & Regime Edge Filters Integration](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-1-volatility-regime-edge-filters.md)
+### 4.1. [SCAN-008.1 — Volatility & Regime Edge Filters Integration](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-1-volatility-regime-edge-filters.md) - [x] Completed
 - Mở rộng `scan_opportunities_with_historical_context` không chỉ lọc `iron_condor` mà áp dụng:
   - **IV Discount Filter** cho `long_straddle` / `long_strangle` (`RV >= IV`).
   - **RV Ceiling** (`RV <= 0.55`) và **Spot Drift Filter** cho `calendar_spread`.
   - **High IV Regime** (`IV - RV >= threshold`) cho `iron_butterfly` và vertical credit spreads.
 - Gắn các mã từ chối minh bạch (`rejection_reasons`): `iv_discount_missing`, `rv_ceiling_exceeded`, `spot_drift_too_wide`, `credit_ratio_below_minimum`.
 
-### 4.2. [SCAN-008.2 — The Wheel & Directional Credit Spread Scanner Extension](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-2-wheel-and-credit-spread-candidate-engine.md)
+### 4.2. [SCAN-008.2 — The Wheel & Directional Credit Spread Scanner Extension](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-2-wheel-and-credit-spread-candidate-engine.md) - [x] Completed
 - Bổ sung cấu trúc quét chuyên biệt cho The Wheel:
   - Phase 1: Quét Cash-Secured Put (tính toán APY tiềm năng, margin lock, probability of profit).
   - Phase 2: Quét Covered Call theo tham số `cost_basis` người dùng cung cấp.
 - Cập nhật bộ lọc Vertical Credit Spread: bắt buộc kiểm tra tỷ lệ Credit/Width và delta biên cánh bảo vệ.
 
-### 4.3. [SCAN-008.3 — Bot Candidate Schema, API Presets & UI Quick-Launch](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-3-bot-candidate-schema-and-api-integration.md)
+### 4.3. [SCAN-008.3 — Bot Candidate Schema, API Presets & UI Quick-Launch](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-3-bot-candidate-schema-and-api-integration.md) - [x] Completed
 - Bổ sung trường `bot_compatibility` vào `Opportunity`:
   - `target_bot: str`: Tên bot tương ứng (`wheel`, `vertical_spread`, `iron_butterfly`, `calendar`, `long_vol`, `iron_condor`).
   - `bot_entry_ready: bool`: Đạt 100% tiêu chuẩn vào lệnh của bot.
@@ -99,8 +99,8 @@ Nâng cấp `src/options_lib/opportunity_scanner.py` và các API liên quan tro
 
 ## 6. Tiêu Chí Nghiệm Thu (Acceptance Criteria)
 
-- [ ] Toàn bộ 6 chiến lược bot đều có bộ lọc regime và tham số strike/tenor tương ứng trong `opportunity_scanner.py`.
-- [ ] Mọi vi phạm tiêu chí bot đều được ghi nhận vào `rejections` với lý do rõ ràng.
-- [ ] Có helper chuyển đổi từ `Opportunity` sang format candidate của bot tương ứng.
-- [ ] Tất cả test cases cũ và mới đều pass 100% (`pytest tests/test_*.py`).
-- [ ] Knowledge graph được cập nhật đồng bộ (`graphify update .`).
+- [x] Toàn bộ 6 chiến lược bot đều có bộ lọc regime và tham số strike/tenor tương ứng trong `opportunity_scanner.py`.
+- [x] Mọi vi phạm tiêu chí bot đều được ghi nhận vào `rejections` với lý do rõ ràng.
+- [x] Có helper chuyển đổi từ `Opportunity` sang format candidate của bot tương ứng.
+- [x] Tất cả test cases cũ và mới đều pass 100% (`pytest tests/test_*.py`).
+- [x] Knowledge graph được cập nhật đồng bộ (`graphify update .`).

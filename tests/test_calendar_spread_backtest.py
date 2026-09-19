@@ -66,9 +66,24 @@ def test_calendar_spread_backtest_execution():
     assert len(res.equity_curve) > 0
 
 
-def test_calendar_spread_backtest_empty():
+def test_calendar_spread_backtest_empty_df():
     engine = CalendarSpreadBacktestEngine()
     res = engine.run(pd.DataFrame())
     assert res.total_trades == 0
     assert res.total_net_pnl == 0.0
 
+
+def test_calendar_spread_dynamic_sizing():
+    df = _generate_synthetic_calendar_chain(days=20)
+    cfg = CalendarSpreadBacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=True,
+        asset="BTC",
+        risk_pct_per_trade=0.02,
+    )
+    engine = CalendarSpreadBacktestEngine(cfg)
+    res = engine.run(df)
+    assert res.total_trades > 0
+    for tr in res.trades:
+        assert tr.qty > 0
+        assert round(tr.qty % 0.1, 4) in (0.0, 0.1)

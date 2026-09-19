@@ -132,3 +132,29 @@ def test_iron_condor_empty_chain():
     assert result.win_rate_pct == 0.0
     assert result.total_net_pnl == 0.0
 
+
+def test_iron_condor_dynamic_sizing_quantization():
+    df = _generate_mock_snapshots_df(num_steps=15)
+    # 1. Dynamic sizing: $10,000 capital, 2% risk budget = $200. Max loss ~ $2000 -> qty = 0.1 BTC
+    cfg_dyn = BacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=True,
+        risk_pct_per_trade=0.02,
+        iv_rv_threshold=0.0,
+        asset="BTC",
+    )
+    res_dyn = IronCondorBacktestEngine(cfg_dyn).run(df)
+    assert res_dyn.total_trades >= 1
+    assert res_dyn.trades[0].qty == 0.1
+
+    # 2. Fixed qty override
+    cfg_fixed = BacktestConfig(
+        initial_capital=10000.0,
+        fixed_qty=0.5,
+        iv_rv_threshold=0.0,
+    )
+    res_fixed = IronCondorBacktestEngine(cfg_fixed).run(df)
+    assert res_fixed.total_trades >= 1
+    assert res_fixed.trades[0].qty == 0.5
+
+

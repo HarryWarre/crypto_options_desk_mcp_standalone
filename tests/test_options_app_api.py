@@ -1788,3 +1788,72 @@ async def test_bot_paper_trading_endpoints() -> None:
     assert "snapshots" in res_snap.json()
 
 
+@pytest.mark.asyncio
+async def test_bot_preset_scan_endpoints() -> None:
+    scan_requests: list[ScanRequest] = []
+
+    def fake_scanner(universe: NormalizedOptionUniverse, request: ScanRequest) -> ScanResult:
+        scan_requests.append(request)
+        return ScanResult(
+            timestamp=VALUATION_TIME,
+            data_timestamp=DATA_TIME,
+            opportunities=(),
+            rejections=(),
+            asset_failures=(),
+            issues=universe.issues,
+        )
+
+    app = create_app(adapter=FakeAdapter(), scanner=fake_scanner)
+
+    # 1. GET /api/scan?bot_preset=calendar
+    res_cal = await request(app, "GET", "/api/scan?bot_preset=calendar&asset=BTC")
+    assert res_cal.status_code == 200
+    assert len(scan_requests) == 1
+    cal_req = scan_requests[0]
+    assert cal_req.enforce_bot_regime is True
+    assert cal_req.strategies == ("calendar_spread",)
+    assert cal_req.calendar_max_rv == 0.55
+    assert cal_req.calendar_max_spot_drift_pct == 2.0
+
+    # 2. GET /api/scan?bot_preset=wheel
+    res_wheel = await request(app, "GET", "/api/scan?bot_preset=wheel&asset=BTC")
+    assert res_wheel.status_code == 200
+    assert len(scan_requests) == 2
+    wheel_req = scan_requests[1]
+    assert wheel_req.enforce_bot_regime is True
+    assert wheel_req.strategies == ("wheel_csp", "wheel_cc")
+    assert wheel_req.min_dte == 7.0
+    assert wheel_req.max_dte == 30.0
+
+
+@pytest.mark.asyncio
+async def test_execute_scanner_candidate_endpoint() -> None:
+    app = create_app(adapter=FakeAdapter())
+    payload = {
+        "bot_type": "wheel",
+        "strategy": "wheel_csp",
+        "asset": "BTC",
+        "symbol": "BTC-90000-P",
+        "quantity": 0.1,
+        "legs": [
+            {
+                "symbol": "BTC-25SEP26-90000-P",
+                "option_type": "Put",
+                "strike": 90000,
+                "position": -1,
+                "bid": 1500.0,
+                "ask": 1600.0,
+            }
+        ],
+    }
+    response = await request(app, "POST", "/api/bot/execute-scanner-candidate", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["bot_type"] == "wheel"
+    assert data["orders_count"] == 1
+    assert data["orders"][0]["symbol"] == "BTC-25SEP26-90000-P"
+    assert data["orders"][0]["side"] == "Sell"
+
+
+

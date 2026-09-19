@@ -6,6 +6,7 @@ from .portfolio_risk_engine import (
     PortfolioRiskEngine,
     RiskAssessmentResult,
     RiskLimitsConfig,
+    calculate_backtest_position_size,
 )
 
 __all__ = [
@@ -14,4 +15,6 @@ __all__ = [
     "PortfolioRiskEngine",
     "RiskAssessmentResult",
     "RiskLimitsConfig",
+    "calculate_backtest_position_size",
 ]
+

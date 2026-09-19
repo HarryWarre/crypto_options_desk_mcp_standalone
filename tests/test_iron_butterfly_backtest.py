@@ -88,3 +88,21 @@ def test_iron_butterfly_backtest_empty_df():
     assert res.total_trades == 0
     assert res.total_net_pnl == 0.0
 
+
+def test_iron_butterfly_dynamic_sizing():
+    df = _generate_synthetic_chain_history(days=15)
+    # Dynamic sizing with asset=BTC should quantize to Deribit lot size (0.1 BTC multiple)
+    cfg = IronButterflyBacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=True,
+        asset="BTC",
+        risk_pct_per_trade=0.02,
+    )
+    engine = IronButterflyBacktestEngine(cfg)
+    res = engine.run(df)
+    assert res.total_trades > 0
+    for tr in res.trades:
+        assert tr.qty > 0
+        assert round(tr.qty % 0.1, 4) in (0.0, 0.1)
+
+

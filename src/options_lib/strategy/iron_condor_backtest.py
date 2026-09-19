@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_lib.risk.portfolio_risk_engine import calculate_backtest_position_size
+
 
 @dataclass
 class BacktestConfig:
@@ -39,6 +41,11 @@ class BacktestConfig:
     slippage_bps: float = 5.0  # 5 bps slippage per leg
     fee_per_contract: float = 1.5  # $1.5 fee per leg executed
     max_concurrent_positions: int = 1
+    dynamic_sizing: bool = True
+    risk_pct_per_trade: float = 0.02
+    max_margin_utilization: float = 0.60
+    asset: str = "BTC"
+    fixed_qty: float | None = None
 
 
 @dataclass
@@ -190,7 +197,7 @@ class IronCondorBacktestEngine:
             )
             if can_enter:
                 rv = self._estimate_realized_vol(price_history)
-                candidate = self._find_candidate(chain, ts, spot, rv)
+                candidate = self._find_candidate(chain, ts, spot, rv, capital)
                 if candidate is not None:
                     # Avoid duplicate exact expiry & strikes
                     already_open = any(
@@ -235,7 +242,7 @@ class IronCondorBacktestEngine:
         return self._build_results(closed_trades, equity_curve, max_dd_usd, max_dd_pct)
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float, rv: float
+        self, chain: pd.DataFrame, ts: datetime, spot: float, rv: float, capital: float = 10000.0
     ) -> TradeRecord | None:
         """Filter chain and locate optimal 4-leg Iron Condor candidate."""
         # Find expirations within min_dte and max_dte
@@ -243,49 +250,62 @@ class IronCondorBacktestEngine:
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
         valid_expiries = chain[
             (chain["dte"] >= self.config.min_dte) & (chain["dte"] <= self.config.max_dte)
-        ]
-        if valid_expiries.empty:
+        ]["expiry"].unique()
+        if len(valid_expiries) == 0:
             return None
 
-        # Pick nearest expiry in window
-        target_expiry = valid_expiries.sort_values("dte")["expiry"].iloc[0]
-        sub = valid_expiries[valid_expiries["expiry"] == target_expiry]
+        # Pick earliest valid expiry
+        target_expiry = sorted(valid_expiries)[0]
+        sub = chain[chain["expiry"] == target_expiry].copy()
 
-        # Check IV - RV condition
-        avg_iv = float(sub["mark_iv"].mean() * 100.0) if not sub.empty else 0.0
-        if avg_iv - rv < self.config.iv_rv_threshold:
-            return None  # Volatility premium too low to sell
-
-        calls = sub[sub["option_type"] == "call"]
-        puts = sub[sub["option_type"] == "put"]
-        if calls.empty or puts.empty:
+        # Volatility regime check: ATM IV - 30d RV >= threshold
+        atm_strike = sub.iloc[(sub["strike"] - spot).abs().argsort()[:1]]["strike"].iloc[0]
+        atm_iv = float(sub[sub["strike"] == atm_strike]["mark_iv"].iloc[0]) * 100.0
+        if (atm_iv - rv) < self.config.iv_rv_threshold:
             return None
 
-        # Target short legs (~0.15 delta) and wings (~0.03 delta)
-        target_short = self.config.target_short_delta
-        target_wing = self.config.target_wing_delta
+        # Separate puts and calls
+        puts = sub[sub["option_type"] == "put"].copy()
+        calls = sub[sub["option_type"] == "call"].copy()
 
-        short_call_row = calls.iloc[(calls["delta"] - target_short).abs().argsort()[:1]]
-        long_call_row = calls.iloc[(calls["delta"] - target_wing).abs().argsort()[:1]]
+        # Leg 1: Short Put (~ -0.15 delta)
+        sp_candidates = puts[(puts["delta"] < 0) & (puts["strike"] < spot)]
+        if sp_candidates.empty:
+            return None
+        sp_row = sp_candidates.iloc[(sp_candidates["delta"].abs() - self.config.target_short_delta).abs().argsort()[:1]]
+        sp_strike = float(sp_row["strike"].iloc[0])
 
-        short_put_row = puts.iloc[(puts["delta"].abs() - target_short).abs().argsort()[:1]]
-        long_put_row = puts.iloc[(puts["delta"].abs() - target_wing).abs().argsort()[:1]]
+        # Leg 2: Long Put Wing (~ -0.03 delta, strike < sp_strike)
+        lp_candidates = puts[(puts["delta"] < 0) & (puts["strike"] < sp_strike)]
+        if lp_candidates.empty:
+            return None
+        lp_row = lp_candidates.iloc[(lp_candidates["delta"].abs() - self.config.target_wing_delta).abs().argsort()[:1]]
+        lp_strike = float(lp_row["strike"].iloc[0])
 
-        sc_strike = float(short_call_row["strike"].iloc[0])
-        lc_strike = float(long_call_row["strike"].iloc[0])
-        sp_strike = float(short_put_row["strike"].iloc[0])
-        lp_strike = float(long_put_row["strike"].iloc[0])
+        # Leg 3: Short Call (~ +0.15 delta)
+        sc_candidates = calls[(calls["delta"] > 0) & (calls["strike"] > spot)]
+        if sc_candidates.empty:
+            return None
+        sc_row = sc_candidates.iloc[(sc_candidates["delta"].abs() - self.config.target_short_delta).abs().argsort()[:1]]
+        sc_strike = float(sc_row["strike"].iloc[0])
 
-        # Validate proper wing order: LP < SP < spot < SC < LC
+        # Leg 4: Long Call Wing (~ +0.03 delta, strike > sc_strike)
+        lc_candidates = calls[(calls["delta"] > 0) & (calls["strike"] > sc_strike)]
+        if lc_candidates.empty:
+            return None
+        lc_row = lc_candidates.iloc[(lc_candidates["delta"].abs() - self.config.target_wing_delta).abs().argsort()[:1]]
+        lc_strike = float(lc_row["strike"].iloc[0])
+
+        # Validate monotonic strike ordering: lp < sp < spot < sc < lc
         if not (lp_strike < sp_strike < spot < sc_strike < lc_strike):
             return None
 
         # Calculate entry prices (slippage applied)
         slip = self.config.slippage_bps / 10000.0
-        sc_price = float(short_call_row["mark_price"].iloc[0]) * (1.0 - slip)
-        lc_price = float(long_call_row["mark_price"].iloc[0]) * (1.0 + slip)
-        sp_price = float(short_put_row["mark_price"].iloc[0]) * (1.0 - slip)
-        lp_price = float(long_put_row["mark_price"].iloc[0]) * (1.0 + slip)
+        sc_price = float(short_call_row["mark_price"].iloc[0]) * (1.0 - slip) if "short_call_row" in locals() else float(sc_row["mark_price"].iloc[0]) * (1.0 - slip)
+        lc_price = float(long_call_row["mark_price"].iloc[0]) * (1.0 + slip) if "long_call_row" in locals() else float(lc_row["mark_price"].iloc[0]) * (1.0 + slip)
+        sp_price = float(short_put_row["mark_price"].iloc[0]) * (1.0 - slip) if "short_put_row" in locals() else float(sp_row["mark_price"].iloc[0]) * (1.0 - slip)
+        lp_price = float(long_put_row["mark_price"].iloc[0]) * (1.0 + slip) if "long_put_row" in locals() else float(lp_row["mark_price"].iloc[0]) * (1.0 + slip)
 
         net_credit = (sc_price + sp_price) - (lc_price + lp_price)
         if net_credit <= 0:
@@ -293,6 +313,24 @@ class IronCondorBacktestEngine:
 
         effective_fee = min(self.config.fee_per_contract, max(0.00001, spot * 0.0003))
         fees = 4 * effective_fee
+        wing_width = max(abs(sp_strike - lp_strike), abs(lc_strike - sc_strike))
+        max_loss_per_unit = max(1.0, wing_width - net_credit)
+
+        if self.config.dynamic_sizing:
+            qty = calculate_backtest_position_size(
+                current_equity=capital,
+                max_loss_per_unit=max_loss_per_unit,
+                asset=self.config.asset,
+                risk_pct=self.config.risk_pct_per_trade,
+                max_margin_utilization=self.config.max_margin_utilization,
+                fixed_qty=self.config.fixed_qty,
+            )
+        else:
+            qty = self.config.fixed_qty if self.config.fixed_qty is not None else 1.0
+
+        if qty <= 0:
+            return None
+
         trade_id = f"ic_{ts.strftime('%y%m%d%H%M')}_{int(spot) if spot >= 1 else round(spot, 4)}"
         dte = float(sub["dte"].iloc[0])
 
@@ -312,8 +350,8 @@ class IronCondorBacktestEngine:
             short_put_entry=sp_price,
             short_call_entry=sc_price,
             long_call_entry=lc_price,
-            entry_credit=net_credit - fees,
-            qty=1.0,
+            entry_credit=(net_credit - fees) * qty,
+            qty=qty,
         )
 
     def _evaluate_open_position(
@@ -327,7 +365,7 @@ class IronCondorBacktestEngine:
         """Check early take-profit, stop-loss, or expiration conditions."""
         slip = self.config.slippage_bps / 10000.0
         effective_fee = min(self.config.fee_per_contract, max(0.00001, spot * 0.0003))
-        fees = 4 * effective_fee
+        fees = (4 * effective_fee) * pos.qty
 
         # Find current prices for all 4 legs using O(1) dict lookup
         legs_mark = self._get_legs_mark(pos, mark_lookup)
@@ -337,7 +375,7 @@ class IronCondorBacktestEngine:
         current_debit = 0.0
         if legs_mark:
             lp_mark, sp_mark, sc_mark, lc_mark = legs_mark
-            current_debit = (sp_mark + sc_mark) * (1.0 + slip) - (lp_mark + lc_mark) * (1.0 - slip)
+            current_debit = ((sp_mark + sc_mark) * (1.0 + slip) - (lp_mark + lc_mark) * (1.0 - slip)) * pos.qty
 
         unrealized = (pos.entry_credit - current_debit) - fees
         max_credit = pos.entry_credit
@@ -379,7 +417,7 @@ class IronCondorBacktestEngine:
         if not legs:
             return 0.0
         lp, sp, sc, lc = legs
-        debit = (sp + sc) - (lp + lc)
+        debit = ((sp + sc) - (lp + lc)) * pos.qty
         return pos.entry_credit - debit
 
     def _get_legs_mark(

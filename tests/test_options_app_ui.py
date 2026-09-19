@@ -98,8 +98,13 @@ async def test_root_serves_the_read_only_scanner_ui() -> None:
         "calendar_spread",
         "butterfly",
         "broken_wing_butterfly",
+        "wheel_csp",
+        "wheel_cc",
     ):
         assert f'name="strategies" value="{strategy}"' in response.text
+    assert 'name="bot_preset"' in response.text
+    assert 'id="bot-preset-select"' in response.text
+    assert 'name="enforce_bot_regime"' in response.text
     assert 'type="radio" name="quick_strategy"' not in response.text
     assert 'name="quick_target_edge_pct"' not in response.text
     assert "có thể chọn nhiều chiến lược" in response.text
@@ -192,8 +197,13 @@ async def test_static_assets_are_served_from_same_origin() -> None:
         "calendar_spread",
         "butterfly",
         "broken_wing_butterfly",
+        "wheel_csp",
+        "wheel_cc",
     ):
         assert strategy in javascript.text
+    assert "bot_preset" in javascript.text
+    assert "bot_metadata" in javascript.text
+    assert "/api/bot/execute-scanner-candidate" in javascript.text
     assert "strategyLabel" in javascript.text
     assert "historical_volatility_contexts" in javascript.text
     assert "anchor/quality" not in javascript.text

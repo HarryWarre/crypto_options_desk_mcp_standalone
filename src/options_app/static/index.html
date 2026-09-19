@@ -183,11 +183,31 @@
                 <input type="checkbox" name="strategies" value="iron_butterfly">
                 <span><strong>Iron butterfly</strong><small>Khi kỳ vọng giá đi ngang gần strike trung tâm với rủi ro giới hạn.</small></span>
               </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="wheel_csp">
+                <span><strong>The Wheel (CSP)</strong><small>Bán Cash-Secured Put thu premium hoặc gom spot giá thấp.</small></span>
+              </label>
+              <label class="strategy-card">
+                <input type="checkbox" name="strategies" value="wheel_cc">
+                <span><strong>The Wheel (CC)</strong><small>Bán Covered Call trên spot có sẵn để gia tăng APY.</small></span>
+              </label>
             </div>
             <p class="field-help" id="strategy-help">Khi nào nên chọn: có thể chọn nhiều chiến lược để so sánh. Nếu bỏ chọn hết, hệ thống sẽ yêu cầu chọn ít nhất một chiến lược.</p>
           </fieldset>
 
           <div class="quick-grid">
+            <label>Strategy Bot Preset
+              <select name="bot_preset" id="bot-preset-select" aria-describedby="bot-preset-help">
+                <option value="" selected>Tất cả / Tùy chỉnh (None)</option>
+                <option value="wheel">The Wheel (CSP &amp; CC)</option>
+                <option value="vertical_credit">Vertical Credit Spreads</option>
+                <option value="iron_butterfly">Iron Butterfly (Range-bound)</option>
+                <option value="calendar">Calendar Spread (Term Structure)</option>
+                <option value="long_vol">Long Volatility Straddle</option>
+                <option value="iron_condor">Iron Condor</option>
+              </select>
+              <small class="field-help" id="bot-preset-help">Tự động cấu hình bộ lọc theo 5 Bot tự động.</small>
+            </label>
             <label>Thời hạn
               <select name="time_horizon" aria-describedby="time-horizon-help">
                 <option value="0-7">0–7 ngày</option>
@@ -199,6 +219,13 @@
             <label>Lỗ tối đa mỗi ý tưởng
               <input name="quick_max_loss" type="number" min="0" step="0.01" placeholder="Không giới hạn" aria-describedby="quick-max-loss-help">
               <small class="field-help" id="quick-max-loss-help">Để trống nếu không giới hạn mức lỗ, hoặc nhập số tiền tối đa chấp nhận mất.</small>
+            </label>
+          </div>
+
+          <div style="margin: 0.5rem 0 1rem 0;">
+            <label style="display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem;">
+              <input type="checkbox" name="enforce_bot_regime" id="enforce-bot-regime-check" value="true" checked>
+              <span><strong>Lọc chế độ thị trường (Bot Regime)</strong> — chỉ hiển thị cơ hội khớp IV/RV và xu hướng biến động của Bot</span>
             </label>
           </div>
 

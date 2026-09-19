@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_lib.risk.portfolio_risk_engine import calculate_backtest_position_size
+
 
 @dataclass
 class VerticalSpreadBacktestConfig:
@@ -39,6 +41,11 @@ class VerticalSpreadBacktestConfig:
     fee_per_contract: float = 1.5
     max_concurrent_positions: int = 4
     trend_window_hours: int = 48  # Lookback to detect trend
+    dynamic_sizing: bool = True
+    risk_pct_per_trade: float = 0.02
+    max_margin_utilization: float = 0.60
+    asset: str = "BTC"
+    fixed_qty: float | None = None
 
 
 @dataclass
@@ -177,7 +184,7 @@ class VerticalSpreadBacktestEngine:
 
             if can_enter and len(price_history) >= 2:
                 trend = self._determine_trend(price_history)
-                candidate = self._find_candidate(chain, ts, spot, trend)
+                candidate = self._find_candidate(chain, ts, spot, trend, capital)
                 if candidate is not None:
                     # Avoid identical duplicate strike
                     already_open = any(
@@ -228,7 +235,7 @@ class VerticalSpreadBacktestEngine:
         return "BULLISH" if current_spot >= mean_spot else "BEARISH"
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float, trend: str
+        self, chain: pd.DataFrame, ts: datetime, spot: float, trend: str, capital: float = 10000.0
     ) -> VerticalSpreadTradeRecord | None:
         chain = chain.copy()
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
@@ -272,8 +279,23 @@ class VerticalSpreadBacktestEngine:
             if net_credit <= 0:
                 return None
 
-            notional = self.config.initial_capital / self.config.max_concurrent_positions
-            qty = max(0.001, round(notional / spot, 4))
+            wing_width = abs(sp_strike - lp_strike)
+            max_loss_per_unit = max(1.0, wing_width - net_credit)
+            if self.config.dynamic_sizing:
+                qty = calculate_backtest_position_size(
+                    current_equity=capital,
+                    max_loss_per_unit=max_loss_per_unit,
+                    asset=self.config.asset,
+                    risk_pct=self.config.risk_pct_per_trade,
+                    max_margin_utilization=self.config.max_margin_utilization,
+                    fixed_qty=self.config.fixed_qty,
+                )
+            else:
+                notional = self.config.initial_capital / self.config.max_concurrent_positions
+                qty = self.config.fixed_qty if self.config.fixed_qty is not None else max(0.001, round(notional / spot, 4))
+
+            if qty <= 0:
+                return None
 
             return VerticalSpreadTradeRecord(
                 trade_id=f"bp_{len(sub)}_{int(sp_strike)}",
@@ -321,8 +343,23 @@ class VerticalSpreadBacktestEngine:
             if net_credit <= 0:
                 return None
 
-            notional = self.config.initial_capital / self.config.max_concurrent_positions
-            qty = max(0.001, round(notional / spot, 4))
+            wing_width = abs(lc_strike - sc_strike)
+            max_loss_per_unit = max(1.0, wing_width - net_credit)
+            if self.config.dynamic_sizing:
+                qty = calculate_backtest_position_size(
+                    current_equity=capital,
+                    max_loss_per_unit=max_loss_per_unit,
+                    asset=self.config.asset,
+                    risk_pct=self.config.risk_pct_per_trade,
+                    max_margin_utilization=self.config.max_margin_utilization,
+                    fixed_qty=self.config.fixed_qty,
+                )
+            else:
+                notional = self.config.initial_capital / self.config.max_concurrent_positions
+                qty = self.config.fixed_qty if self.config.fixed_qty is not None else max(0.001, round(notional / spot, 4))
+
+            if qty <= 0:
+                return None
 
             return VerticalSpreadTradeRecord(
                 trade_id=f"bc_{len(sub)}_{int(sc_strike)}",
