@@ -368,17 +368,17 @@ class IronCondorBacktestEngine:
             return None
         return float(lp), float(sp), float(sc), float(lc)
 
-    def _estimate_realized_vol(self, history: list[tuple[datetime, float]]) -> float:
+    def _estimate_realized_vol(self, history: list[tuple[datetime, float]], default_rv: float = 30.0) -> float:
         """Calculate annualized Realized Volatility from price series."""
-        if len(history) < 10:
-            return 45.0  # Safe default ~45% vol
+        if len(history) < 5:
+            return default_rv  # Baseline realistic RV ~30% for BTC
         prices = [p[1] for p in history]
         returns = np.diff(np.log(prices))
         if len(returns) == 0:
-            return 45.0
-        # Annualize assuming 15m intervals (365 * 24 * 4 = 35040 intervals/year)
-        vol = float(np.std(returns) * np.sqrt(35040.0) * 100.0)
-        return max(10.0, min(150.0, vol))
+            return default_rv
+        # Annualize assuming 1h intervals (365 * 24 = 8760 intervals/year)
+        vol = float(np.std(returns) * np.sqrt(8760.0) * 100.0)
+        return max(10.0, min(120.0, vol))
 
     def _build_results(
         self,
