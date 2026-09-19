@@ -824,25 +824,25 @@ function renderOpportunityExplanation(item, index) {
   const openBuilderBtn = document.createElement("button");
   openBuilderBtn.type = "button";
   openBuilderBtn.className = "btn-scanner-action";
-  openBuilderBtn.textContent = "🛠 Mở trong Strategy Builder";
+  openBuilderBtn.appendChild(createSvgIcon("wrench"));
+  openBuilderBtn.appendChild(document.createTextNode(" Mở trong Strategy Builder"));
   openBuilderBtn.addEventListener("click", () => openOpportunityInBuilder(item));
 
   const saveNbBtn = document.createElement("button");
   saveNbBtn.type = "button";
   saveNbBtn.className = "btn-scanner-action";
-  saveNbBtn.textContent = "➕ Lưu Sổ tay";
+  saveNbBtn.appendChild(createSvgIcon("bookmark"));
+  saveNbBtn.appendChild(document.createTextNode(" Lưu Sổ tay"));
   saveNbBtn.addEventListener("click", () => saveOpportunityToNotebook(item));
 
   const viewPayoffBtn = document.createElement("button");
   viewPayoffBtn.type = "button";
   viewPayoffBtn.className = "btn-scanner-action";
-  if (synthetic) {
-    viewPayoffBtn.textContent = "📈 Xem payoff tổng hợp";
-  } else if (theoretical) {
-    viewPayoffBtn.textContent = "📈 Xem payoff mô hình";
-  } else {
-    viewPayoffBtn.textContent = "📈 Xem payoff / P&L";
-  }
+  viewPayoffBtn.appendChild(createSvgIcon("line-chart"));
+  const payoffText = document.createTextNode(
+    synthetic ? " Xem payoff tổng hợp" : theoretical ? " Xem payoff mô hình" : " Xem payoff / P&L"
+  );
+  viewPayoffBtn.appendChild(payoffText);
   viewPayoffBtn.addEventListener("click", () => showOpportunityDetail(item));
 
   actions.append(openBuilderBtn, saveNbBtn, viewPayoffBtn);
@@ -856,6 +856,13 @@ function svgNode(name, attributes = {}, text = undefined) {
   Object.entries(attributes).forEach(([attribute, value]) => node.setAttribute(attribute, String(value)));
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function createSvgIcon(name) {
+  const svg = svgNode("svg", { class: "btn-icon", "aria-hidden": "true" });
+  const use = svgNode("use", { href: `#icon-${name}` });
+  svg.appendChild(use);
+  return svg;
 }
 
 function compactChartNumber(value) {
@@ -2576,7 +2583,7 @@ function renderBuilderLegs() {
     btnRemove.type = "button";
     btnRemove.className = "btn-remove-leg";
     btnRemove.setAttribute("aria-label", "Xóa chân");
-    btnRemove.textContent = "✕";
+    btnRemove.appendChild(createSvgIcon("x"));
     btnRemove.addEventListener("click", () => {
       builderState.legs.splice(index, 1);
       renderBuilderLegs();

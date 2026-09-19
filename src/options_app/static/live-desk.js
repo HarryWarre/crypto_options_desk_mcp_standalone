@@ -827,7 +827,7 @@
           tier: 0,
           label: "Research Agent",
           sublabel: "Market Regime",
-          icon: "🔬",
+          iconName: "microscope",
           color: "#a855f7",
           status: "IDLE",
           metricText: "Scanning IV/RV...",
@@ -841,7 +841,7 @@
           strategy: "IRON_CONDOR",
           label: "Iron Condor",
           sublabel: "Neutral Theta",
-          icon: "🦅",
+          iconName: "feather",
           color: "#38bdf8",
           status: "STANDBY",
           metricText: "Score: --",
@@ -855,7 +855,7 @@
           strategy: "WHEEL",
           label: "The Wheel",
           sublabel: "Cash-Secured",
-          icon: "🔄",
+          iconName: "refresh-cw",
           color: "#10b981",
           status: "STANDBY",
           metricText: "Score: --",
@@ -869,7 +869,7 @@
           strategy: "VERTICAL_SPREAD",
           label: "Vertical Spread",
           sublabel: "Directional",
-          icon: "📈",
+          iconName: "trending-up",
           color: "#f59e0b",
           status: "STANDBY",
           metricText: "Score: --",
@@ -883,7 +883,7 @@
           strategy: "IRON_BUTTERFLY",
           label: "Iron Fly",
           sublabel: "Pin Volatility",
-          icon: "🦋",
+          iconName: "butterfly",
           color: "#ec4899",
           status: "STANDBY",
           metricText: "Score: --",
@@ -897,7 +897,7 @@
           strategy: "CALENDAR_SPREAD",
           label: "Calendar Spread",
           sublabel: "Term Structure",
-          icon: "📅",
+          iconName: "calendar",
           color: "#8b5cf6",
           status: "STANDBY",
           metricText: "Score: --",
@@ -911,7 +911,7 @@
           strategy: "LONG_VOL",
           label: "Long Vol",
           sublabel: "Convex Vega",
-          icon: "⚡",
+          iconName: "zap",
           color: "#f43f5e",
           status: "STANDBY",
           metricText: "Score: --",
@@ -924,7 +924,7 @@
           tier: 2,
           label: "Risk Engine",
           sublabel: "60% Margin Cap",
-          icon: "🛡️",
+          iconName: "shield-check",
           color: "#06b6d4",
           status: "READY",
           metricText: "Cap: 60%",
@@ -937,7 +937,7 @@
           tier: 3,
           label: "Verdict Agent",
           sublabel: "Autonomous Gate",
-          icon: "⚖️",
+          iconName: "scale",
           color: "#eab308",
           status: "READY",
           metricText: "Auto-Approve",
@@ -950,7 +950,7 @@
           tier: 4,
           label: "Deribit Broker",
           sublabel: "Execution Engine",
-          icon: "🏛️",
+          iconName: "landmark",
           color: "#3ca572",
           status: "CONNECTED",
           metricText: "Paper / Testnet",
@@ -1345,10 +1345,7 @@
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      ctx.font = `${Math.floor(node.radius * 0.7)}px sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(node.icon, node.x, node.y - 2);
+      this.drawNodeVectorIcon(ctx, node);
 
       ctx.font = "bold 11px system-ui, -apple-system, sans-serif";
       ctx.fillStyle = node.active ? "#f1f5f9" : "#64748b";
@@ -1389,6 +1386,188 @@
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(text, node.x, pillY + pillH / 2);
+      ctx.restore();
+    }
+
+    drawNodeVectorIcon(ctx, node) {
+      ctx.save();
+      ctx.translate(node.x, node.y - 1);
+      const s = node.radius * 0.44;
+      ctx.strokeStyle = node.active ? (node.color || "#ffffff") : "#64748b";
+      ctx.fillStyle = node.active ? (node.color || "#ffffff") : "#64748b";
+      ctx.lineWidth = 1.8;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      switch (node.iconName) {
+        case "microscope": {
+          ctx.beginPath();
+          ctx.arc(0, -s * 0.4, s * 0.25, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.6, s * 0.75);
+          ctx.lineTo(s * 0.6, s * 0.75);
+          ctx.moveTo(0, s * 0.75);
+          ctx.lineTo(0, s * 0.25);
+          ctx.moveTo(-s * 0.45, s * 0.1);
+          ctx.quadraticCurveTo(-s * 0.65, -s * 0.2, -s * 0.25, -s * 0.55);
+          ctx.stroke();
+          break;
+        }
+        case "feather": {
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.75, -s * 0.1);
+          ctx.quadraticCurveTo(-s * 0.3, -s * 0.55, 0, -s * 0.2);
+          ctx.quadraticCurveTo(s * 0.3, -s * 0.55, s * 0.75, -s * 0.1);
+          ctx.quadraticCurveTo(s * 0.4, s * 0.3, 0, s * 0.65);
+          ctx.quadraticCurveTo(-s * 0.4, s * 0.3, -s * 0.75, -s * 0.1);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.2);
+          ctx.lineTo(0, s * 0.65);
+          ctx.stroke();
+          break;
+        }
+        case "refresh-cw": {
+          ctx.beginPath();
+          ctx.arc(0, 0, s * 0.55, -Math.PI * 0.7, Math.PI * 0.15);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(s * 0.55, -s * 0.25);
+          ctx.lineTo(s * 0.55, s * 0.15);
+          ctx.lineTo(s * 0.15, s * 0.15);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(0, 0, s * 0.55, Math.PI * 0.3, Math.PI * 1.15);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.55, s * 0.25);
+          ctx.lineTo(-s * 0.55, -s * 0.15);
+          ctx.lineTo(-s * 0.15, -s * 0.15);
+          ctx.stroke();
+          break;
+        }
+        case "trending-up": {
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.65, s * 0.55);
+          ctx.lineTo(-s * 0.15, s * 0.15);
+          ctx.lineTo(s * 0.2, s * 0.35);
+          ctx.lineTo(s * 0.65, -s * 0.45);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(s * 0.28, -s * 0.45);
+          ctx.lineTo(s * 0.65, -s * 0.45);
+          ctx.lineTo(s * 0.65, -s * 0.08);
+          ctx.stroke();
+          break;
+        }
+        case "butterfly": {
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.1);
+          ctx.quadraticCurveTo(-s * 0.75, -s * 0.65, -s * 0.65, 0);
+          ctx.quadraticCurveTo(-s * 0.55, s * 0.45, 0, s * 0.1);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.1);
+          ctx.quadraticCurveTo(s * 0.75, -s * 0.65, s * 0.65, 0);
+          ctx.quadraticCurveTo(s * 0.55, s * 0.45, 0, s * 0.1);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.45);
+          ctx.lineTo(0, s * 0.45);
+          ctx.stroke();
+          break;
+        }
+        case "calendar": {
+          ctx.beginPath();
+          ctx.rect(-s * 0.55, -s * 0.45, s * 1.1, s * 1.0);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.55, -s * 0.12);
+          ctx.lineTo(s * 0.55, -s * 0.12);
+          ctx.moveTo(-s * 0.28, -s * 0.65);
+          ctx.lineTo(-s * 0.28, -s * 0.35);
+          ctx.moveTo(s * 0.28, -s * 0.65);
+          ctx.lineTo(s * 0.28, -s * 0.35);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(-s * 0.22, s * 0.15, s * 0.08, 0, Math.PI * 2);
+          ctx.arc(s * 0.22, s * 0.15, s * 0.08, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+        case "zap": {
+          ctx.beginPath();
+          ctx.moveTo(s * 0.1, -s * 0.7);
+          ctx.lineTo(-s * 0.45, 0);
+          ctx.lineTo(s * 0.05, 0);
+          ctx.lineTo(-s * 0.1, s * 0.7);
+          ctx.lineTo(s * 0.45, -s * 0.05);
+          ctx.lineTo(-s * 0.05, -s * 0.05);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          break;
+        }
+        case "shield-check": {
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.65);
+          ctx.lineTo(s * 0.55, -s * 0.35);
+          ctx.quadraticCurveTo(s * 0.55, s * 0.35, 0, s * 0.75);
+          ctx.quadraticCurveTo(-s * 0.55, s * 0.35, -s * 0.55, -s * 0.35);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.22, -s * 0.03);
+          ctx.lineTo(-s * 0.04, s * 0.18);
+          ctx.lineTo(s * 0.26, -s * 0.22);
+          ctx.stroke();
+          break;
+        }
+        case "scale": {
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.65);
+          ctx.lineTo(0, s * 0.65);
+          ctx.moveTo(-s * 0.55, -s * 0.25);
+          ctx.lineTo(s * 0.55, -s * 0.25);
+          ctx.moveTo(-s * 0.35, s * 0.65);
+          ctx.lineTo(s * 0.35, s * 0.65);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(-s * 0.4, s * 0.15, s * 0.18, 0, Math.PI);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(s * 0.4, s * 0.15, s * 0.18, 0, Math.PI);
+          ctx.stroke();
+          break;
+        }
+        case "landmark": {
+          ctx.beginPath();
+          ctx.moveTo(0, -s * 0.65);
+          ctx.lineTo(-s * 0.65, -s * 0.2);
+          ctx.lineTo(s * 0.65, -s * 0.2);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.65, s * 0.65);
+          ctx.lineTo(s * 0.65, s * 0.65);
+          ctx.moveTo(-s * 0.4, -s * 0.15);
+          ctx.lineTo(-s * 0.4, s * 0.6);
+          ctx.moveTo(0, -s * 0.15);
+          ctx.lineTo(0, s * 0.6);
+          ctx.moveTo(s * 0.4, -s * 0.15);
+          ctx.lineTo(s * 0.4, s * 0.6);
+          ctx.stroke();
+          break;
+        }
+        default: {
+          ctx.beginPath();
+          ctx.arc(0, 0, s * 0.45, 0, Math.PI * 2);
+          ctx.stroke();
+          break;
+        }
+      }
       ctx.restore();
     }
 
@@ -1613,7 +1792,16 @@
       drawerEl.classList.add("open");
       drawerEl.setAttribute("aria-hidden", "false");
 
-      if (drawerIcon) drawerIcon.textContent = node.icon;
+      if (drawerIcon) {
+        drawerIcon.textContent = "";
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("class", "lucide-icon");
+        svg.setAttribute("aria-hidden", "true");
+        const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+        use.setAttribute("href", `#icon-${node.iconName || "cpu"}`);
+        svg.appendChild(use);
+        drawerIcon.appendChild(svg);
+      }
       if (drawerTitle) drawerTitle.textContent = node.label;
       if (drawerRole) drawerRole.textContent = node.sublabel;
 

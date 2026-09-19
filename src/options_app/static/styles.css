@@ -23,6 +23,71 @@ h2 { font-size: 1.25rem; }
 .research-note { color: #f0bb87; font-size: .8rem; margin-top: 8px; }
 .eyebrow { color: var(--accent); font-size: 0.72rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 6px; }
 .status-pill, .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--muted); padding: 6px 11px; white-space: nowrap; }
+
+/* SVG & Graphical Icons */
+.lucide-icon, .btn-icon, .tab-icon {
+  width: 1.15em;
+  height: 1.15em;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.brand-logo-svg {
+  width: 20px;
+  height: 20px;
+  stroke: #07241c;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+.btn-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+}
+.tab-icon {
+  width: 15px;
+  height: 15px;
+  margin-right: 6px;
+}
+.metric-badge-icon {
+  width: 13px;
+  height: 13px;
+  margin-right: 5px;
+  display: inline-block;
+  vertical-align: -2px;
+  stroke-width: 2.2;
+}
+.module-icon .lucide-icon {
+  width: 18px;
+  height: 18px;
+}
+.bot-icon .lucide-icon {
+  width: 22px;
+  height: 22px;
+  stroke: var(--accent);
+}
+.drawer-icon .lucide-icon {
+  width: 24px;
+  height: 24px;
+  stroke: #38bdf8;
+}
+.drawer-close-btn .btn-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 0;
+}
+.btn-remove-leg .btn-icon {
+  width: 12px;
+  height: 12px;
+  margin-right: 0;
+}
 .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 16px; margin-bottom: 20px; padding: 22px; box-shadow: 0 18px 60px #0003; }
 .panel-heading { display: flex; justify-content: space-between; align-items: start; gap: 18px; margin-bottom: 20px; }
 .muted, .state-message { color: var(--muted); }
