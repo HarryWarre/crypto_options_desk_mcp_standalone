@@ -588,6 +588,46 @@ test("applies explicit Advanced overrides and shows them in the scan context", a
   await expect(page.locator("#scan-context")).toContainText("EV tối thiểu: 12.50");
 });
 
+test("keeps required numeric defaults when Advanced fields are cleared", async ({ page }) => {
+  const advancedFilters = page.getByTestId("advanced-filters");
+  await advancedFilters.locator("summary").click();
+  await advancedFilters.getByRole("spinbutton", { name: "Số hợp đồng", exact: true }).fill("");
+  await advancedFilters.getByRole("spinbutton", { name: "Hệ số hợp đồng", exact: true }).fill("");
+
+  const scanRequest = page.waitForRequest((request) => (
+    request.url().includes("/api/v1/opportunities/scan/stream")
+  ));
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+
+  const payload = (await scanRequest).postDataJSON();
+  expect(payload.quantity).toBe(1);
+  expect(payload.contract_multiplier).toBe(1);
+  await expect(page.locator("#result-state")).toContainText("1 cơ hội");
+});
+
+test("shows structured scan validation details in the system log", async ({ page }) => {
+  await page.unroute("**/api/v1/opportunities/scan/stream");
+  await page.route("**/api/v1/opportunities/scan/stream", async (route) => {
+    await route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "validation_error",
+          message: "Request validation failed",
+          details: [{ loc: ["body", "quantity"], message: "Input should be greater than 0" }],
+        },
+      }),
+    });
+  });
+
+  await page.getByRole("button", { name: /Quét cơ hội|Tìm cơ hội/ }).click();
+
+  await expect(page.locator("#scan-terminal")).toContainText(
+    "body.quantity: Input should be greater than 0",
+  );
+});
+
 test("can disable the EV gate by clearing the advanced threshold", async ({ page }) => {
   const advancedFilters = page.getByTestId("advanced-filters");
   await advancedFilters.locator("summary").click();

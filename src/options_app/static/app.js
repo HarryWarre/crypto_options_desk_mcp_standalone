@@ -1516,7 +1516,17 @@ async function streamJson(path, options = {}) {
   if (!response.ok) {
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : null;
-    throw new Error(payload?.error?.message || `Yêu cầu thất bại (${response.status})`);
+    const error = payload?.error;
+    const details = Array.isArray(error?.details)
+      ? error.details
+        .map((detail) => {
+          const location = Array.isArray(detail?.loc) ? detail.loc.join(".") : "request";
+          return `${location}: ${detail?.message || "Giá trị không hợp lệ"}`;
+        })
+        .join("; ")
+      : "";
+    const message = error?.message || `Yêu cầu thất bại (${response.status})`;
+    throw new Error(details ? `${message}: ${details}` : message);
   }
   if (!response.body) throw new Error("Trình duyệt không hỗ trợ stream log của scan");
 
@@ -1556,7 +1566,14 @@ async function streamJson(path, options = {}) {
 
 function optionalNumber(formData, name) {
   const value = formData.get(name);
-  return value === "" || value === null ? null : Number(value);
+  if (value === "" || value === null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function numberOrDefault(formData, name, fallback) {
+  const value = optionalNumber(formData, name);
+  return value === null || !Number.isFinite(value) ? fallback : value;
 }
 
 function optionalDecimal(formData, name, divisor = 1) {
@@ -1651,17 +1668,17 @@ function scanPayloadFromForm() {
       max_delta: optionalNumber(data, "max_delta"),
       min_moneyness: optionalNumber(data, "min_moneyness"),
       max_moneyness: optionalNumber(data, "max_moneyness"),
-      min_volume_24h: Number(data.get("min_volume_24h")),
-      min_open_interest: Number(data.get("min_open_interest")),
+      min_volume_24h: numberOrDefault(data, "min_volume_24h", 0),
+      min_open_interest: numberOrDefault(data, "min_open_interest", 0),
       max_spread_pct: optionalDecimal(data, "max_spread_pct", 100),
-      min_edge_after_costs: Number(data.get("min_edge_after_costs")),
+      min_edge_after_costs: numberOrDefault(data, "min_edge_after_costs", 0),
       min_expected_value: optionalNumber(data, "min_expected_value"),
       max_results: optionalNumber(data, "max_results"),
-      fee_per_contract: Number(data.get("fee_per_contract")),
-      slippage_bps: Number(data.get("slippage_bps")),
+      fee_per_contract: numberOrDefault(data, "fee_per_contract", 0),
+      slippage_bps: numberOrDefault(data, "slippage_bps", 0),
       assumed_spread_bps: optionalNumber(data, "assumed_spread_bps") ?? 100,
-      quantity: Number(data.get("quantity")),
-      contract_multiplier: Number(data.get("contract_multiplier")),
+      quantity: numberOrDefault(data, "quantity", 1),
+      contract_multiplier: numberOrDefault(data, "contract_multiplier", 1),
     });
   }
   return { payload };
