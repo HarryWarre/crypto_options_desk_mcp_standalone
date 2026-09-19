@@ -87,3 +87,4 @@ def test_iron_butterfly_backtest_empty_df():
     res = engine.run(pd.DataFrame())
     assert res.total_trades == 0
     assert res.total_net_pnl == 0.0
+

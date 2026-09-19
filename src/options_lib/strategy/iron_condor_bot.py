@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from options_lib.paper_broker import (
+    DeribitBrokerAdapter,
     MarginCalculator,
     MatchingEngine,
     OrderType,
@@ -44,6 +45,7 @@ class IronCondorConfig:
 
     asset: str = "BTC"
     paper_mode: bool = True
+    use_deribit_testnet: bool = False
     initial_capital: float = 10000.0
 
     # Delta targeting
@@ -73,6 +75,7 @@ class IronCondorConfig:
         config = cls(
             asset=os.getenv("IC_ASSET", cls.asset),
             paper_mode=os.getenv("IC_PAPER_MODE", "true").lower() == "true",
+            use_deribit_testnet=os.getenv("IC_USE_DERIBIT_TESTNET", "false").lower() in ("true", "1"),
             initial_capital=float(os.getenv("IC_CAPITAL", cls.initial_capital)),
             target_short_delta=float(os.getenv("IC_SHORT_DELTA", cls.target_short_delta)),
             target_wing_delta=float(os.getenv("IC_WING_DELTA", cls.target_wing_delta)),
@@ -134,7 +137,7 @@ class IronCondorBot:
 
     def __init__(self, config: IronCondorConfig) -> None:
         self.config = config
-        self.account_id = f"ic_{config.asset.lower()}_paper"
+        self.account_id = f"ic_{config.asset.lower()}_deribit_swing" if config.use_deribit_testnet else f"ic_{config.asset.lower()}_paper"
         self._running = False
         self._active_candidate: IronCondorCandidate | None = None
         self._active_condor_id: str | None = None
@@ -149,14 +152,22 @@ class IronCondorBot:
         self._setup_logging()
         self._install_signal_handlers()
 
-        # Paper Broker components
+        # Broker components
         self.storage = PaperStorage(db_path=config.db_path)
         self.matching_engine = MatchingEngine()
         self.margin_calculator = MarginCalculator()
+        self.deribit_adapter = DeribitBrokerAdapter(testnet=True) if config.use_deribit_testnet else None
+
         self.paper_account = self.storage.load_account(
             account_id=self.account_id,
             default_capital=config.initial_capital,
         )
+
+        if self.deribit_adapter:
+            try:
+                self.deribit_adapter.sync_account(self.paper_account, currency=self.config.asset)
+            except Exception as e:
+                logger.warning("Failed initial Deribit sync: %s", e)
 
         # Restore active condor state if exists
         self._restore_active_state()

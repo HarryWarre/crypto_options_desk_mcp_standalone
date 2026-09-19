@@ -6,6 +6,7 @@ persistence.
 """
 
 from .account import PaperAccount, PaperPosition, PaperTrade
+from .deribit_adapter import DeribitBrokerAdapter
 from .margin_calculator import MarginCalculator, MarginSummary
 from .matching_engine import MatchingEngine, OrderType, PaperOrder, PaperOrderResult
 from .storage import PaperStorage
@@ -21,5 +22,6 @@ __all__ = [
     "MarginCalculator",
     "MarginSummary",
     "PaperStorage",
+    "DeribitBrokerAdapter",
 ]
 
