@@ -1,6 +1,6 @@
 # BOT-011: Deribit Testnet Integration & Multi-Tier Strategy Accounts (Swing, Intraday, HFT)
 
-**Status:** in-progress  
+**Status:** completed  
 **Branch:** `feat/bot-011-deribit-testnet-paper-trading`  
 **Target:** `main`  
 **Blueprint Reference:** [bot-001-virtual-paper-trading-engine.md](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/bot-001-virtual-paper-trading-engine.md), [paper_broker](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/src/options_lib/paper_broker)
@@ -79,7 +79,7 @@ Nhằm phân tách rủi ro ký quỹ và tối ưu độ trễ cho các mô hì
   - Tự động map `PaperOrder` sang API Deribit (`buy`/`sell`), chuẩn hóa symbol instrument.
   - Đồng bộ vị thế và số dư thực tế từ Deribit vào `PaperAccount`.
 
-- [ ] **BOT-011E: Swing Bot Deployment on Deribit Testnet**
+- [x] **BOT-011E: Swing Bot Deployment on Deribit Testnet**
   - Đã chạy kịch bản kiểm thử trực tiếp `scripts/verify_deribit_testnet_trade.py`: Đặt lệnh Limit thành công (Order ID `119694964998`), xác nhận trong Open Orders và hủy lệnh thành công 100%.
-  - Kết nối `IronCondorBot` và `CalendarSpreadBot` gửi lệnh trực tiếp lên Deribit Testnet khi bật cờ `use_deribit_testnet`.
+  - Kết nối `IronCondorBot`, `CalendarSpreadBot`, `VerticalSpreadBot`, và `VerdictAgent` gửi lệnh trực tiếp lên Deribit Testnet khi bật cờ `use_deribit_testnet`.
 

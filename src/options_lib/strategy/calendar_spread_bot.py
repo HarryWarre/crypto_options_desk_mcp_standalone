@@ -54,6 +54,8 @@ class CalendarSpreadConfig:
     max_concurrent_positions: int = 3
     poll_interval_seconds: int = 300
 
+    use_deribit_testnet: bool = False
+
     # Persistence
     db_path: str = "portfolio_data/paper_trading.db"
     log_dir: str = "logs/calendar-spread"
@@ -64,6 +66,7 @@ class CalendarSpreadConfig:
         config = cls(
             asset=os.getenv("CS_ASSET", cls.asset),
             paper_mode=os.getenv("CS_PAPER_MODE", "true").lower() == "true",
+            use_deribit_testnet=os.getenv("CS_USE_DERIBIT_TESTNET", "false").lower() in ("true", "1"),
             initial_capital=float(os.getenv("CS_CAPITAL", cls.initial_capital)),
             min_near_dte=int(os.getenv("CS_MIN_NEAR_DTE", cls.min_near_dte)),
             max_near_dte=int(os.getenv("CS_MAX_NEAR_DTE", cls.max_near_dte)),
@@ -108,17 +111,29 @@ class CalendarSpreadBot:
         self.margin_calc = MarginCalculator()
         self.matching_engine = MatchingEngine()
 
-        acct = self.storage.load_account(f"cs_{self.config.asset}")
+        from options_lib.paper_broker.deribit_adapter import DeribitBrokerAdapter
+        self.deribit_adapter = (
+            DeribitBrokerAdapter(testnet=True) if getattr(self.config, "use_deribit_testnet", False) else None
+        )
+
+        acct_id = f"cs_{self.config.asset.lower()}_deribit" if self.config.use_deribit_testnet else f"cs_{self.config.asset.lower()}"
+        acct = self.storage.load_account(acct_id)
         if acct:
             self.paper_account = acct
         else:
             self.paper_account = PaperAccount(
-                account_id=f"cs_{self.config.asset.lower()}",
+                account_id=acct_id,
                 initial_capital=self.config.initial_capital,
                 cash_balance=self.config.initial_capital,
-                currency="USDT",
+                currency="BTC" if self.config.use_deribit_testnet else "USDT",
             )
             self.storage.save_account(self.paper_account)
+
+        if self.deribit_adapter:
+            try:
+                self.deribit_adapter.sync_account(self.paper_account, currency=self.config.asset)
+            except Exception as e:
+                logger.warning("Deribit sync warning for calendar spread: %s", e)
 
         os.makedirs(self.config.log_dir, exist_ok=True)
 
@@ -226,4 +241,48 @@ class CalendarSpreadBot:
             return "STOP_LOSS", unrealized_pnl
 
         return "HOLD", unrealized_pnl
+
+    def execute_open_candidate(
+        self,
+        candidate: CalendarSpreadCandidate,
+        qty: float,
+        spot: float,
+    ) -> bool:
+        """Execute the two legs of a calendar spread (Buy far leg, Sell near leg)."""
+        legs = [
+            (candidate.far_leg["symbol"], "Buy", candidate.far_leg["mark"]),
+            (candidate.near_leg["symbol"], "Sell", candidate.near_leg["mark"]),
+        ]
+        for sym, side, mark in legs:
+            order = PaperOrder(
+                symbol=sym,
+                side=side,
+                qty=qty,
+                order_type=OrderType.MARKET,
+                strategy_id=candidate.candidate_id,
+            )
+            if self.config.use_deribit_testnet and self.deribit_adapter:
+                res = self.deribit_adapter.execute_order(order, spot=spot)
+            else:
+                res = self.matching_engine.match_order(
+                    order=order,
+                    best_bid=mark * 0.95,
+                    best_ask=mark * 1.05,
+                    spot=spot,
+                    mark_price=mark,
+                )
+            if not res.is_filled:
+                return False
+            self.paper_account.apply_fill(
+                symbol=sym,
+                side=side,
+                qty=qty,
+                price=res.filled_price,
+                fee=res.fee,
+                spot=spot,
+                strategy_id=candidate.candidate_id,
+                order_id=res.order_id,
+            )
+        self.storage.save_account(self.paper_account)
+        return True
 

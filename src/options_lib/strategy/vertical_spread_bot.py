@@ -61,6 +61,8 @@ class VerticalSpreadConfig:
     max_concurrent_positions: int = 3
     poll_interval_seconds: int = 300
 
+    use_deribit_testnet: bool = False
+
     # Persistence
     db_path: str = "portfolio_data/paper_trading.db"
     log_dir: str = "logs/vertical-spread"
@@ -71,6 +73,7 @@ class VerticalSpreadConfig:
         config = cls(
             asset=os.getenv("VS_ASSET", cls.asset),
             paper_mode=os.getenv("VS_PAPER_MODE", "true").lower() == "true",
+            use_deribit_testnet=os.getenv("VS_USE_DERIBIT_TESTNET", "false").lower() in ("true", "1"),
             initial_capital=float(os.getenv("VS_CAPITAL", cls.initial_capital)),
             target_short_delta=float(os.getenv("VS_SHORT_DELTA", cls.target_short_delta)),
             target_wing_delta=float(os.getenv("VS_WING_DELTA", cls.target_wing_delta)),
@@ -132,17 +135,29 @@ class VerticalSpreadBot:
         self.margin_calc = MarginCalculator()
         self.matching_engine = MatchingEngine()
 
-        acct = self.storage.load_account(f"vs_{self.config.asset}")
+        from options_lib.paper_broker.deribit_adapter import DeribitBrokerAdapter
+        self.deribit_adapter = (
+            DeribitBrokerAdapter(testnet=True) if getattr(self.config, "use_deribit_testnet", False) else None
+        )
+
+        acct_id = f"vs_{self.config.asset.lower()}_deribit" if self.config.use_deribit_testnet else f"vs_{self.config.asset.lower()}"
+        acct = self.storage.load_account(acct_id)
         if acct:
             self.paper_account = acct
         else:
             self.paper_account = PaperAccount(
-                account_id=f"vs_{self.config.asset.lower()}",
+                account_id=acct_id,
                 initial_capital=self.config.initial_capital,
                 cash_balance=self.config.initial_capital,
-                currency="USDT",
+                currency="BTC" if self.config.use_deribit_testnet else "USDT",
             )
             self.storage.save_account(self.paper_account)
+
+        if self.deribit_adapter:
+            try:
+                self.deribit_adapter.sync_account(self.paper_account, currency=self.config.asset)
+            except Exception as e:
+                logger.warning("Deribit sync warning for vertical spread: %s", e)
 
         os.makedirs(self.config.log_dir, exist_ok=True)
 
@@ -342,4 +357,48 @@ class VerticalSpreadBot:
             return "STOP_LOSS", unrealized_pnl
 
         return "HOLD", unrealized_pnl
+
+    def execute_open_spread(
+        self,
+        candidate: VerticalSpreadCandidate,
+        qty: float,
+        spot: float,
+    ) -> bool:
+        """Execute the two legs of a vertical credit spread (Buy protective wing, Sell short leg)."""
+        legs = [
+            (candidate.long_wing["symbol"], "Buy", candidate.long_wing["mark"]),
+            (candidate.short_leg["symbol"], "Sell", candidate.short_leg["mark"]),
+        ]
+        for sym, side, mark in legs:
+            order = PaperOrder(
+                symbol=sym,
+                side=side,
+                qty=qty,
+                order_type=OrderType.MARKET,
+                strategy_id=candidate.candidate_id,
+            )
+            if self.config.use_deribit_testnet and self.deribit_adapter:
+                res = self.deribit_adapter.execute_order(order, spot=spot)
+            else:
+                res = self.matching_engine.match_order(
+                    order=order,
+                    best_bid=mark * 0.95,
+                    best_ask=mark * 1.05,
+                    spot=spot,
+                    mark_price=mark,
+                )
+            if not res.is_filled:
+                return False
+            self.paper_account.apply_fill(
+                symbol=sym,
+                side=side,
+                qty=qty,
+                price=res.filled_price,
+                fee=res.fee,
+                spot=spot,
+                strategy_id=candidate.candidate_id,
+                order_id=res.order_id,
+            )
+        self.storage.save_account(self.paper_account)
+        return True
 
