@@ -51,11 +51,19 @@ class DeribitBrokerAdapter:
         is_limit = order.order_type in (OrderType.LIMIT, "Limit", "limit")
         order_type_str = "limit" if is_limit else "market"
 
+        # Deribit options require amount to be a multiple of min_trade_amount (0.1 for BTC, 1.0 for ETH)
+        if instrument.startswith("BTC-"):
+            amount = max(0.1, round(order.qty * 10) / 10)
+        elif instrument.startswith("ETH-"):
+            amount = max(1.0, round(order.qty))
+        else:
+            amount = order.qty
+
         try:
             if side_lower == "buy":
                 deribit_order = self.client.buy(
                     instrument_name=instrument,
-                    amount=order.qty,
+                    amount=amount,
                     order_type=order_type_str,
                     price=order.price if is_limit else None,
                     label=order.strategy_id or "bot_order",
@@ -63,7 +71,7 @@ class DeribitBrokerAdapter:
             elif side_lower == "sell":
                 deribit_order = self.client.sell(
                     instrument_name=instrument,
-                    amount=order.qty,
+                    amount=amount,
                     order_type=order_type_str,
                     price=order.price if is_limit else None,
                     label=order.strategy_id or "bot_order",
