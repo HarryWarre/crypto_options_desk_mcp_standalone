@@ -43,6 +43,7 @@ class VerticalSpreadBacktestConfig:
     trend_window_hours: int = 48  # Lookback to detect trend
     dynamic_sizing: bool = True
     risk_pct_per_trade: float = 0.02
+    risk_per_trade_pct: float | None = None
     max_margin_utilization: float = 0.60
     asset: str = "BTC"
     fixed_qty: float | None = None
@@ -68,6 +69,7 @@ class VerticalSpreadTradeRecord:
 
     entry_credit: float
     qty: float
+    margin_per_unit: float = 0.0
     exit_debit: float | None = None
     realized_pnl: float = 0.0
     exit_reason: str = "OPEN"
@@ -184,7 +186,14 @@ class VerticalSpreadBacktestEngine:
 
             if can_enter and len(price_history) >= 2:
                 trend = self._determine_trend(price_history)
-                candidate = self._find_candidate(chain, ts, spot, trend, capital)
+                candidate = self._find_candidate(
+                    chain,
+                    ts,
+                    spot,
+                    trend,
+                    capital,
+                    self._margin_used(open_positions),
+                )
                 if candidate is not None:
                     # Avoid identical duplicate strike
                     already_open = any(
@@ -235,7 +244,13 @@ class VerticalSpreadBacktestEngine:
         return "BULLISH" if current_spot >= mean_spot else "BEARISH"
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float, trend: str, capital: float = 10000.0
+        self,
+        chain: pd.DataFrame,
+        ts: datetime,
+        spot: float,
+        trend: str,
+        capital: float = 10000.0,
+        current_margin_used: float = 0.0,
     ) -> VerticalSpreadTradeRecord | None:
         chain = chain.copy()
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
@@ -286,13 +301,17 @@ class VerticalSpreadBacktestEngine:
                     current_equity=capital,
                     max_loss_per_unit=max_loss_per_unit,
                     asset=self.config.asset,
-                    risk_pct=self.config.risk_pct_per_trade,
+                    risk_pct=(
+                        self.config.risk_per_trade_pct
+                        if self.config.risk_per_trade_pct is not None
+                        else self.config.risk_pct_per_trade
+                    ),
                     max_margin_utilization=self.config.max_margin_utilization,
                     fixed_qty=self.config.fixed_qty,
+                    current_margin_used=current_margin_used,
                 )
             else:
-                notional = self.config.initial_capital / self.config.max_concurrent_positions
-                qty = self.config.fixed_qty if self.config.fixed_qty is not None else max(0.001, round(notional / spot, 4))
+                qty = self.config.fixed_qty if self.config.fixed_qty is not None else 1.0
 
             if qty <= 0:
                 return None
@@ -312,6 +331,7 @@ class VerticalSpreadBacktestEngine:
                 wing_entry_price=lp_price,
                 entry_credit=net_credit,
                 qty=qty,
+                margin_per_unit=max_loss_per_unit,
             )
         else:
             # Bear Call Spread: sell short call (~0.18 delta), buy long call wing (~0.05 delta)
@@ -350,18 +370,22 @@ class VerticalSpreadBacktestEngine:
                     current_equity=capital,
                     max_loss_per_unit=max_loss_per_unit,
                     asset=self.config.asset,
-                    risk_pct=self.config.risk_pct_per_trade,
+                    risk_pct=(
+                        self.config.risk_per_trade_pct
+                        if self.config.risk_per_trade_pct is not None
+                        else self.config.risk_pct_per_trade
+                    ),
                     max_margin_utilization=self.config.max_margin_utilization,
                     fixed_qty=self.config.fixed_qty,
+                    current_margin_used=current_margin_used,
                 )
             else:
-                notional = self.config.initial_capital / self.config.max_concurrent_positions
-                qty = self.config.fixed_qty if self.config.fixed_qty is not None else max(0.001, round(notional / spot, 4))
+                qty = self.config.fixed_qty if self.config.fixed_qty is not None else 1.0
 
             if qty <= 0:
                 return None
 
-            return VerticalSpreadTradeRecord(
+        return VerticalSpreadTradeRecord(
                 trade_id=f"bc_{len(sub)}_{int(sc_strike)}",
                 spread_type="BEAR_CALL",
                 entry_time=ts,
@@ -376,7 +400,12 @@ class VerticalSpreadBacktestEngine:
                 wing_entry_price=lc_price,
                 entry_credit=net_credit,
                 qty=qty,
-            )
+                margin_per_unit=max_loss_per_unit,
+        )
+
+    @staticmethod
+    def _margin_used(positions: list[VerticalSpreadTradeRecord]) -> float:
+        return sum(max(1.0, pos.margin_per_unit) * pos.qty for pos in positions)
 
     def _evaluate_position(
         self,

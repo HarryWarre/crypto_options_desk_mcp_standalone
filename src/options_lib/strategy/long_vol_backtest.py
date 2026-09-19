@@ -41,6 +41,7 @@ class LongVolBacktestConfig:
     cooldown_hours: float = 6.0
     dynamic_sizing: bool = True
     risk_pct_per_trade: float = 0.02
+    risk_per_trade_pct: float | None = None
     max_margin_utilization: float = 0.60
     asset: str = "BTC"
     fixed_qty: float | None = None
@@ -67,6 +68,7 @@ class LongVolTradeRecord:
     qty: float
     iv_at_entry: float
     rv_at_entry: float
+    margin_per_unit: float = 0.0
     exit_credit: float | None = None
     realized_pnl: float = 0.0
     exit_reason: str = "OPEN"
@@ -194,7 +196,14 @@ class LongVolBacktestEngine:
             )
 
             if can_enter:
-                candidate = self._find_candidate(chain, ts, spot, rv_val, capital)
+                candidate = self._find_candidate(
+                    chain,
+                    ts,
+                    spot,
+                    rv_val,
+                    capital,
+                    self._margin_used(open_positions),
+                )
                 if candidate is not None:
                     open_positions.append(candidate)
                     last_entry_time = ts
@@ -232,7 +241,13 @@ class LongVolBacktestEngine:
         return self._build_results(closed_trades, equity_curve, capital - self.config.initial_capital, max_dd_usd, max_dd_pct)
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float, rv_val: float, capital: float = 10000.0
+        self,
+        chain: pd.DataFrame,
+        ts: datetime,
+        spot: float,
+        rv_val: float,
+        capital: float = 10000.0,
+        current_margin_used: float = 0.0,
     ) -> LongVolTradeRecord | None:
         chain = chain.copy()
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
@@ -278,12 +293,16 @@ class LongVolBacktestEngine:
                 current_equity=capital,
                 asset=self.config.asset,
                 max_loss_per_unit=max_loss_per_unit,
-                risk_pct=self.config.risk_pct_per_trade,
+                risk_pct=(
+                    self.config.risk_per_trade_pct
+                    if self.config.risk_per_trade_pct is not None
+                    else self.config.risk_pct_per_trade
+                ),
                 max_margin_utilization=self.config.max_margin_utilization,
+                current_margin_used=current_margin_used,
             )
         else:
-            notional = self.config.initial_capital / self.config.max_concurrent_positions
-            qty = max(0.001, round(notional / spot, 4))
+            qty = 1.0
 
         if qty <= 0:
             return None
@@ -305,7 +324,12 @@ class LongVolBacktestEngine:
             qty=qty,
             iv_at_entry=iv_val,
             rv_at_entry=rv_val,
+            margin_per_unit=max_loss_per_unit,
         )
+
+    @staticmethod
+    def _margin_used(positions: list[LongVolTradeRecord]) -> float:
+        return sum(max(1.0, pos.margin_per_unit) * pos.qty for pos in positions)
 
     def _evaluate_position(
         self,

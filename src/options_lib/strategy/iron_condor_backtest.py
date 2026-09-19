@@ -43,6 +43,7 @@ class BacktestConfig:
     max_concurrent_positions: int = 1
     dynamic_sizing: bool = True
     risk_pct_per_trade: float = 0.02
+    risk_per_trade_pct: float | None = None
     max_margin_utilization: float = 0.60
     asset: str = "BTC"
     fixed_qty: float | None = None
@@ -72,6 +73,7 @@ class TradeRecord:
 
     entry_credit: float
     qty: float
+    margin_per_unit: float = 0.0
     exit_debit: float | None = None
     realized_pnl: float = 0.0
     exit_reason: str = "OPEN"
@@ -197,7 +199,14 @@ class IronCondorBacktestEngine:
             )
             if can_enter:
                 rv = self._estimate_realized_vol(price_history)
-                candidate = self._find_candidate(chain, ts, spot, rv, capital)
+                candidate = self._find_candidate(
+                    chain,
+                    ts,
+                    spot,
+                    rv,
+                    capital,
+                    self._margin_used(open_positions),
+                )
                 if candidate is not None:
                     # Avoid duplicate exact expiry & strikes
                     already_open = any(
@@ -242,7 +251,13 @@ class IronCondorBacktestEngine:
         return self._build_results(closed_trades, equity_curve, max_dd_usd, max_dd_pct)
 
     def _find_candidate(
-        self, chain: pd.DataFrame, ts: datetime, spot: float, rv: float, capital: float = 10000.0
+        self,
+        chain: pd.DataFrame,
+        ts: datetime,
+        spot: float,
+        rv: float,
+        capital: float = 10000.0,
+        current_margin_used: float = 0.0,
     ) -> TradeRecord | None:
         """Filter chain and locate optimal 4-leg Iron Condor candidate."""
         # Find expirations within min_dte and max_dte
@@ -321,9 +336,14 @@ class IronCondorBacktestEngine:
                 current_equity=capital,
                 max_loss_per_unit=max_loss_per_unit,
                 asset=self.config.asset,
-                risk_pct=self.config.risk_pct_per_trade,
+                risk_pct=(
+                    self.config.risk_per_trade_pct
+                    if self.config.risk_per_trade_pct is not None
+                    else self.config.risk_pct_per_trade
+                ),
                 max_margin_utilization=self.config.max_margin_utilization,
                 fixed_qty=self.config.fixed_qty,
+                current_margin_used=current_margin_used,
             )
         else:
             qty = self.config.fixed_qty if self.config.fixed_qty is not None else 1.0
@@ -352,7 +372,12 @@ class IronCondorBacktestEngine:
             long_call_entry=lc_price,
             entry_credit=(net_credit - fees) * qty,
             qty=qty,
+            margin_per_unit=max_loss_per_unit,
         )
+
+    @staticmethod
+    def _margin_used(positions: list[TradeRecord]) -> float:
+        return sum(max(1.0, pos.margin_per_unit) * pos.qty for pos in positions)
 
     def _evaluate_open_position(
         self,

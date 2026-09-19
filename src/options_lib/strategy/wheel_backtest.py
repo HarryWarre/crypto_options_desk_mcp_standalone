@@ -20,6 +20,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_lib.risk.portfolio_risk_engine import calculate_backtest_position_size
+
 
 @dataclass
 class WheelBacktestConfig:
@@ -38,6 +40,7 @@ class WheelBacktestConfig:
     max_concurrent_positions: int = 2
     dynamic_sizing: bool = True
     risk_pct_per_trade: float = 0.02
+    risk_per_trade_pct: float | None = None
     max_margin_utilization: float = 0.60
     asset: str = "BTC"
     fixed_qty: float | None = None
@@ -59,6 +62,7 @@ class WheelTradeRecord:
     spot_exit: float | None
     entry_credit: float
     qty: float
+    margin_per_unit: float = 0.0
     exit_debit: float | None = None
     realized_pnl: float = 0.0
     exit_reason: str = "OPEN"
@@ -217,7 +221,14 @@ class WheelBacktestEngine:
 
             if can_enter:
                 candidate = self._find_candidate(
-                    chain, ts, spot, phase, spot_holdings, cost_basis, cash
+                    chain,
+                    ts,
+                    spot,
+                    phase,
+                    spot_holdings,
+                    cost_basis,
+                    cash,
+                    self._margin_used(open_positions),
                 )
                 if candidate is not None:
                     open_positions.append(candidate)
@@ -286,6 +297,7 @@ class WheelBacktestEngine:
         spot_holdings: float,
         cost_basis: float,
         cash: float,
+        current_margin_used: float = 0.0,
     ) -> WheelTradeRecord | None:
         chain = chain.copy()
         chain["dte"] = (chain["expiry"] - chain["timestamp"]).dt.total_seconds() / 86400.0
@@ -317,24 +329,18 @@ class WheelBacktestEngine:
 
             # Slippage & fees
             slip = mark * (self.config.slippage_bps / 10000.0)
-            entry_credit = max(0.01, mark - slip)
-
-            # Sizing
-            if self.config.fixed_qty is not None:
-                qty = self.config.fixed_qty
-            elif self.config.dynamic_sizing:
-                lot_size = 0.1 if self.config.asset.upper() == "BTC" else 1.0
-                alloc_cash = min(cash, self.config.initial_capital / max(1, self.config.max_concurrent_positions))
-                raw_qty = alloc_cash / max(0.0001, strike)
-                lots = round(raw_qty / lot_size)
-                if lots == 0 and cash >= strike * lot_size * 0.9:
-                    lots = 1
-                qty = max(lot_size, round(lots * lot_size, 4))
-            else:
-                notional_per_pos = self.config.initial_capital / max(1, self.config.max_concurrent_positions)
-                qty = max(0.001, round(notional_per_pos / max(0.0001, strike), 4))
+            gross_entry_credit = max(0.01, mark - slip)
+            qty = self._size_position(
+                cash,
+                max(1.0, strike - gross_entry_credit),
+                current_margin_used,
+            )
 
             if qty <= 0:
+                return None
+
+            entry_credit = gross_entry_credit - self.config.fee_per_contract / qty
+            if entry_credit <= 0:
                 return None
 
             return WheelTradeRecord(
@@ -350,6 +356,7 @@ class WheelBacktestEngine:
                 spot_exit=None,
                 entry_credit=entry_credit,
                 qty=qty,
+                margin_per_unit=max(1.0, strike - gross_entry_credit),
             )
         else:
             # Search OTM Calls satisfying Cost-Basis Floor
@@ -372,25 +379,22 @@ class WheelBacktestEngine:
                 return None
 
             slip = mark * (self.config.slippage_bps / 10000.0)
-            entry_credit = max(0.01, mark - slip)
+            gross_entry_credit = max(0.01, mark - slip)
 
             if spot_holdings > 0:
                 qty = spot_holdings
-            elif self.config.fixed_qty is not None:
-                qty = self.config.fixed_qty
-            elif self.config.dynamic_sizing:
-                lot_size = 0.1 if self.config.asset.upper() == "BTC" else 1.0
-                alloc_cash = min(cash, self.config.initial_capital / max(1, self.config.max_concurrent_positions))
-                raw_qty = alloc_cash / max(0.0001, strike)
-                lots = round(raw_qty / lot_size)
-                if lots == 0 and cash >= strike * lot_size * 0.9:
-                    lots = 1
-                qty = max(lot_size, round(lots * lot_size, 4))
             else:
-                notional_per_pos = self.config.initial_capital / max(1, self.config.max_concurrent_positions)
-                qty = max(0.001, round(notional_per_pos / max(0.0001, strike), 4))
+                qty = self._size_position(
+                    cash,
+                    max(1.0, spot - gross_entry_credit),
+                    current_margin_used,
+                )
 
             if qty <= 0:
+                return None
+
+            entry_credit = gross_entry_credit - self.config.fee_per_contract / qty
+            if entry_credit <= 0:
                 return None
 
             return WheelTradeRecord(
@@ -406,7 +410,35 @@ class WheelBacktestEngine:
                 spot_exit=None,
                 entry_credit=entry_credit,
                 qty=qty,
+                margin_per_unit=max(1.0, spot - gross_entry_credit),
             )
+
+    def _size_position(
+        self,
+        current_equity: float,
+        max_loss_per_unit: float,
+        current_margin_used: float = 0.0,
+    ) -> float:
+        if self.config.fixed_qty is not None:
+            return max(0.0, float(self.config.fixed_qty))
+        if not self.config.dynamic_sizing:
+            return 1.0
+        return calculate_backtest_position_size(
+            current_equity=current_equity,
+            max_loss_per_unit=max_loss_per_unit,
+            asset=self.config.asset,
+            risk_pct=(
+                self.config.risk_per_trade_pct
+                if self.config.risk_per_trade_pct is not None
+                else self.config.risk_pct_per_trade
+            ),
+            max_margin_utilization=self.config.max_margin_utilization,
+            current_margin_used=current_margin_used,
+        )
+
+    @staticmethod
+    def _margin_used(positions: list[WheelTradeRecord]) -> float:
+        return sum(max(1.0, pos.margin_per_unit) * pos.qty for pos in positions)
 
     def _evaluate_position(
         self,

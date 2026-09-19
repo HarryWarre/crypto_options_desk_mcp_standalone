@@ -75,6 +75,7 @@ def test_wheel_backtest_engine_execution():
         max_dte=16,
         target_profit_pct=0.50,
         max_concurrent_positions=2,
+        dynamic_sizing=False,
     )
     engine = WheelBacktestEngine(cfg)
     result = engine.run(df)
@@ -96,6 +97,9 @@ def test_wheel_backtest_empty_dataframe():
 
 def test_wheel_dynamic_sizing():
     df = _generate_synthetic_chain_history(days=15)
+    scale = 1 / 65000.0
+    for column in ("strike", "mark_price", "underlying_price", "bid", "ask"):
+        df[column] *= scale
     cfg = WheelBacktestConfig(
         initial_capital=10000.0,
         dynamic_sizing=True,
@@ -109,3 +113,53 @@ def test_wheel_dynamic_sizing():
         assert round(tr.qty % 0.1, 4) in (0.0, 0.1)
 
 
+def test_wheel_dynamic_sizing_rejects_risk_budget_below_minimum_lot():
+    df = _generate_synthetic_chain_history(days=15)
+    cfg = WheelBacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=True,
+        asset="ETH",
+        risk_per_trade_pct=0.0001,
+    )
+
+    result = WheelBacktestEngine(cfg).run(df)
+
+    assert result.total_trades == 0
+
+
+def test_wheel_legacy_sizing_uses_one_contract():
+    df = _generate_synthetic_chain_history(days=15)
+    cfg = WheelBacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=False,
+    )
+
+    result = WheelBacktestEngine(cfg).run(df)
+
+    assert result.total_trades > 0
+    assert {trade.qty for trade in result.trades} == {1.0}
+
+
+def test_wheel_entry_credit_includes_entry_fee():
+    df = _generate_synthetic_chain_history(days=1)
+    cfg = WheelBacktestConfig(initial_capital=10000.0, dynamic_sizing=True, fixed_qty=0.1)
+    engine = WheelBacktestEngine(cfg)
+    timestamp = df["timestamp"].min()
+    chain = df[df["timestamp"] == timestamp].copy()
+    chain["option_type"] = chain["type"]
+
+    candidate = engine._find_candidate(
+        chain,
+        timestamp,
+        float(chain["underlying_price"].iloc[0]),
+        "CSP",
+        0.0,
+        0.0,
+        10000.0,
+    )
+
+    assert candidate is not None
+    gross_credit = 600.0 - (600.0 * cfg.slippage_bps / 10000.0)
+    assert candidate.entry_credit * candidate.qty == pytest.approx(
+        gross_credit * candidate.qty - cfg.fee_per_contract
+    )
