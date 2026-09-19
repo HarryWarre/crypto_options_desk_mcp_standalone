@@ -124,6 +124,15 @@ class IronCondorBacktestEngine:
                 expectancy_per_trade=0.0,
             )
 
+        df = df.copy()
+        if "option_type" not in df.columns and "type" in df.columns:
+            df["option_type"] = df["type"].astype(str).str.lower()
+        elif "option_type" in df.columns:
+            df["option_type"] = df["option_type"].astype(str).str.lower()
+            
+        if "mark_iv" not in df.columns and "iv" in df.columns:
+            df["mark_iv"] = df["iv"]
+
         # Pre-group and index chains by timestamp for 100x lookup speed
         grouped = {}
         for ts, group in df.groupby("timestamp"):
@@ -139,9 +148,10 @@ class IronCondorBacktestEngine:
         max_dd_usd = 0.0
         max_dd_pct = 0.0
 
-        open_position: TradeRecord | None = None
+        open_positions: list[TradeRecord] = []
         closed_trades: list[TradeRecord] = []
         equity_curve: list[dict[str, Any]] = []
+        last_entry_time: datetime | None = None
 
         # Track underlying price history to estimate 30-day Realized Volatility
         price_history: list[tuple[datetime, float]] = []
@@ -158,28 +168,41 @@ class IronCondorBacktestEngine:
             cutoff = ts - timedelta(days=30)
             price_history = [p for p in price_history if p[0] >= cutoff]
 
-            # 1. Manage existing open position
-            if open_position is not None:
-                open_position, pnl_delta = self._evaluate_open_position(
-                    open_position, mark_lookup, ts, spot
+            # 1. Manage existing open positions
+            remaining_positions: list[TradeRecord] = []
+            for pos in open_positions:
+                evaluated_pos, _ = self._evaluate_open_position(
+                    pos, mark_lookup, ts, spot
                 )
-                if open_position.exit_time is not None:
+                if evaluated_pos.exit_time is not None:
                     # Trade closed this step
-                    capital += open_position.realized_pnl
-                    closed_trades.append(open_position)
-                    open_position = None
+                    capital += evaluated_pos.realized_pnl
+                    closed_trades.append(evaluated_pos)
+                else:
+                    remaining_positions.append(evaluated_pos)
+            open_positions = remaining_positions
 
-            # 2. Check if we should open a new position
-            if open_position is None and len(closed_trades) < 1000:
+            # 2. Check if we should open a new position (staggered every 48 hours up to max_concurrent)
+            can_enter = (
+                len(open_positions) < self.config.max_concurrent_positions
+                and len(closed_trades) < 1000
+                and (last_entry_time is None or (ts - last_entry_time).total_seconds() >= 6 * 3600)
+            )
+            if can_enter:
                 rv = self._estimate_realized_vol(price_history)
                 candidate = self._find_candidate(chain, ts, spot, rv)
                 if candidate is not None:
-                    open_position = candidate
+                    # Avoid duplicate exact expiry & strikes
+                    already_open = any(
+                        p.expiry == candidate.expiry and p.short_put_strike == candidate.short_put_strike
+                        for p in open_positions
+                    )
+                    if not already_open:
+                        open_positions.append(candidate)
+                        last_entry_time = ts
 
             # Track equity curve
-            unrealized = 0.0
-            if open_position is not None:
-                unrealized = self._calc_unrealized_pnl(open_position, mark_lookup)
+            unrealized = sum(self._calc_unrealized_pnl(p, mark_lookup) for p in open_positions)
             current_equity = capital + unrealized
             equity_curve.append({
                 "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
@@ -198,14 +221,16 @@ class IronCondorBacktestEngine:
             if dd_pct > max_dd_pct:
                 max_dd_pct = dd_pct
 
-        # Close any lingering open position at last price
-        if open_position is not None:
+        # Close any lingering open positions at last price
+        if open_positions:
             _, last_lookup = grouped[timestamps[-1]]
-            open_position, _ = self._evaluate_open_position(
-                open_position, last_lookup, timestamps[-1], spot, force_close=True
-            )
-            capital += open_position.realized_pnl
-            closed_trades.append(open_position)
+            for pos in open_positions:
+                pos, _ = self._evaluate_open_position(
+                    pos, last_lookup, timestamps[-1], spot, force_close=True
+                )
+                capital += pos.realized_pnl
+                closed_trades.append(pos)
+            open_positions.clear()
 
         return self._build_results(closed_trades, equity_curve, max_dd_usd, max_dd_pct)
 
@@ -266,8 +291,9 @@ class IronCondorBacktestEngine:
         if net_credit <= 0:
             return None
 
-        fees = 4 * self.config.fee_per_contract
-        trade_id = f"ic_{ts.strftime('%y%m%d%H%M')}_{int(spot)}"
+        effective_fee = min(self.config.fee_per_contract, max(0.00001, spot * 0.0003))
+        fees = 4 * effective_fee
+        trade_id = f"ic_{ts.strftime('%y%m%d%H%M')}_{int(spot) if spot >= 1 else round(spot, 4)}"
         dte = float(sub["dte"].iloc[0])
 
         return TradeRecord(
@@ -300,7 +326,8 @@ class IronCondorBacktestEngine:
     ) -> tuple[TradeRecord, float]:
         """Check early take-profit, stop-loss, or expiration conditions."""
         slip = self.config.slippage_bps / 10000.0
-        fees = 4 * self.config.fee_per_contract
+        effective_fee = min(self.config.fee_per_contract, max(0.00001, spot * 0.0003))
+        fees = 4 * effective_fee
 
         # Find current prices for all 4 legs using O(1) dict lookup
         legs_mark = self._get_legs_mark(pos, mark_lookup)
