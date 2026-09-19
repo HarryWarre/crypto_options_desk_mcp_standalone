@@ -2,7 +2,7 @@
 
 **Mã Sub-Issue:** SCAN-008.1  
 **Master Issue:** [SCAN-008](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-bot-aligned-strategy-scanner.md)  
-**Trạng thái:** To Do  
+**Trạng thái:** Completed  
 **Target:** `main`  
 **File cần sửa:**
 - `src/options_lib/opportunity_scanner.py`
@@ -53,8 +53,8 @@ Kết quả nghiên cứu backtest từ BOT-008, BOT-009, BOT-010 cho thấy:
 
 ## 3. Tiêu Chí Nghiệm Thu (Acceptance Criteria)
 
-- [ ] Unit test: Long straddle bị từ chối nếu $IV = 60\%$ và $RV = 50\%$; được duyệt nếu $IV = 50\%$ và $RV = 60\%$.
-- [ ] Unit test: Calendar spread bị từ chối nếu $RV = 65\%$; được duyệt nếu $RV = 45\%$.
-- [ ] Unit test: Iron butterfly bị từ chối nếu $IV - RV < 5.0$ vol points.
-- [ ] Các chiến lược cũ chạy bình thường nếu `enforce_bot_regime = False` (backward compatibility 100%).
-- [ ] Pytest toàn bộ suite pass xanh 100%.
+- [x] Unit test: Long straddle bị từ chối nếu $IV = 60\%$ và $RV = 50\%$; được duyệt nếu $IV = 50\%$ và $RV = 60\%$.
+- [x] Unit test: Calendar spread bị từ chối nếu $RV = 65\%$; được duyệt nếu $RV = 45\%$.
+- [x] Unit test: Iron butterfly bị từ chối nếu $IV - RV < 5.0$ vol points.
+- [x] Các chiến lược cũ chạy bình thường nếu `enforce_bot_regime = False` (backward compatibility 100%).
+- [x] Pytest toàn bộ suite pass xanh 100%.
