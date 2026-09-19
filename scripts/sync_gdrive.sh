@@ -15,14 +15,17 @@ REMOTE_PATH="gdrive:OptionsData/deribit_parquet"
 LOCAL_PATH="./data/deribit_parquet"
 
 RCLONE_BIN="./bin/rclone"
-if ! command -v "$RCLONE_BIN" &> /dev/null; then
-    if command -v rclone &> /dev/null; then
-        RCLONE_BIN="rclone"
-    else
-        echo "❌ rclone chưa được cài đặt."
-        exit 1
+
+function check_rclone() {
+    if ! command -v "$RCLONE_BIN" &> /dev/null; then
+        if command -v rclone &> /dev/null; then
+            RCLONE_BIN="rclone"
+        else
+            echo "❌ rclone chưa được cài đặt."
+            exit 1
+        fi
     fi
-fi
+}
 
 case "${1:-status}" in
     push)
