@@ -14,7 +14,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import WebSocket
+from options_lib.paper_broker.deribit_adapter import DeribitBrokerAdapter
+from options_lib.paper_broker.equity_history import EquityHistoryStore
+from options_lib.research.market_regime import MarketRegimeAgent
+from options_lib.risk.portfolio_risk_engine import PortfolioRiskEngine
 from options_lib.strategy.iron_condor_bot import IronCondorBot, IronCondorConfig
+from options_lib.swarm.trader_pool import TraderPool
+from options_lib.verdict.verdict_agent import VerdictAgent
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,15 @@ class BotManager:
             poll_interval_seconds=interval_seconds,
         )
         self.bot = IronCondorBot(self.config)
+
+        # Multi-Agent Swarm Components
+        self.research_agent = MarketRegimeAgent()
+        self.trader_pool = TraderPool()
+        self.risk_engine = PortfolioRiskEngine()
+        self.verdict_agent = VerdictAgent()
+        self.equity_history = EquityHistoryStore(db_path=self.config.db_path)
+        self.deribit_adapter = DeribitBrokerAdapter(testnet=True)
+        self.last_swarm_result: dict[str, Any] | None = None
 
     def get_status(self) -> dict[str, Any]:
         """Construct a comprehensive state snapshot for UI widgets."""
@@ -106,7 +121,43 @@ class BotManager:
             "recent_trades": [
                 t.to_dict() for t in reversed(acc.trade_history[-10:])
             ],
+            "deribit_telemetry": self._get_deribit_telemetry(acc, margin_sum),
+            "swarm": self.last_swarm_result,
         }
+
+    def _get_deribit_telemetry(self, acc: Any, margin_sum: Any) -> dict[str, Any]:
+        """Fetch live Deribit telemetry or generate synchronized fallback."""
+        default_spots = {"BTC": 60000.0, "ETH": 3000.0, "SOL": 150.0}
+        spot = default_spots.get(self.asset.upper(), 50000.0)
+        telemetry: dict[str, Any] = {
+            "connected": False,
+            "currency": self.asset,
+            "equity_usd": round(acc.equity, 2),
+            "equity_crypto": round(acc.equity / spot, 4),
+            "balance_crypto": round(acc.cash_balance / spot, 4),
+            "margin_balance_usd": round(acc.equity, 2),
+            "initial_margin_usd": round(margin_sum.initial_margin, 2),
+            "maintenance_margin_usd": round(margin_sum.maintenance_margin, 2),
+            "margin_utilization_pct": round(margin_sum.margin_utilization_pct, 2),
+            "open_orders_count": 0,
+            "open_positions_count": len(acc.positions),
+            "portfolio_delta": round(
+                sum(p.qty * (1 if p.side == "Buy" else -1) for p in acc.positions.values()), 4
+            ),
+        }
+        try:
+            summary = self.deribit_adapter.client.get_account_summary(currency=self.asset)
+            if summary:
+                telemetry["connected"] = True
+                telemetry["equity_crypto"] = round(summary.equity, 4)
+                telemetry["equity_usd"] = round(summary.equity * spot, 2)
+                telemetry["balance_crypto"] = round(summary.balance, 4)
+                telemetry["initial_margin_usd"] = round(summary.initial_margin * spot, 2)
+                telemetry["maintenance_margin_usd"] = round(summary.maintenance_margin * spot, 2)
+                telemetry["margin_utilization_pct"] = round(summary.margin_utilization_pct, 2)
+        except Exception:
+            pass
+        return telemetry
 
     async def register_subscriber(self, ws: WebSocket) -> None:
         """Add WebSocket subscriber and send initial snapshot."""
@@ -132,14 +183,89 @@ class BotManager:
         self._subscribers.difference_update(dead_clients)
 
     async def run_cycle(self) -> str:
-        """Execute a single evaluation cycle and broadcast state."""
+        """Execute a single multi-agent swarm evaluation cycle and broadcast state."""
         self.last_cycle_time = datetime.now(UTC).isoformat()
         try:
+            # 1. Fetch live market contracts & spot
+            try:
+                contracts, spot = await self.bot.fetch_live_data()
+            except Exception as e:
+                logger.warning("Could not fetch live data: %s", e)
+                contracts, spot = [], 0.0
+
+            # 2. Research Agent (Market Regime)
+            regime_report = None
+            if contracts and spot > 0:
+                try:
+                    regime_report = self.research_agent.analyze(
+                        asset=self.asset,
+                        contracts=contracts,
+                        historical_volatility=None,
+                        spot_price=spot,
+                    )
+                except Exception as e:
+                    logger.warning("Research agent analysis error: %s", e)
+
+            # 3. Trader Pool (Multi-Strategy Candidate Generation)
+            candidates = []
+            if regime_report and contracts:
+                try:
+                    candidates = self.trader_pool.generate_candidates(
+                        report=regime_report,
+                        contracts=contracts,
+                        spot_price=spot,
+                    )
+                except Exception as e:
+                    logger.warning("Trader pool candidate generation error: %s", e)
+
+            # 4. Risk Engine Assessment & Verdict Agent Execution
+            last_verdict = None
+            if candidates:
+                best_cand = candidates[0]
+                acc = self.bot.paper_account
+                calc = self.bot.margin_calculator
+                margin_sum = calc.evaluate_portfolio(acc.positions, acc.equity, spot)
+                risk_res = self.risk_engine.evaluate_candidate(
+                    candidate=best_cand,
+                    current_equity=acc.equity,
+                    current_margin_used=margin_sum.initial_margin,
+                    current_open_positions_count=len(acc.positions),
+                )
+                last_verdict = self.verdict_agent.process_candidate(
+                    candidate=best_cand,
+                    risk_res=risk_res,
+                    broker=self.deribit_adapter,
+                )
+
+            # 5. Position Management & Lifecycle
             status = await self.bot.run_cycle()
             self.last_cycle_status = status
             self.last_action_message = f"Cycle finished with status: {status}"
+
+            # 6. Record equity snapshot for 1D/1W/1M charts
+            acc = self.bot.paper_account
+            calc = self.bot.margin_calculator
+            margin_sum = calc.evaluate_portfolio(acc.positions, acc.equity, spot)
+            net_delta = sum(p.qty * (1 if p.side == "Buy" else -1) for p in acc.positions.values())
+            self.equity_history.record_snapshot(
+                currency=self.asset,
+                equity_usd=acc.equity,
+                balance_crypto=acc.cash_balance / max(1.0, spot) if spot > 0 else 0.0,
+                margin_used=margin_sum.initial_margin,
+                margin_utilization_pct=margin_sum.margin_utilization_pct,
+                net_delta=net_delta,
+            )
+
+            # 7. Store Swarm telemetry for UI
+            self.last_swarm_result = {
+                "regime": regime_report.to_dict() if regime_report else None,
+                "candidates_count": len(candidates),
+                "candidates": [c.to_dict() for c in candidates[:5]],
+                "last_verdict": last_verdict.to_dict() if last_verdict else None,
+            }
+
         except Exception as e:
-            logger.exception("Error executing bot cycle: %s", e)
+            logger.exception("Error executing bot swarm cycle: %s", e)
             self.last_cycle_status = "ERROR"
             self.last_action_message = f"Error: {e}"
 

@@ -1664,6 +1664,24 @@ def create_app(
         snapshots = storage.get_snapshots(account_id=account_id, limit=limit)
         return JSONResponse(content={"snapshots": snapshots})
 
+    @app.get("/api/v1/bot/equity-history")
+    async def get_bot_equity_history(
+        timeframe: str = "1d",
+        currency: str | None = None,
+    ) -> JSONResponse:
+        from options_app.bot_manager import get_bot_manager
+
+        bm = get_bot_manager()
+        history = bm.equity_history.get_history(timeframe=timeframe, currency=currency)
+        return JSONResponse(
+            content={
+                "timeframe": timeframe,
+                "currency": currency or bm.asset,
+                "count": len(history),
+                "data": history,
+            }
+        )
+
     return app
 
 
