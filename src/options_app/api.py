@@ -333,6 +333,9 @@ class ScanFilters(BaseModel):
     include_unvalidated: bool = True
     strategies: list[str] = Field(default_factory=lambda: ["long_call", "long_put"])
     max_results: int | None = Field(default=None, ge=1)
+    ic_target_short_delta: float = Field(default=0.15, gt=0, lt=1)
+    ic_target_wing_delta: float = Field(default=0.03, gt=0, lt=1)
+    ic_min_iv_rv_spread: float | None = Field(default=None)
 
     @field_validator(
         "risk_free_rate",
@@ -354,6 +357,9 @@ class ScanFilters(BaseModel):
         "assumed_spread_bps",
         "quantity",
         "contract_multiplier",
+        "ic_target_short_delta",
+        "ic_target_wing_delta",
+        "ic_min_iv_rv_spread",
         mode="before",
     )
     @classmethod

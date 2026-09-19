@@ -99,6 +99,9 @@ class ScanRequest:
     max_results: int | None = None
     surface_config: SurfaceConfig | None = None
     valuation_mode: ValuationMode = "executable"
+    ic_target_short_delta: float = 0.15
+    ic_target_wing_delta: float = 0.03
+    ic_min_iv_rv_spread: float | None = None
 
     def __post_init__(self) -> None:
         _finite("risk_free_rate", self.risk_free_rate)
@@ -122,11 +125,14 @@ class ScanRequest:
             "assumed_spread_bps",
             "quantity",
             "contract_multiplier",
+            "ic_target_short_delta",
+            "ic_target_wing_delta",
+            "ic_min_iv_rv_spread",
         ):
             value = getattr(self, name)
             if value is not None:
                 _finite(name, value)
-                if name not in {"min_iv_edge", "risk_free_rate"} and value < 0:
+                if name not in {"min_iv_edge", "risk_free_rate", "ic_min_iv_rv_spread"} and value < 0:
                     raise ValueError(f"{name} cannot be negative")
         if self.min_dte is not None and self.max_dte is not None and self.min_dte > self.max_dte:
             raise ValueError("min_dte cannot exceed max_dte")
@@ -262,6 +268,9 @@ class Opportunity:
     expectancy_basis: str | None = None
     quality_gate_status: str = "unavailable"
     rejection_reasons: tuple[str, ...] = ()
+    net_credit: float | None = None
+    short_delta: float | None = None
+    wing_delta: float | None = None
 
 
 @dataclass(frozen=True)
@@ -560,14 +569,25 @@ def scan_opportunities(
     ]
     if request.valuation_mode == "synthetic":
         opportunities = _apply_synthetic_filters(opportunities, request)
-    if request.valuation_mode == "theoretical":
-        opportunities.sort(
-            key=lambda item: (-item.fair_price, -item.iv_edge, item.asset, item.symbol)
-        )
-    else:
-        opportunities.sort(
-            key=lambda item: (-item.edge_after_costs, -item.iv_edge, item.asset, item.symbol)
-        )
+    def _opportunity_sort_key(item: Opportunity) -> tuple:
+        if item.strategy == "iron_condor" and len(item.legs) == 4:
+            s_delta = item.short_delta if item.short_delta is not None else (abs(item.legs[1].delta) + abs(item.legs[2].delta)) / 2.0
+            w_delta = item.wing_delta if item.wing_delta is not None else (abs(item.legs[0].delta) + abs(item.legs[3].delta)) / 2.0
+            delta_dist = abs(s_delta - request.ic_target_short_delta) + abs(
+                w_delta - request.ic_target_wing_delta
+            )
+            edge_val = item.edge_after_costs if item.edge_after_costs is not None else 0.0
+            if request.valuation_mode == "theoretical":
+                return (round(delta_dist, 3), -item.fair_price, -item.iv_edge, item.asset, item.symbol)
+            else:
+                return (round(delta_dist, 3), -edge_val, -item.iv_edge, item.asset, item.symbol)
+        edge_val = item.edge_after_costs if item.edge_after_costs is not None else 0.0
+        if request.valuation_mode == "theoretical":
+            return (0.0, -item.fair_price, -item.iv_edge, item.asset, item.symbol)
+        else:
+            return (0.0, -edge_val, -item.iv_edge, item.asset, item.symbol)
+
+    opportunities.sort(key=_opportunity_sort_key)
     if request.max_results is not None:
         opportunities = opportunities[: request.max_results]
     return ScanResult(
@@ -611,7 +631,9 @@ def scan_opportunities_with_historical_context(
 
     The history context is attached only after :func:`scan_opportunities`
     completes.  It therefore cannot alter the current surface, fair IV,
-    ranking, or evidence gates.
+    ranking, or evidence gates for standard strategies. If ic_min_iv_rv_spread
+    is specified, iron condor opportunities are filtered against the asset's
+    realized volatility regime.
     """
 
     if not isinstance(historical_volatility, HistoricalVolatilityContexts):
@@ -621,6 +643,47 @@ def scan_opportunities_with_historical_context(
         tuple(_selected_assets(universe, request)),
         requested_at=_as_utc(universe.valuation_time),
     )
+    if request.ic_min_iv_rv_spread is not None:
+        context_by_asset = {
+            c.asset: c for c in contexts if c.available and c.historical_volatility is not None
+        }
+        kept_ops = []
+        new_rejections = list(scan.rejections)
+        req_thresh = (
+            request.ic_min_iv_rv_spread
+            if request.ic_min_iv_rv_spread > 1.0
+            else request.ic_min_iv_rv_spread * 100.0
+        )
+        for op in scan.opportunities:
+            if op.strategy == "iron_condor" and op.asset in context_by_asset:
+                ctx = context_by_asset[op.asset]
+                rv = ctx.historical_volatility
+                short_legs = [l for l in op.legs if l.position < 0]
+                if short_legs:
+                    iv = sum(l.market_iv for l in short_legs) / len(short_legs)
+                else:
+                    iv = sum(l.market_iv for l in op.legs) / max(1, len(op.legs))
+                eff_spread = (iv - rv) * 100.0 if max(iv, rv) <= 2.0 else (iv - rv)
+                if eff_spread < req_thresh:
+                    new_rejections.append(
+                        RejectedCandidate(
+                            asset=op.asset,
+                            symbol=op.symbol,
+                            option_type="multi",
+                            strike=op.strike,
+                            expiry_at=op.expiry_at,
+                            reasons=("iv_rv_spread_below_minimum",),
+                            messages=(
+                                f"IV - RV spread {eff_spread:.2f} is below threshold {req_thresh:.2f}",
+                            ),
+                            quote_timestamp=op.quote_timestamp,
+                            strategy="iron_condor",
+                        )
+                    )
+                    continue
+            kept_ops.append(op)
+        scan = replace(scan, opportunities=tuple(kept_ops), rejections=tuple(new_rejections))
+
     return HistoricalContextScanResult(
         scan=scan,
         historical_volatility_contexts=contexts,
@@ -826,6 +889,7 @@ def _with_synthetic_quote_metrics(
         valuation_mode="synthetic",
         quote_source="synthetic_mark_or_fair_value",
         legs=legs,
+        net_credit=-entry if opportunity.strategy == "iron_condor" else opportunity.net_credit,
     )
 
 
@@ -1158,6 +1222,9 @@ def _append_theoretical_multi_leg(
                 )
                 for leg, value, position in zip(legs, fair_values, positions)
             ),
+            net_credit=-ask_price if strategy == "iron_condor" and ask_price is not None else None,
+            short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
+            wing_delta=(abs(legs[0].delta) + abs(legs[3].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
         )
     )
 
@@ -1355,7 +1422,7 @@ def _scan_multi_legs(
             continue
         for _, contracts in sorted(by_expiry.items()):
             generated = (
-                _iron_condor_leg_sets(contracts)
+                _iron_condor_leg_sets(contracts, request)
                 if strategy == "iron_condor"
                 else _iron_butterfly_leg_sets(contracts)
             )
@@ -1741,6 +1808,7 @@ def _scan_overlay_candidate(
 
 def _iron_condor_leg_sets(
     contracts: tuple[OptionContract, ...],
+    request: ScanRequest | None = None,
 ) -> Iterator[tuple[OptionContract, ...]]:
     puts = tuple(
         sorted((item for item in contracts if _option_kind(item) == "put"), key=_contract_order)
@@ -1748,17 +1816,65 @@ def _iron_condor_leg_sets(
     calls = tuple(
         sorted((item for item in contracts if _option_kind(item) == "call"), key=_contract_order)
     )
+    target_short = request.ic_target_short_delta if request is not None else 0.15
+    target_wing = request.ic_target_wing_delta if request is not None else 0.03
+
+    def _effective_delta(c: OptionContract) -> float:
+        if c.delta is not None and not math.isnan(c.delta) and abs(c.delta) > 1e-4:
+            return c.delta
+        spot = c.spot_price
+        if spot <= 0:
+            return 0.5
+        m = c.strike / spot
+        if _option_kind(c) == "call":
+            return max(0.001, min(0.999, 0.5 - (m - 1.0) * 2.0))
+        else:
+            return max(-0.999, min(-0.001, -0.5 + (1.0 - m) * 2.0))
+
+    put_pairs = []
     for put_wing, short_put in combinations(puts, 2):
-        for short_call, call_wing in combinations(calls, 2):
-            spot = put_wing.spot_price
-            if spot > 0.0:
-                if (
-                    put_wing.strike < short_put.strike < spot < short_call.strike < call_wing.strike
-                ):
-                    yield (put_wing, short_put, short_call, call_wing)
-            else:
-                if put_wing.strike < short_put.strike < short_call.strike < call_wing.strike:
-                    yield (put_wing, short_put, short_call, call_wing)
+        spot = put_wing.spot_price
+        if spot > 0.0:
+            if not (put_wing.strike < short_put.strike < spot):
+                continue
+        else:
+            if not (put_wing.strike < short_put.strike):
+                continue
+        sp_delta = abs(_effective_delta(short_put))
+        pw_delta = abs(_effective_delta(put_wing))
+        score_put = abs(sp_delta - target_short) + abs(pw_delta - target_wing)
+        put_pairs.append((score_put, put_wing, short_put))
+
+    call_pairs = []
+    for short_call, call_wing in combinations(calls, 2):
+        spot = short_call.spot_price
+        if spot > 0.0:
+            if not (spot < short_call.strike < call_wing.strike):
+                continue
+        else:
+            if not (short_call.strike < call_wing.strike):
+                continue
+        sc_delta = abs(_effective_delta(short_call))
+        cw_delta = abs(_effective_delta(call_wing))
+        score_call = abs(sc_delta - target_short) + abs(cw_delta - target_wing)
+        call_pairs.append((score_call, short_call, call_wing))
+
+    if not put_pairs or not call_pairs:
+        return
+
+    put_pairs.sort(key=lambda item: item[0])
+    call_pairs.sort(key=lambda item: item[0])
+
+    candidates = []
+    for p_score, put_wing, short_put in put_pairs:
+        for c_score, short_call, call_wing in call_pairs:
+            if put_wing.strike < short_put.strike < short_call.strike < call_wing.strike:
+                candidates.append((p_score + c_score, put_wing, short_put, short_call, call_wing))
+
+    candidates.sort(key=lambda item: item[0])
+
+    for _, put_wing, short_put, short_call, call_wing in candidates:
+        yield (put_wing, short_put, short_call, call_wing)
 
 
 def _iron_butterfly_leg_sets(
@@ -2004,6 +2120,9 @@ def _scan_multi_leg_candidate(
                 for leg, value, position in zip(legs, valued, positions)
             ),
             breakevens=breakevens,
+            net_credit=-entry if strategy == "iron_condor" else None,
+            short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
+            wing_delta=(abs(legs[0].delta) + abs(legs[3].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
         )
     )
 

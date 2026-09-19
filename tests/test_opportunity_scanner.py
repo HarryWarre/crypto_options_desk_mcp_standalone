@@ -9,9 +9,14 @@ from bybit_api.options_market_data import (
     OptionContract,
     OptionDataQualityIssue,
 )
+from options_lib.historical_volatility import (
+    HistoricalVolatilityContext,
+    HistoricalVolatilityContexts,
+)
 from options_lib.opportunity_scanner import (
     ScanRequest,
     scan_opportunities,
+    scan_opportunities_with_historical_context,
 )
 
 VALUATION_TIME = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
@@ -987,5 +992,109 @@ def test_multi_leg_long_strangle_excludes_deep_otm_strikes_with_moneyness_bounds
         strikes = [leg.strike for leg in opp.legs]
         assert 50 not in strikes, f"Strike 50 should be excluded by moneyness: {strikes}"
         assert 160 not in strikes, f"Strike 160 should be excluded by moneyness: {strikes}"
+
+
+def test_iron_condor_prioritizes_bot_target_deltas() -> None:
+    # Build universe with multiple OTM strikes and deltas:
+    # Outer boundaries to support surface fitting: K60, K140
+    # Puts: K70 (-0.03 delta), K80 (-0.08 delta), K90 (-0.15 delta), K95 (-0.30 delta)
+    # Calls: K105 (+0.30 delta), K110 (+0.15 delta), K120 (+0.08 delta), K130 (+0.03 delta)
+    contracts = [
+        # Boundary strikes (ensures surface covers [60, 140])
+        replace(_contract("BTC", 60, option_type="Put", ask=0.10, bid=0.08, delta=-0.01), spot_price=100.0),
+        replace(_contract("BTC", 140, option_type="Call", ask=0.10, bid=0.08, delta=0.01), spot_price=100.0),
+        # Puts (spot=100.0)
+        replace(_contract("BTC", 70, option_type="Put", ask=0.20, bid=0.15, delta=-0.03), spot_price=100.0),
+        replace(_contract("BTC", 80, option_type="Put", ask=0.60, bid=0.50, delta=-0.08), spot_price=100.0),
+        replace(_contract("BTC", 90, option_type="Put", ask=1.50, bid=1.40, delta=-0.15), spot_price=100.0),
+        replace(_contract("BTC", 95, option_type="Put", ask=3.00, bid=2.80, delta=-0.30), spot_price=100.0),
+        # Calls (spot=100.0)
+        replace(_contract("BTC", 105, option_type="Call", ask=3.00, bid=2.80, delta=0.30), spot_price=100.0),
+        replace(_contract("BTC", 110, option_type="Call", ask=1.50, bid=1.40, delta=0.15), spot_price=100.0),
+        replace(_contract("BTC", 120, option_type="Call", ask=0.60, bid=0.50, delta=0.08), spot_price=100.0),
+        replace(_contract("BTC", 130, option_type="Call", ask=0.20, bid=0.15, delta=0.03), spot_price=100.0),
+    ]
+
+    result = scan_opportunities(
+        _universe(*contracts),
+        ScanRequest(
+            assets=("BTC",),
+            risk_free_rate=0.0,
+            strategies=("iron_condor",),
+            ic_target_short_delta=0.15,
+            ic_target_wing_delta=0.03,
+            valuation_mode="synthetic",
+        ),
+    )
+
+    assert result.opportunities, "Expected at least one iron condor opportunity"
+    top_candidate = result.opportunities[0]
+    strikes = tuple(leg.strike for leg in top_candidate.legs)
+    # The top candidate should precisely select: Put Wing=70, Short Put=90, Short Call=110, Call Wing=130
+    assert strikes == (70.0, 90.0, 110.0, 130.0), f"Expected bot strikes (70, 90, 110, 130), got {strikes}"
+    assert top_candidate.short_delta == pytest.approx(0.15, abs=0.01)
+    assert top_candidate.wing_delta == pytest.approx(0.03, abs=0.01)
+    assert top_candidate.net_credit is not None
+    assert top_candidate.max_loss is not None
+
+
+def test_iron_condor_iv_rv_regime_filtering() -> None:
+    # Spot 100, market_iv = 0.50
+    contracts = [
+        # Boundary strikes to cover interpolation range
+        replace(_contract("BTC", 60, option_type="Put", ask=0.10, bid=0.08, delta=-0.01, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 140, option_type="Call", ask=0.10, bid=0.08, delta=0.01, mark_iv=0.50), spot_price=100.0),
+        # Intermediary strikes for surface observations
+        replace(_contract("BTC", 80, option_type="Put", ask=0.60, bid=0.50, delta=-0.08, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 120, option_type="Call", ask=0.60, bid=0.50, delta=0.08, mark_iv=0.50), spot_price=100.0),
+        # Candidate condor legs
+        replace(_contract("BTC", 70, option_type="Put", ask=0.20, bid=0.15, delta=-0.03, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 90, option_type="Put", ask=1.50, bid=1.40, delta=-0.15, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 110, option_type="Call", ask=1.50, bid=1.40, delta=0.15, mark_iv=0.50), spot_price=100.0),
+        replace(_contract("BTC", 130, option_type="Call", ask=0.20, bid=0.15, delta=0.03, mark_iv=0.50), spot_price=100.0),
+    ]
+
+    universe = _universe(*contracts)
+    request = ScanRequest(
+        assets=("BTC",),
+        risk_free_rate=0.0,
+        strategies=("iron_condor",),
+        ic_min_iv_rv_spread=6.0,  # Min 6.0 vol points
+        valuation_mode="synthetic",
+    )
+
+    # 1. When RV is 0.40: IV (0.50) - RV (0.40) = 10.0 vol points >= 6.0 threshold -> Accepted
+    ctx_high_spread = HistoricalVolatilityContext(
+        asset="BTC",
+        period_days=30,
+        available=True,
+        status="available",
+        historical_volatility=0.40,
+        as_of=VALUATION_TIME,
+        requested_at=VALUATION_TIME,
+        retrieved_at=VALUATION_TIME,
+    )
+    result_high = scan_opportunities_with_historical_context(
+        universe, request, HistoricalVolatilityContexts((ctx_high_spread,))
+    )
+    assert len(result_high.scan.opportunities) >= 1, "Expected candidates to pass regime filter"
+
+    # 2. When RV is 0.48: IV (0.50) - RV (0.48) = 2.0 vol points < 6.0 threshold -> Rejected
+    ctx_low_spread = HistoricalVolatilityContext(
+        asset="BTC",
+        period_days=30,
+        available=True,
+        status="available",
+        historical_volatility=0.48,
+        as_of=VALUATION_TIME,
+        requested_at=VALUATION_TIME,
+        retrieved_at=VALUATION_TIME,
+    )
+    result_low = scan_opportunities_with_historical_context(
+        universe, request, HistoricalVolatilityContexts((ctx_low_spread,))
+    )
+    assert len(result_low.scan.opportunities) == 0, "Expected candidate to be rejected by regime filter"
+    assert any("iv_rv_spread_below_minimum" in r.reasons for r in result_low.scan.rejections)
+
 
 
