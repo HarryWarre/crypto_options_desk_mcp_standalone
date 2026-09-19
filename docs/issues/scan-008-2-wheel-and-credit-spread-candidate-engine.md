@@ -2,7 +2,7 @@
 
 **Mã Sub-Issue:** SCAN-008.2  
 **Master Issue:** [SCAN-008](file:///Users/hoangviet/Flowsurface/crypto_options_desk_mcp/docs/issues/scan-008-bot-aligned-strategy-scanner.md)  
-**Trạng thái:** To Do  
+**Trạng thái:** Completed  
 **Target:** `main`  
 **File cần sửa:**
 - `src/options_lib/opportunity_scanner.py`
@@ -53,7 +53,7 @@ Trong `opportunity_scanner.py`, các chiến lược `bull_put_vertical` và `be
 
 ## 3. Tiêu Chí Nghiệm Thu (Acceptance Criteria)
 
-- [ ] Yêu cầu quét `strategies=("wheel_csp",)` trả về danh sách các Put hợp lệ kèm chỉ số APY quy đổi rõ ràng.
-- [ ] Yêu cầu quét `strategies=("wheel_cc",)` với `wheel_cost_basis=90000` không sinh ra bất kỳ Call nào có Strike $< 90,000$.
-- [ ] Vertical Credit Spreads có tỷ lệ Net Credit / Width $< 15\%$ sẽ bị loại bỏ hoặc đánh dấu không đủ điều kiện bot.
-- [ ] Viết đầy đủ unit tests kiểm thử logic sinh ứng viên The Wheel và Credit Spread.
+- [x] Yêu cầu quét `strategies=("wheel_csp",)` trả về danh sách các Put hợp lệ kèm chỉ số APY quy đổi rõ ràng.
+- [x] Yêu cầu quét `strategies=("wheel_cc",)` với `wheel_cost_basis=90000` không sinh ra bất kỳ Call nào có Strike $< 90,000$.
+- [x] Vertical Credit Spreads có tỷ lệ Net Credit / Width $< 15\%$ sẽ bị loại bỏ hoặc đánh dấu không đủ điều kiện bot.
+- [x] Viết đầy đủ unit tests kiểm thử logic sinh ứng viên The Wheel và Credit Spread.
