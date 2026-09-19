@@ -36,6 +36,11 @@ class WheelBacktestConfig:
     slippage_bps: float = 5.0
     fee_per_contract: float = 1.5
     max_concurrent_positions: int = 2
+    dynamic_sizing: bool = True
+    risk_pct_per_trade: float = 0.02
+    max_margin_utilization: float = 0.60
+    asset: str = "BTC"
+    fixed_qty: float | None = None
 
 
 @dataclass
@@ -314,9 +319,23 @@ class WheelBacktestEngine:
             slip = mark * (self.config.slippage_bps / 10000.0)
             entry_credit = max(0.01, mark - slip)
 
-            # Sizing: fixed notional allocation per position based on initial capital
-            notional_per_pos = self.config.initial_capital / max(1, self.config.max_concurrent_positions)
-            qty = max(0.001, round(notional_per_pos / max(0.0001, strike), 4))
+            # Sizing
+            if self.config.fixed_qty is not None:
+                qty = self.config.fixed_qty
+            elif self.config.dynamic_sizing:
+                lot_size = 0.1 if self.config.asset.upper() == "BTC" else 1.0
+                alloc_cash = min(cash, self.config.initial_capital / max(1, self.config.max_concurrent_positions))
+                raw_qty = alloc_cash / max(0.0001, strike)
+                lots = round(raw_qty / lot_size)
+                if lots == 0 and cash >= strike * lot_size * 0.9:
+                    lots = 1
+                qty = max(lot_size, round(lots * lot_size, 4))
+            else:
+                notional_per_pos = self.config.initial_capital / max(1, self.config.max_concurrent_positions)
+                qty = max(0.001, round(notional_per_pos / max(0.0001, strike), 4))
+
+            if qty <= 0:
+                return None
 
             return WheelTradeRecord(
                 trade_id=f"csp_{len(sub)}_{int(strike)}",
@@ -355,8 +374,24 @@ class WheelBacktestEngine:
             slip = mark * (self.config.slippage_bps / 10000.0)
             entry_credit = max(0.01, mark - slip)
 
-            notional_per_pos = self.config.initial_capital / max(1, self.config.max_concurrent_positions)
-            qty = spot_holdings if spot_holdings > 0 else max(0.001, round(notional_per_pos / max(0.0001, strike), 4))
+            if spot_holdings > 0:
+                qty = spot_holdings
+            elif self.config.fixed_qty is not None:
+                qty = self.config.fixed_qty
+            elif self.config.dynamic_sizing:
+                lot_size = 0.1 if self.config.asset.upper() == "BTC" else 1.0
+                alloc_cash = min(cash, self.config.initial_capital / max(1, self.config.max_concurrent_positions))
+                raw_qty = alloc_cash / max(0.0001, strike)
+                lots = round(raw_qty / lot_size)
+                if lots == 0 and cash >= strike * lot_size * 0.9:
+                    lots = 1
+                qty = max(lot_size, round(lots * lot_size, 4))
+            else:
+                notional_per_pos = self.config.initial_capital / max(1, self.config.max_concurrent_positions)
+                qty = max(0.001, round(notional_per_pos / max(0.0001, strike), 4))
+
+            if qty <= 0:
+                return None
 
             return WheelTradeRecord(
                 trade_id=f"cc_{len(sub)}_{int(strike)}",

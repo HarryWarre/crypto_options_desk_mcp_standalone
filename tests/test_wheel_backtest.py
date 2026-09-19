@@ -93,3 +93,19 @@ def test_wheel_backtest_empty_dataframe():
     assert res.total_trades == 0
     assert res.total_net_pnl == 0.0
 
+
+def test_wheel_dynamic_sizing():
+    df = _generate_synthetic_chain_history(days=15)
+    cfg = WheelBacktestConfig(
+        initial_capital=10000.0,
+        dynamic_sizing=True,
+        asset="BTC",
+    )
+    engine = WheelBacktestEngine(cfg)
+    res = engine.run(df)
+    assert res.total_trades > 0
+    for tr in res.trades:
+        assert tr.qty >= 0.1
+        assert round(tr.qty % 0.1, 4) in (0.0, 0.1)
+
+
