@@ -1352,3 +1352,141 @@ class TestBotRegimeBackwardCompatibility:
         )
         assert len(result.scan.opportunities) == 0, "ic_min_iv_rv_spread should work independently"
         assert any("iv_rv_spread_below_minimum" in r.reasons for r in result.scan.rejections)
+
+
+# ─── SCAN-008.2: Wheel and Credit Spread Tests ────────────────────────────────
+
+def _wheel_fixture() -> NormalizedOptionUniverse:
+    """Universe with BTC spot=100, Puts at 70/90/100/110, Calls at 70/90/100/110/120/130."""
+    contracts = [
+        # Deep OTM Put for boundary
+        _contract("BTC", 70, option_type="Put", ask=0.20, bid=0.15, delta=-0.05, mark_iv=0.40),
+        # OTM Put (strike 90 < spot 100)
+        _contract("BTC", 90, option_type="Put", ask=2.0, bid=1.8, delta=-0.25, mark_iv=0.40),
+        # ATM Put (strike 100)
+        _contract("BTC", 100, option_type="Put", ask=5.0, bid=4.5, delta=-0.50, mark_iv=0.40),
+        # ITM Put (strike 110 > spot 100)
+        _contract("BTC", 110, option_type="Put", ask=12.0, bid=11.0, delta=-0.80, mark_iv=0.40),
+        # Boundary calls for surface
+        _contract("BTC", 70, option_type="Call", ask=31.0, bid=30.0, delta=0.95, mark_iv=0.40),
+        _contract("BTC", 90, option_type="Call", ask=12.0, bid=11.0, delta=0.75, mark_iv=0.40),
+        _contract("BTC", 100, option_type="Call", ask=5.0, bid=4.5, delta=0.50, mark_iv=0.40),
+        # OTM Calls
+        _contract("BTC", 110, option_type="Call", ask=2.0, bid=1.8, delta=0.25, mark_iv=0.40),
+        _contract("BTC", 120, option_type="Call", ask=0.50, bid=0.40, delta=0.08, mark_iv=0.40),
+        _contract("BTC", 130, option_type="Call", ask=0.10, bid=0.08, delta=0.02, mark_iv=0.40),
+    ]
+    return _universe(*contracts)
+
+
+class TestWheelStrategyScanner:
+    """SCAN-008.2: Tests for The Wheel strategy scanner (wheel_csp & wheel_cc)."""
+
+    def test_wheel_csp_scan_produces_valid_put_with_apy(self) -> None:
+        """Scanning wheel_csp should produce OTM put opportunity with positive APY and net_credit."""
+        universe = _wheel_fixture()
+        request = ScanRequest(
+            risk_free_rate=0.0,
+            strategies=("wheel_csp",),
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities(universe, request)
+        csps = [op for op in result.opportunities if op.strategy == "wheel_csp"]
+        assert len(csps) >= 1, "Should find at least 1 valid Cash-Secured Put opportunity"
+        first_csp = csps[0]
+        assert first_csp.option_type.lower() == "put"
+        assert first_csp.strike <= 100.0, "Wheel CSP strike must be <= spot"
+        assert first_csp.requires_underlying_position is False
+        assert first_csp.net_credit is not None and first_csp.net_credit > 0
+        assert "APY:" in first_csp.risk_note
+
+    def test_wheel_csp_rejects_itm_put(self) -> None:
+        """Wheel CSP rejects puts with strike > spot with short_put_itm."""
+        universe = _wheel_fixture()
+        request = ScanRequest(
+            risk_free_rate=0.0,
+            strategies=("wheel_csp",),
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities(universe, request)
+        itm_rejections = [
+            r for r in result.rejections
+            if r.strategy == "wheel_csp" and "short_put_itm" in r.reasons
+        ]
+        assert len(itm_rejections) >= 1, "Strike 110 Put should be rejected as ITM for Wheel CSP"
+        assert all(r.strike > 100.0 for r in itm_rejections)
+
+    def test_wheel_csp_enforces_min_apy_in_bot_regime(self) -> None:
+        """When enforce_bot_regime=True, APY below wheel_min_apy is rejected with apy_below_minimum."""
+        universe = _wheel_fixture()
+        # Require 500% APY which is impossible for these 10-day options
+        request = ScanRequest(
+            risk_free_rate=0.0,
+            strategies=("wheel_csp",),
+            enforce_bot_regime=True,
+            wheel_min_apy=5.0,  # 500% APY minimum
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities(universe, request)
+        csps = [op for op in result.opportunities if op.strategy == "wheel_csp"]
+        assert len(csps) == 0, "No CSP should meet 500% APY requirement"
+        assert any("apy_below_minimum" in r.reasons for r in result.rejections if r.strategy == "wheel_csp")
+
+    def test_wheel_cc_filters_strikes_below_cost_basis(self) -> None:
+        """When wheel_cost_basis is set, any call with strike < cost_basis is rejected."""
+        universe = _wheel_fixture()
+        # Set cost_basis to 115. Strike 110 Call should be rejected, only 120+ Call allowed.
+        request = ScanRequest(
+            risk_free_rate=0.0,
+            strategies=("wheel_cc",),
+            wheel_cost_basis=115.0,
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities(universe, request)
+        calls = [op for op in result.opportunities if op.strategy == "wheel_cc"]
+        assert all(op.strike >= 115.0 for op in calls), "All accepted Wheel CC strikes must be >= cost basis (115)"
+        cost_basis_rejections = [
+            r for r in result.rejections
+            if r.strategy == "wheel_cc" and "strike_below_cost_basis" in r.reasons
+        ]
+        assert len(cost_basis_rejections) >= 1, "Should reject calls below cost basis"
+        assert any(r.strike == 110.0 for r in cost_basis_rejections)
+
+    def test_wheel_cc_requires_underlying_position(self) -> None:
+        """Wheel Covered Call requires underlying coin holding."""
+        universe = _wheel_fixture()
+        request = ScanRequest(
+            risk_free_rate=0.0,
+            strategies=("wheel_cc",),
+            wheel_cost_basis=100.0,
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities(universe, request)
+        calls = [op for op in result.opportunities if op.strategy == "wheel_cc"]
+        assert len(calls) >= 1
+        for op in calls:
+            assert op.requires_underlying_position is True
+            assert op.option_type.lower() == "call"
+
+
+class TestCreditSpreadScanEnhancements:
+    """SCAN-008.2: Tests for Vertical Credit Spreads (BOT-007)."""
+
+    def test_credit_spread_credit_ratio_filter_rejects_thin_credit(self) -> None:
+        """Vertical credit spread with credit/width < 15% is rejected when enforce_bot_regime=True."""
+        universe = _vertical_surface_fixture()
+        request = ScanRequest(
+            risk_free_rate=0.0,
+            strategies=("bull_put_vertical",),
+            enforce_bot_regime=True,
+            credit_spread_min_credit_ratio=0.40,
+            valuation_mode="synthetic",
+        )
+        result = scan_opportunities_with_historical_context(
+            universe, request, _make_hv_context(rv=0.40)
+        )
+        rejections = [
+            r for r in result.scan.rejections
+            if "credit_ratio_below_minimum" in r.reasons
+        ]
+        assert len(rejections) >= 1, "Should reject vertical credit spreads below minimum credit ratio"

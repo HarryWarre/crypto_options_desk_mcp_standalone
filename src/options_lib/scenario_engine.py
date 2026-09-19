@@ -50,6 +50,8 @@ class StrategyDefinition:
         "calendar_spread",
         "butterfly",
         "broken_wing_butterfly",
+        "wheel_csp",
+        "wheel_cc",
     ]
     legs: tuple[OptionLeg, ...]
 
@@ -354,12 +356,16 @@ def _payoff_bounds(
     if strategy.strategy_type == "calendar_spread":
         return max(0.0, net_debit), math.inf, ()
 
-    if strategy.strategy_type in {"protective_put", "covered_call"}:
+    if strategy.strategy_type in {"protective_put", "covered_call", "wheel_csp", "wheel_cc"}:
         # The underlying position is implicit for overlay strategies.  The
         # scenario engine therefore reports the option overlay's entry risk
         # and does not invent a stock cost basis or quantity.
         if strategy.strategy_type == "protective_put":
             return max(0.0, net_debit), math.inf, ()
+        if strategy.strategy_type == "wheel_csp":
+            leg = legs[0]
+            premium = -net_debit / scale
+            return max(0.0, leg.strike - premium) * scale, max(0.0, -net_debit), (leg.strike - premium,)
         return math.inf, max(0.0, -net_debit), ()
 
     if strategy.strategy_type in {
@@ -397,7 +403,7 @@ def _validate_strategy(strategy: StrategyDefinition) -> None:
     if strategy.strategy_type in {"long_straddle", "long_strangle"}:
         _validate_long_volatility_strategy(strategy)
         return
-    if strategy.strategy_type in {"protective_put", "covered_call"}:
+    if strategy.strategy_type in {"protective_put", "covered_call", "wheel_csp", "wheel_cc"}:
         _validate_overlay_strategy(strategy)
         return
     if strategy.strategy_type == "calendar_spread":
@@ -482,7 +488,7 @@ def _validate_overlay_strategy(strategy: StrategyDefinition) -> None:
     if len(strategy.legs) != 1:
         raise ScenarioValidationError("overlay strategy must contain one option leg")
     leg = strategy.legs[0]
-    expected_type = "put" if strategy.strategy_type == "protective_put" else "call"
+    expected_type = "put" if strategy.strategy_type in {"protective_put", "wheel_csp"} else "call"
     expected_position = 1 if strategy.strategy_type == "protective_put" else -1
     if leg.position != expected_position:
         position_name = "long" if expected_position > 0 else "short"

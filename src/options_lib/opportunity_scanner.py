@@ -54,6 +54,8 @@ Strategy = Literal[
     "calendar_spread",
     "butterfly",
     "broken_wing_butterfly",
+    "wheel_csp",
+    "wheel_cc",
 ]
 EvidenceStatus = Literal["not_validated", "insufficient_evidence"]
 ValuationMode = Literal["executable", "theoretical", "synthetic"]
@@ -108,6 +110,8 @@ class ScanRequest:
     calendar_max_spot_drift_pct: float = 2.0
     butterfly_min_iv_rv_spread: float = 5.0
     credit_spread_min_credit_ratio: float = 0.15
+    wheel_cost_basis: float | None = None
+    wheel_min_apy: float = 0.15
 
     def __post_init__(self) -> None:
         _finite("risk_free_rate", self.risk_free_rate)
@@ -139,6 +143,8 @@ class ScanRequest:
             "calendar_max_spot_drift_pct",
             "butterfly_min_iv_rv_spread",
             "credit_spread_min_credit_ratio",
+            "wheel_cost_basis",
+            "wheel_min_apy",
         ):
             value = getattr(self, name)
             if value is not None:
@@ -345,12 +351,14 @@ _STRUCTURED_STRATEGIES = (
     "butterfly",
     "broken_wing_butterfly",
 )
+_WHEEL_STRATEGIES = ("wheel_csp", "wheel_cc")
 _SUPPORTED_STRATEGIES = (
     _SINGLE_LEG_STRATEGIES
     + _VERTICAL_STRATEGIES
     + _MULTI_LEG_STRATEGIES
     + _OVERLAY_STRATEGIES
     + _STRUCTURED_STRATEGIES
+    + _WHEEL_STRATEGIES
 )
 _MAX_MULTI_LEG_CANDIDATES = 10_000
 
@@ -562,6 +570,14 @@ def scan_opportunities(
             )
         if any(strategy in request.strategies for strategy in _OVERLAY_STRATEGIES):
             _scan_underlying_overlays(
+                asset_contracts,
+                request,
+                universe.valuation_time,
+                opportunities,
+                rejections,
+            )
+        if any(strategy in request.strategies for strategy in _WHEEL_STRATEGIES):
+            _scan_wheel_strategies(
                 asset_contracts,
                 request,
                 universe.valuation_time,
@@ -799,7 +815,10 @@ def scan_opportunities_with_historical_context(
             if request.enforce_bot_regime and op.strategy in {"bull_put_vertical", "bear_call_vertical"}:
                 if len(op.legs) == 2:
                     width = abs(op.legs[1].strike - op.legs[0].strike)
-                    credit = -op.entry_price if op.entry_price < 0 else (op.net_credit or 0.0)
+                    entry = op.executable_entry if op.executable_entry is not None else op.estimated_entry
+                    if entry is None and op.ask_price is not None:
+                        entry = op.ask_price
+                    credit = -entry if entry is not None and entry < 0 else (op.net_credit or 0.0)
                     if width > 0 and (credit / width < request.credit_spread_min_credit_ratio):
                         new_rejections.append(
                             RejectedCandidate(
@@ -1026,7 +1045,7 @@ def _with_synthetic_quote_metrics(
         valuation_mode="synthetic",
         quote_source="synthetic_mark_or_fair_value",
         legs=legs,
-        net_credit=-entry if opportunity.strategy == "iron_condor" else opportunity.net_credit,
+        net_credit=-entry if opportunity.strategy in {"iron_condor", "iron_butterfly", "wheel_csp"} else opportunity.net_credit,
     )
 
 
@@ -1359,8 +1378,8 @@ def _append_theoretical_multi_leg(
                 )
                 for leg, value, position in zip(legs, fair_values, positions)
             ),
-            net_credit=-ask_price if (strategy in {"iron_condor", "iron_butterfly"} or (strategy in {"bull_put_vertical", "bear_call_vertical"} and ask_price is not None and ask_price < 0)) and ask_price is not None else None,
-            short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
+            net_credit=-ask_price if (strategy in {"iron_condor", "iron_butterfly", "wheel_csp"} or (strategy in {"bull_put_vertical", "bear_call_vertical"} and ask_price is not None and ask_price < 0)) and ask_price is not None else None,
+            short_delta=(abs(legs[1].delta) + abs(legs[2].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else (abs(fair_values[0].delta) if strategy in {"wheel_csp", "wheel_cc"} and fair_values else None),
             wing_delta=(abs(legs[0].delta) + abs(legs[3].delta)) / 2.0 if strategy == "iron_condor" and len(legs) >= 4 else None,
         )
     )
@@ -1943,6 +1962,308 @@ def _scan_overlay_candidate(
     )
 
 
+def _scan_wheel_strategies(
+    asset_contracts: tuple[OptionContract, ...],
+    request: ScanRequest,
+    valuation_time: datetime,
+    opportunities: list[Opportunity],
+    rejections: list[RejectedCandidate],
+) -> None:
+    """Scan The Wheel lifecycle strategies: Cash-Secured Puts (wheel_csp) and Covered Calls (wheel_cc)."""
+    for strategy in request.strategies:
+        if strategy not in _WHEEL_STRATEGIES:
+            continue
+        expected_kind = "put" if strategy == "wheel_csp" else "call"
+        matching = tuple(item for item in asset_contracts if _option_kind(item) == expected_kind)
+        if not matching and asset_contracts:
+            representative = min(asset_contracts, key=_contract_order)
+            rejections.append(
+                _multi_leg_rejection(
+                    strategy,
+                    (representative,),
+                    ("missing_option_type",),
+                    (f"No {expected_kind} contracts were available for {strategy}",),
+                )
+            )
+            continue
+
+        for contract in matching:
+            _scan_wheel_candidate(
+                strategy,
+                contract,
+                asset_contracts,
+                request,
+                valuation_time,
+                opportunities,
+                rejections,
+            )
+
+
+def _scan_wheel_candidate(
+    strategy: str,
+    candidate: OptionContract,
+    asset_contracts: tuple[OptionContract, ...],
+    request: ScanRequest,
+    valuation_time: datetime,
+    opportunities: list[Opportunity],
+    rejections: list[RejectedCandidate],
+) -> None:
+    rejection = _precheck(candidate, request, valuation_time, check_strategy=False)
+    if rejection:
+        rejections.append(
+            _rejection(
+                candidate,
+                rejection.reasons,
+                rejection.messages,
+                strategy=strategy,
+            )
+        )
+        return
+
+    spot = candidate.spot_price
+    dte_days = max((_as_utc(candidate.expiry_at) - _as_utc(valuation_time)).total_seconds() / 86400.0, 0.1)
+
+    # Strategy-specific gates
+    if strategy == "wheel_csp":
+        # Cash-Secured Put must be OTM: strike <= spot
+        if spot > 0.0 and candidate.strike > spot:
+            rejections.append(
+                _rejection(
+                    candidate,
+                    ("short_put_itm",),
+                    (f"Wheel Cash-Secured Put requires strike ({candidate.strike:g}) <= spot ({spot:g})",),
+                    strategy=strategy,
+                )
+            )
+            return
+        if request.enforce_bot_regime:
+            cand_delta = abs(candidate.delta) if candidate.delta is not None and math.isfinite(candidate.delta) else 0.25
+            if not (0.10 <= cand_delta <= 0.40):
+                rejections.append(
+                    _rejection(
+                        candidate,
+                        ("wheel_delta_out_of_bounds",),
+                        (f"Wheel CSP delta ({cand_delta:.2f}) outside target [0.10, 0.40]",),
+                        strategy=strategy,
+                    )
+                )
+                return
+
+    elif strategy == "wheel_cc":
+        # Cost basis gate: Strike must be >= wheel_cost_basis if specified
+        if request.wheel_cost_basis is not None and candidate.strike < request.wheel_cost_basis:
+            rejections.append(
+                _rejection(
+                    candidate,
+                    ("strike_below_cost_basis",),
+                    (f"Wheel Covered Call strike ({candidate.strike:g}) is below cost basis ({request.wheel_cost_basis:g})",),
+                    strategy=strategy,
+                )
+            )
+            return
+        # Covered call must be OTM: strike >= spot
+        if spot > 0.0 and candidate.strike < spot:
+            rejections.append(
+                _rejection(
+                    candidate,
+                    ("short_call_itm",),
+                    (f"Wheel Covered Call requires strike ({candidate.strike:g}) >= spot ({spot:g})",),
+                    strategy=strategy,
+                )
+            )
+            return
+        if request.enforce_bot_regime:
+            cand_delta = abs(candidate.delta) if candidate.delta is not None and math.isfinite(candidate.delta) else 0.25
+            if not (0.10 <= cand_delta <= 0.40):
+                rejections.append(
+                    _rejection(
+                        candidate,
+                        ("wheel_delta_out_of_bounds",),
+                        (f"Wheel CC delta ({cand_delta:.2f}) outside target [0.10, 0.40]",),
+                        strategy=strategy,
+                    )
+                )
+                return
+
+    try:
+        surface = build_volatility_surface(
+            _surface_observations(
+                asset_contracts,
+                excluded_symbols={candidate.symbol},
+                allow_unquoted=request.valuation_mode in {"theoretical", "synthetic"},
+            ),
+            valuation_time=_as_utc(valuation_time),
+            config=request.surface_config,
+        ).surface_for(candidate.asset)
+        valued = price_fair_value(
+            FairValueRequest(
+                option_type=candidate.option_type,
+                spot=candidate.spot_price,
+                strike=candidate.strike,
+                expiry=_as_utc(candidate.expiry_at),
+                valuation_time=_as_utc(valuation_time),
+                iv=None,
+                risk_free_rate=request.risk_free_rate,
+                surface=surface,
+                prefer_observed_surface=False,
+            )
+        )
+    except (PricingValidationError, VolatilitySurfaceError, ValueError, KeyError) as exc:
+        rejections.append(
+            _rejection(candidate, ("surface_or_pricing_failed",), (str(exc),), strategy=strategy)
+        )
+        return
+
+    # Check APY in all modes
+    scale = request.quantity * request.contract_multiplier
+    premium_unit = (
+        candidate.bid_price
+        if candidate.bid_price > 0
+        else (valued.fair_price if request.valuation_mode in {"theoretical", "synthetic"} else 0.0)
+    )
+    apy = (premium_unit / candidate.strike) * (365.0 / dte_days) * 100.0 if candidate.strike > 0 else 0.0
+
+    if strategy == "wheel_csp" and request.enforce_bot_regime:
+        if apy < request.wheel_min_apy * 100.0:
+            rejections.append(
+                _rejection(
+                    candidate,
+                    ("apy_below_minimum",),
+                    (f"Wheel CSP APY ({apy:.2f}%) is below minimum ({request.wheel_min_apy * 100.0:.2f}%)",),
+                    strategy=strategy,
+                )
+            )
+            return
+
+    if request.valuation_mode in {"theoretical", "synthetic"}:
+        _append_theoretical_multi_leg(
+            strategy,
+            (candidate,),
+            (-1,),
+            (valued,),
+            request,
+            valuation_time,
+            opportunities,
+            rejections,
+            requires_underlying_position=(strategy == "wheel_cc"),
+            risk_note=(
+                f"Wheel Cash-Secured Put | APY: {apy:.1f}% | Cash reserved: ${candidate.strike * scale:g}"
+                if strategy == "wheel_csp"
+                else f"Wheel Covered Call | Strike: ${candidate.strike:g} | Underlying holding required"
+            ),
+        )
+        return
+
+    # Executable mode
+    entry_unit = -candidate.bid_price
+    fair_unit = -valued.fair_price
+    entry = entry_unit * scale
+    fair_price = fair_unit * scale
+    entry_fee = request.fee_per_contract * scale
+    exit_fee = request.fee_per_contract * scale
+    entry_slippage = candidate.bid_price * request.slippage_bps / 10_000.0 * scale
+    exit_slippage = candidate.ask_price * request.slippage_bps / 10_000.0 * scale
+    total_cost = entry_fee + exit_fee + entry_slippage + exit_slippage
+
+    edge = entry * -1 - valued.fair_price * scale - total_cost
+    iv_edge = candidate.mark_iv - valued.fair_iv
+
+    if strategy == "wheel_csp":
+        max_loss = max(0.0, (candidate.strike - candidate.bid_price) * scale + total_cost)
+        max_profit = max(0.0, candidate.bid_price * scale - total_cost)
+    else:
+        max_loss = math.inf
+        max_profit = max(0.0, (candidate.bid_price + max(0.0, candidate.strike - spot)) * scale - total_cost)
+
+    reasons: list[str] = []
+    messages: list[str] = []
+    if iv_edge < request.min_iv_edge:
+        reasons.append("iv_edge_below_minimum")
+        messages.append(f"IV edge {iv_edge:.6f} is below {request.min_iv_edge:.6f}")
+    if edge <= request.min_edge_after_costs:
+        reasons.append("edge_after_costs_below_minimum")
+        messages.append(f"Edge after costs {edge:.6f} is not above {request.min_edge_after_costs:.6f}")
+    if request.max_loss is not None and max_loss > request.max_loss:
+        reasons.append("max_loss_exceeded")
+        messages.append(f"Maximum loss {max_loss:.6f} exceeds {request.max_loss:.6f}")
+    if not request.include_unvalidated:
+        reasons.append("evidence_not_validated")
+        messages.append("Historical out-of-sample evidence is not available")
+    if reasons:
+        rejections.append(_rejection(candidate, tuple(reasons), tuple(messages), strategy=strategy))
+        return
+
+    risk_note = (
+        f"Wheel Cash-Secured Put | APY: {apy:.1f}% | Cash reserved: ${candidate.strike * scale:g}"
+        if strategy == "wheel_csp"
+        else f"Wheel Covered Call | Strike: ${candidate.strike:g} | Underlying holding required"
+    )
+
+    leg = OpportunityLeg(
+        symbol=candidate.symbol,
+        option_type=candidate.option_type,
+        strike=candidate.strike,
+        expiry_at=_as_utc(candidate.expiry_at),
+        spot_price=candidate.spot_price,
+        bid_price=candidate.bid_price,
+        ask_price=candidate.ask_price,
+        market_iv=candidate.mark_iv,
+        fair_iv=valued.fair_iv,
+        fair_price=valued.fair_price,
+        delta=valued.delta,
+        volume_24h=candidate.volume_24h,
+        open_interest=candidate.open_interest,
+        quote_timestamp=_as_utc(candidate.quote_timestamp),
+        position=-1,
+    )
+
+    opportunities.append(
+        Opportunity(
+            asset=candidate.asset,
+            symbol=candidate.symbol,
+            strategy=strategy,
+            option_type=candidate.option_type,
+            strike=candidate.strike,
+            expiry_at=_as_utc(candidate.expiry_at),
+            dte=_dte(candidate.expiry_at, valuation_time),
+            spot_price=candidate.spot_price,
+            bid_price=-candidate.ask_price * scale,
+            ask_price=-candidate.bid_price * scale,
+            market_mid=-(candidate.bid_price + candidate.ask_price) / 2.0 * scale,
+            market_iv=candidate.mark_iv,
+            fair_iv=valued.fair_iv,
+            iv_edge=iv_edge,
+            surface_status=valued.surface_status or "unknown",
+            fair_price=fair_price,
+            executable_entry=entry,
+            fee=entry_fee,
+            slippage_cost=entry_slippage,
+            edge_after_costs=edge,
+            edge_pct=edge / max(abs(entry), 1e-12),
+            max_loss=max_loss,
+            max_profit=max_profit,
+            delta=-valued.delta * scale,
+            volume_24h=candidate.volume_24h,
+            open_interest=candidate.open_interest,
+            quote_timestamp=_as_utc(candidate.quote_timestamp),
+            evidence_status="insufficient_evidence",
+            edge_source="fitted_surface_wheel_minus_executable_entry_after_costs",
+            entry_fee=entry_fee,
+            exit_fee=exit_fee,
+            entry_slippage_cost=entry_slippage,
+            exit_slippage_cost=exit_slippage,
+            total_cost=total_cost,
+            short_symbol=candidate.symbol,
+            short_strike=candidate.strike,
+            requires_underlying_position=(strategy == "wheel_cc"),
+            risk_note=risk_note,
+            legs=(leg,),
+            net_credit=candidate.bid_price * scale,
+            short_delta=abs(valued.delta),
+        )
+    )
+
+
 def _iron_condor_leg_sets(
     contracts: tuple[OptionContract, ...],
     request: ScanRequest | None = None,
@@ -2475,6 +2796,14 @@ def _scan_vertical_pair(
     if request.max_loss is not None and max_loss > request.max_loss:
         reasons.append("max_loss_exceeded")
         messages.append(f"Maximum loss {max_loss:.6f} exceeds {request.max_loss:.6f}")
+    if request.enforce_bot_regime and strategy in {"bull_put_vertical", "bear_call_vertical"}:
+        credit = short_leg.bid_price - long_leg.ask_price
+        width = abs(long_leg.strike - short_leg.strike)
+        if width > 0 and (credit / width < request.credit_spread_min_credit_ratio):
+            reasons.append("credit_ratio_below_minimum")
+            messages.append(
+                f"Credit spread credit/width ratio ({credit/width*100:.1f}%) is below minimum ({request.credit_spread_min_credit_ratio*100:.1f}%)"
+            )
     if not request.include_unvalidated:
         reasons.append("evidence_not_validated")
         messages.append("Historical out-of-sample evidence is not available")
