@@ -799,3 +799,11 @@ body {
   .btn-bot { flex: 1; text-align: center; }
 }
 
+@media (max-width: 480px) {
+  .bot-stat-grid { grid-template-columns: 1fr; }
+  .bot-controls { flex-direction: column; gap: 6px; }
+  .btn-bot { width: 100%; }
+  .bot-legs-table { font-size: .68rem; }
+  .bot-panel { padding: 12px 10px; }
+}
+

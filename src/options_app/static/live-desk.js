@@ -890,34 +890,78 @@
 
         // Table Rows
         if (legsBody) {
-          legsBody.innerHTML = active.legs.map((leg) => {
+          legsBody.textContent = ""; // clear
+          active.legs.forEach((leg) => {
             const isShort = leg.side === "Sell";
             const roleClass = isShort ? "bot-role-short" : "bot-role-wing";
             const pnl = leg.unrealized_pnl || 0;
             const pnlColor = pnl >= 0 ? "#3ca572" : "#ef4444";
             const pnlStr = (pnl >= 0 ? "+" : "") + formatCurrency(pnl);
 
-            return `
-              <tr>
-                <td><span class="bot-role-tag ${roleClass}">${leg.role || leg.side}</span></td>
-                <td><strong>${leg.symbol}</strong></td>
-                <td>${Number(leg.strike).toLocaleString()}</td>
-                <td style="text-transform: uppercase;">${leg.option_type}</td>
-                <td><strong>${leg.side}</strong></td>
-                <td>${leg.qty}</td>
-                <td>${formatCurrency(leg.entry_price)}</td>
-                <td>${formatCurrency(leg.current_mark)}</td>
-                <td style="color: ${pnlColor}; font-weight: 700;">${pnlStr}</td>
-              </tr>
-            `;
-          }).join("");
+            const tr = document.createElement("tr");
+
+            const tdRole = document.createElement("td");
+            const span = document.createElement("span");
+            span.className = `bot-role-tag ${roleClass}`;
+            span.textContent = leg.role || leg.side;
+            tdRole.appendChild(span);
+            tr.appendChild(tdRole);
+
+            const tdSym = document.createElement("td");
+            const strong = document.createElement("strong");
+            strong.textContent = leg.symbol;
+            tdSym.appendChild(strong);
+            tr.appendChild(tdSym);
+
+            const tdStrike = document.createElement("td");
+            tdStrike.textContent = Number(leg.strike).toLocaleString();
+            tr.appendChild(tdStrike);
+
+            const tdType = document.createElement("td");
+            tdType.style.textTransform = "uppercase";
+            tdType.textContent = leg.option_type;
+            tr.appendChild(tdType);
+
+            const tdSide = document.createElement("td");
+            const strongSide = document.createElement("strong");
+            strongSide.textContent = leg.side;
+            tdSide.appendChild(strongSide);
+            tr.appendChild(tdSide);
+
+            const tdQty = document.createElement("td");
+            tdQty.textContent = leg.qty;
+            tr.appendChild(tdQty);
+
+            const tdEntry = document.createElement("td");
+            tdEntry.textContent = formatCurrency(leg.entry_price);
+            tr.appendChild(tdEntry);
+
+            const tdMark = document.createElement("td");
+            tdMark.textContent = formatCurrency(leg.current_mark);
+            tr.appendChild(tdMark);
+
+            const tdPnl = document.createElement("td");
+            tdPnl.style.color = pnlColor;
+            tdPnl.style.fontWeight = "700";
+            tdPnl.textContent = pnlStr;
+            tr.appendChild(tdPnl);
+
+            legsBody.appendChild(tr);
+          });
         }
       } else {
         if (condorId) condorId.textContent = "Chưa có vị thế mở";
         if (tpTarget) tpTarget.textContent = "$0.00";
         if (tpFill) tpFill.style.width = "0%";
         if (legsBody) {
-          legsBody.innerHTML = `<tr><td colspan="9" class="bot-empty-cell">Không có vị thế Iron Condor nào đang chạy. Bấm "Quét ngay" hoặc "Bật Bot" để tự động tìm cơ hội.</td></tr>`;
+          legsBody.textContent = "";
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 9;
+          td.className = "bot-empty-cell";
+          td.textContent = "Không có vị thế Iron Condor nào đang chạy. Bấm \"Quét ngay\" hoặc \"Bật Bot\" để tự động tìm cơ hội.";
+          tr.appendChild(td);
+          legsBody.appendChild(tr);
         }
       }
 
