@@ -55,7 +55,7 @@ class IronCondorConfig:
     # Signal & Risk parameters
     iv_rv_threshold: float = 6.0  # min IV - RV in vol points
     target_profit_pct: float = 0.50  # close at 50% max credit
-    max_loss_multiplier: float = 2.0  # close if loss > 2x credit
+    max_loss_multiplier: float = 0.8  # close if loss > 0.8x credit (empirically optimized)
     max_margin_utilization: float = 0.85
     roll_dte: float = 1.0  # close or roll when DTE <= 1 day
 
@@ -712,7 +712,7 @@ def main() -> None:
     parser.add_argument("--min-dte", type=int, default=5, help="Min DTE")
     parser.add_argument("--max-dte", type=int, default=16, help="Max DTE")
     parser.add_argument("--tp-pct", type=float, default=0.50, help="Take profit percentage")
-    parser.add_argument("--sl-mult", type=float, default=2.0, help="Stop loss credit multiplier")
+    parser.add_argument("--sl-mult", type=float, default=0.8, help="Stop loss credit multiplier (default: 0.8)")
     parser.add_argument("--interval", type=int, default=300, help="Poll interval in seconds")
     parser.add_argument("--once", action="store_true", help="Run single cycle and exit")
 

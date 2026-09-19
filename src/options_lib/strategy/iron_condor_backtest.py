@@ -33,8 +33,8 @@ class BacktestConfig:
     min_dte: int = 7
     max_dte: int = 16
     iv_rv_threshold: float = 5.0  # Min IV - RV vol points to open trade
-    target_profit_pct: float = 0.50  # 50% TP
-    max_loss_multiplier: float = 2.0  # Stop loss at 2x credit
+    target_profit_pct: float = 0.50  # Take profit at 50% max credit
+    max_loss_multiplier: float = 0.8  # Stop loss at 0.8x credit (empirically optimized)
     roll_dte: float = 1.0  # Close when DTE <= 1
     slippage_bps: float = 5.0  # 5 bps slippage per leg
     fee_per_contract: float = 1.5  # $1.5 fee per leg executed

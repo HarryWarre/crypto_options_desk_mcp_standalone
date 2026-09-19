@@ -216,14 +216,15 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch Deribit trades and convert to Parquet")
     parser.add_argument("--currency", choices=["BTC", "ETH"], default="BTC")
     parser.add_argument("--days", type=int, default=14, help="Number of past days to fetch")
+    parser.add_argument("--max-trades", type=int, default=25000, help="Maximum trades to fetch")
     parser.add_argument("--output", type=str, required=True, help="Output Parquet path")
     args = parser.parse_args()
 
     now = datetime.now(UTC)
     start = now - timedelta(days=args.days)
-    print(f"Fetching {args.currency} options trades from {start.date()} to {now.date()}...")
+    print(f"Fetching {args.currency} options trades from {start.date()} to {now.date()} (max {args.max_trades})...")
 
-    trades = fetch_trades_for_window(args.currency, start, now, max_trades=10000)
+    trades = fetch_trades_for_window(args.currency, start, now, max_trades=args.max_trades)
     print(f"Retrieved {len(trades)} raw trade records from Deribit.")
 
     quotes_count = build_resampled_parquet(args.currency, trades, args.output)
